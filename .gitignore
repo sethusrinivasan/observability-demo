@@ -1,0 +1,7 @@
+/__pycache__
+/compose-ps.out
+/compose-up.out
+/redpanda-logs.out
+/tempo-logs.out
+/tempo-verify.out
+/testconn.out

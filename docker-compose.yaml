@@ -1,0 +1,169 @@
+services:
+  # OpenTelemetry Collector - receives and routes all telemetry
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    volumes:
+      - ./config/otel-collector.yaml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on:
+      - tempo
+      - mimir
+      - loki
+    networks:
+      - observability-network
+
+  # Grafana Tempo - distributed tracing backend
+  tempo:
+    image: grafana/tempo:latest
+    container_name: tempo
+    depends_on:
+      - redpanda
+    volumes:
+      - ./config/tempo.yaml:/etc/tempo/config.yaml
+      - tempo-data:/var/tempo
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    ports:
+      - "3200:3200"   # Tempo API
+    networks:
+      - observability-network
+
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: redpanda
+    ports:
+      - "9092:9092"   # Kafka API for Tempo
+    command: >
+      redpanda start --overprovisioned
+      --mode=dev-container
+      --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    networks:
+      - observability-network
+
+  # Grafana Mimir - long-term metrics storage
+  mimir:
+    image: grafana/mimir:latest
+    container_name: mimir
+    volumes:
+      - ./config/mimir.yaml:/etc/mimir/config.yaml
+      - mimir-data:/data
+    command: ["-config.file=/etc/mimir/config.yaml"]
+    ports:
+      - "9009:9009"   # Mimir API
+    networks:
+      - observability-network
+
+  # Grafana Loki - log aggregation
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    volumes:
+      - ./config/loki.yaml:/etc/loki/config.yaml
+      - loki-data:/loki
+    command: ["-config.file=/etc/loki/config.yaml"]
+    ports:
+      - "3100:3100"   # Loki API
+    networks:
+      - observability-network
+
+  # Grafana - visualization and dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - ./config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - ./config/grafana-dashboard-provider.yaml:/etc/grafana/provisioning/dashboards/dashboard.yml
+      - ./config/dashboards:/var/lib/grafana/dashboards
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"   # Grafana UI
+    depends_on:
+      - tempo
+      - mimir
+      - loki
+    networks:
+      - observability-network
+
+  postgres:
+    image: postgres:latest
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=observability
+      - POSTGRES_PASSWORD=observability
+      - POSTGRES_DB=observability
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - observability-network
+
+  postgres-exporter:
+    image: wrouesnel/postgres_exporter:latest
+    container_name: postgres-exporter
+    environment:
+      - DATA_SOURCE_NAME=postgresql://observability:observability@postgres:5432/observability?sslmode=disable
+    depends_on:
+      - postgres
+    networks:
+      - observability-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./config/prometheus.yaml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - "9090:9090"
+    depends_on:
+      - mimir
+      - postgres-exporter
+    networks:
+      - observability-network
+
+
+  # Add your Python app
+  observability-demo:
+    build: .
+    container_name: observability-demo
+    ports:
+      - "5000:5000"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=observability-demo
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=observability
+      - POSTGRES_USER=observability
+      - POSTGRES_PASSWORD=observability
+    depends_on:
+      - otel-collector
+      - tempo
+      - mimir
+      - loki
+      - postgres
+    networks:
+      - observability-network
+
+networks:
+  observability-network:
+    driver: bridge
+
+
+volumes:
+  tempo-data:
+  mimir-data:
+  loki-data:
+  grafana-data:
+  postgres-data:
+  prometheus-data:
