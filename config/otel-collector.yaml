@@ -25,6 +25,10 @@ exporters:
     endpoint: http://mimir:9009/api/v1/push
     tls:
       insecure: true
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
   debug:
     verbosity: basic
 
@@ -41,4 +45,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [debug]
+      exporters: [otlphttp/loki, debug]

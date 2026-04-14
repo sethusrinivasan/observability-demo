@@ -1,91 +1,24 @@
 {
   "id": null,
   "uid": "observability-demo-metrics",
-  "title": "Observability Demo Metrics",
+  "title": "Observability Demo",
   "tags": ["observability", "app", "metrics", "sre"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "5s",
   "panels": [
     {
-      "type": "graph",
-      "title": "Traffic: Requests per Second",
-      "description": "Tracks request rate by route so you can see demand patterns and traffic spikes.",
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 5 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "sum(rate(app_requests_total[5m])) by (route)",
-          "legendFormat": "{{route}}",
-          "refId": "A"
-        }
-      ],
-      "lines": true,
-      "linewidth": 2,
-      "fill": 1,
-      "yaxes": [
-        { "format": "req/s", "label": "Requests per second", "logBase": 1, "min": 0, "show": true },
-        { "format": "short", "show": false }
-      ]
-    },
-    {
-      "type": "graph",
-      "title": "Latency: Request Duration (P95 / P99)",
-      "description": "Shows 95th and 99th percentile request latency by route to surface slow user journeys.",
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 5 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95, sum(rate(app_request_duration_bucket[5m])) by (le, route))",
-          "legendFormat": "p95 {{route}}",
-          "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum(rate(app_request_duration_bucket[5m])) by (le, route))",
-          "legendFormat": "p99 {{route}}",
-          "refId": "B"
-        }
-      ],
-      "lines": true,
-      "linewidth": 2,
-      "fill": 1,
-      "yaxes": [
-        { "format": "s", "label": "seconds", "logBase": 1, "min": 0, "show": true },
-        { "format": "short", "show": false }
-      ]
-    },
-    {
-      "type": "graph",
-      "title": "Errors: Rate and Percentage",
-      "description": "Displays error volume and error rate so you can detect failing requests quickly.",
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 5 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "sum(rate(app_requests_errors_total[5m])) by (route)",
-          "legendFormat": "errors {{route}}",
-          "refId": "A"
-        },
-        {
-          "expr": "100 * sum(rate(app_requests_errors_total[5m])) / sum(rate(app_requests_total[5m]))",
-          "legendFormat": "error rate %",
-          "refId": "B"
-        }
-      ],
-      "lines": true,
-      "linewidth": 2,
-      "fill": 1,
-      "yaxes": [
-        { "format": "short", "label": "errors / sec", "logBase": 1, "min": 0, "show": true },
-        { "format": "percent", "show": true }
-      ]
+      "type": "row",
+      "title": "SLO / Health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
     },
     {
       "type": "stat",
-      "title": "SRE SLO: Success Rate",
-      "description": "Shows the overall request success rate as the primary reliability SLO metric.",
-      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "title": "Overall Success Rate",
+      "description": "Overall request success rate — primary reliability SLO.",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
@@ -97,6 +30,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
+          "decimals": 2,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -106,13 +40,14 @@
             ]
           }
         }
-      }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
     },
     {
       "type": "stat",
-      "title": "Critical Journey: Compute Success Rate",
-      "description": "Monitors success rate for the key compute user journey to catch regressions quickly.",
-      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "title": "Compute Journey Success Rate",
+      "description": "Success rate for the /compute/* user journey.",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
@@ -124,6 +59,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
+          "decimals": 2,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -133,87 +69,26 @@
             ]
           }
         }
-      }
-    },
-    {
-      "type": "graph",
-      "title": "Saturation: Process Memory RSS",
-      "description": "Shows the app process resident memory usage in bytes to track memory saturation.",
-      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 17 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "avg(app_process_memory_rss)",
-          "legendFormat": "RSS memory",
-          "refId": "A"
-        }
-      ],
-      "lines": true,
-      "linewidth": 2,
-      "fill": 1,
-      "yaxes": [
-        { "format": "bytes", "label": "bytes", "logBase": 1, "min": 0, "show": true },
-        { "format": "short", "show": false }
-      ]
-    },
-    {
-      "type": "graph",
-      "title": "Saturation: System Load Average (1m)",
-      "description": "Shows the 1-minute system load average to detect CPU saturation and scheduling pressure.",
-      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 17 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "avg(app_system_loadavg_1m)",
-          "legendFormat": "loadavg 1m",
-          "refId": "A"
-        }
-      ],
-      "lines": true,
-      "linewidth": 2,
-      "fill": 1,
-      "yaxes": [
-        { "format": "short", "label": "load", "logBase": 1, "min": 0, "show": true },
-        { "format": "short", "show": false }
-      ]
-    },
-    {
-      "type": "graph",
-      "title": "Saturation: Process CPU Usage Rate",
-      "description": "Shows the process CPU usage rate to detect rising CPU saturation in the application.",
-      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 17 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "sum(rate(app_process_cpu_seconds[5m]))",
-          "legendFormat": "CPU sec/s",
-          "refId": "A"
-        }
-      ],
-      "lines": true,
-      "linewidth": 2,
-      "fill": 1,
-      "yaxes": [
-        { "format": "s", "label": "seconds per second", "logBase": 1, "min": 0, "show": true },
-        { "format": "short", "show": false }
-      ]
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
     },
     {
       "type": "stat",
-      "title": "SLO/Error Budget Burn",
-      "description": "Estimates error-budget burn rate from recent error levels against a 99% success / 1% error budget SLA.",
-      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "title": "Error Budget Burn",
+      "description": "Error budget burn rate against a 99% SLA (1% error budget). >100% means budget is exhausted.",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
           "expr": "100 * sum(rate(app_requests_errors_total[5m])) / sum(rate(app_requests_total[5m])) / 0.01",
-          "legendFormat": "error budget burn %",
+          "legendFormat": "burn %",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
+          "decimals": 1,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -223,212 +98,351 @@
             ]
           }
         }
-      }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
     },
     {
       "type": "stat",
-      "title": "Actionable Alert Indicator",
-      "description": "Shows whether any high-priority error, latency, or saturation thresholds are currently tripped.",
-      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "title": "Total Request Rate",
+      "description": "Current requests per second across all routes.",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "sum((sum(rate(app_requests_errors_total[5m])) / sum(rate(app_requests_total[5m])) > bool 0.02) or (avg(app_system_loadavg_1m) > bool 1.5) or (sum(rate(app_requests_success_total[5m])) / sum(rate(app_requests_total[5m])) < bool 0.995))",
-          "legendFormat": "alert active",
+          "expr": "sum(rate(app_requests_total[1m]))",
+          "legendFormat": "req/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "blue", "value": null } ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+    },
+    {
+      "type": "stat",
+      "title": "P95 Latency",
+      "description": "95th percentile request latency across all routes.",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(app_request_duration_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+    },
+    {
+      "type": "stat",
+      "title": "Alert Indicator",
+      "description": "1 = at least one threshold tripped (error rate >2%, load >1.5, or success <99.5%).",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "clamp_max(sum((sum(rate(app_requests_errors_total[5m])) / sum(rate(app_requests_total[5m])) > bool 0.02) or (avg(app_system_loadavg_1m) > bool 1.5) or (sum(rate(app_requests_success_total[5m])) / sum(rate(app_requests_total[5m])) < bool 0.995)), 1)",
+          "legendFormat": "alert",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "OK", "color": "green" }, "1": { "text": "ALERT", "color": "red" } } }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "red", "value": 0.5 }
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+    },
+    {
+      "type": "row",
+      "title": "Traffic, Latency & Errors (RED)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Rate by Route",
+      "description": "Requests per second broken down by route.",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "sum(rate(app_requests_total[1m])) by (route)",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 10 } }
+      },
+      "options": { "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency Percentiles by Route (P50 / P95 / P99)",
+      "description": "Request duration percentiles per route.",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(app_request_duration_bucket[5m])) by (le, route))",
+          "legendFormat": "p50 {{route}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(app_request_duration_bucket[5m])) by (le, route))",
+          "legendFormat": "p95 {{route}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(app_request_duration_bucket[5m])) by (le, route))",
+          "legendFormat": "p99 {{route}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2, "fillOpacity": 5 } }
+      },
+      "options": { "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Error Rate by Route",
+      "description": "Errors per second and overall error percentage.",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "sum(rate(app_requests_errors_total[1m])) by (route)",
+          "legendFormat": "errors {{route}}",
+          "refId": "A"
+        },
+        {
+          "expr": "100 * sum(rate(app_requests_errors_total[5m])) / sum(rate(app_requests_total[5m]))",
+          "legendFormat": "error %",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "error %" }, "properties": [ { "id": "unit", "value": "percent" }, { "id": "custom.axisPlacement", "value": "right" } ] }
+        ]
+      },
+      "options": { "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "row",
+      "title": "Saturation (CPU, Memory, Load)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Process Memory RSS",
+      "description": "App process resident set size in bytes.",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "avg(app_process_memory_rss)",
+          "legendFormat": "RSS",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "lineWidth": 2, "fillOpacity": 15 } }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "System Load Average (1m)",
+      "description": "1-minute system load average — CPU saturation indicator.",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "avg(app_system_loadavg_1m)",
+          "legendFormat": "load avg 1m",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 15 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1.5 },
+              { "color": "red", "value": 3 }
             ]
           }
         }
       }
     },
     {
-      "type": "stat",
-      "title": "Container: Memory Used",
-      "description": "Container-level memory usage in bytes for this service.",
-      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 27 },
+      "type": "timeseries",
+      "title": "Process CPU Usage Rate",
+      "description": "CPU seconds consumed per second by the app process.",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "rate(app_process_cpu_seconds[1m])",
+          "legendFormat": "CPU sec/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2, "fillOpacity": 15 } }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Container Resources",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Container Memory Used vs Limit",
+      "description": "Container memory current usage vs configured limit.",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 21 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
           "expr": "avg(app_container_memory_current)",
-          "legendFormat": "container memory used",
+          "legendFormat": "used",
           "refId": "A"
+        },
+        {
+          "expr": "avg(app_container_memory_limit)",
+          "legendFormat": "limit",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }
-        }
+        "defaults": { "unit": "bytes", "custom": { "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "limit" }, "properties": [ { "id": "custom.lineStyle", "value": { "fill": "dash" } }, { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ] }
+        ]
       }
     },
     {
-      "type": "stat",
-      "title": "Container: Memory %",
-      "description": "Container memory usage as a percent of limit.",
-      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 27 },
+      "type": "timeseries",
+      "title": "Container Memory % & CPU Usage",
+      "description": "Memory utilisation % and container CPU nanoseconds.",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 21 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
           "expr": "avg(app_container_memory_percent)",
-          "legendFormat": "container memory %",
+          "legendFormat": "memory %",
           "refId": "A"
+        },
+        {
+          "expr": "rate(app_container_cpu_usage_ns[1m]) / 1e9",
+          "legendFormat": "CPU cores",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 90 } ] }
-        }
+        "defaults": { "unit": "percent", "custom": { "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "CPU cores" }, "properties": [ { "id": "unit", "value": "short" }, { "id": "custom.axisPlacement", "value": "right" } ] }
+        ]
       }
-    },
-    {
-      "type": "stat",
-      "title": "Container: CPU Usage",
-      "description": "Container CPU usage in nanoseconds.",
-      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 27 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "avg(app_container_cpu_usage_ns)",
-          "legendFormat": "container cpu ns",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ns",
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }
-        }
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Container: Memory Limit",
-      "description": "Configured memory limit for the container.",
-      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 27 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "avg(app_container_memory_limit)",
-          "legendFormat": "container memory limit",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }
-        }
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Synthetic workload: Request Rate",
-      "description": "Shows the current synthetic request volume per second emitted by the internal load generator.",
-      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 22 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "sum(rate(app_synthetic_requests_total[5m]))",
-          "legendFormat": "synthetic req/s",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "req/s",
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }
-        }
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Synthetic workload: Success Rate",
-      "description": "Shows the success percentage for synthetic client requests.",
-      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 22 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "100 * sum(rate(app_synthetic_requests_success_total[5m])) / sum(rate(app_synthetic_requests_total[5m]))",
-          "legendFormat": "synthetic success %",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 95 } ] }
-        }
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Synthetic workload: Failure Rate",
-      "description": "Shows the failure percentage for synthetic client requests.",
-      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 22 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "100 * sum(rate(app_synthetic_requests_errors_total[5m])) / sum(rate(app_synthetic_requests_total[5m]))",
-          "legendFormat": "synthetic failure %",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 5 } ] }
-        }
-      }
-    },
-    {
-      "type": "graph",
-      "title": "Synthetic workload: Observed Latency (P95)",
-      "description": "Shows 95th-percentile client-side latency of synthetic requests.",
-      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 22 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95, sum(rate(app_synthetic_request_duration_bucket[5m])) by (le))",
-          "legendFormat": "p95 synthetic latency",
-          "refId": "A"
-        }
-      ],
-      "lines": true,
-      "linewidth": 2,
-      "fill": 1,
-      "yaxes": [
-        { "format": "s", "label": "seconds", "logBase": 1, "min": 0, "show": true },
-        { "format": "short", "show": false }
-      ]
     },
     {
       "type": "row",
-      "title": "PostgreSQL: Important Database Metrics",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
-      "collapsed": false,
-      "showTitle": true
+      "title": "Synthetic Workload",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Synthetic Request Rate & Success %",
+      "description": "Synthetic load generator throughput and success rate.",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "sum(rate(app_synthetic_requests_total[1m])) by (path)",
+          "legendFormat": "{{path}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 8 } }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Synthetic P95 Latency by Path",
+      "description": "Client-side 95th percentile latency per synthetic target path.",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(app_synthetic_request_duration_bucket[5m])) by (le, path))",
+          "legendFormat": "p95 {{path}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2, "fillOpacity": 5 } }
+      }
+    },
+    {
+      "type": "row",
+      "title": "PostgreSQL",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "collapsed": false
     },
     {
       "type": "stat",
-      "title": "Postgres: Active Connections",
-      "description": "Tracks the number of active database connections to identify connection pressure.",
-      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 34 },
+      "title": "Active Connections",
+      "description": "Current active connections to the observability database.",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 35 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
           "expr": "max(pg_stat_activity_count{datname=\"observability\"})",
-          "legendFormat": "active connections",
+          "legendFormat": "connections",
           "refId": "A"
         }
       ],
@@ -437,57 +451,18 @@
           "unit": "short",
           "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 80 }, { "color": "red", "value": 100 } ] }
         }
-      }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
     },
     {
       "type": "stat",
-      "title": "Postgres: Commit Rate",
-      "description": "Shows the transaction commit throughput for the observed database.",
-      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 34 },
+      "title": "Cache Hit Rate",
+      "description": "Buffer cache hit ratio — low values indicate I/O pressure.",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 35 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "sum(rate(pg_stat_database_xact_commit[5m])) by (datname)",
-          "legendFormat": "commits/s",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "req/s",
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }
-        }
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Postgres: Rollback Rate",
-      "description": "Shows transaction rollback activity to detect failed or retried writes.",
-      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 34 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "sum(rate(pg_stat_database_xact_rollback[5m])) by (datname)",
-          "legendFormat": "rollbacks/s",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "req/s",
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 } ] }
-        }
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Postgres: Cache Hit Rate",
-      "description": "Tracks the database cache hit ratio to surface I/O pressure and working set efficiency.",
-      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 34 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "100 * sum(rate(pg_stat_database_blks_hit[5m])) by (datname) / sum(rate(pg_stat_database_blks_hit[5m]) + rate(pg_stat_database_blks_read[5m])) by (datname)",
+          "expr": "100 * sum(rate(pg_stat_database_blks_hit{datname=\"observability\"}[5m])) / (sum(rate(pg_stat_database_blks_hit{datname=\"observability\"}[5m])) + sum(rate(pg_stat_database_blks_read{datname=\"observability\"}[5m])))",
           "legendFormat": "cache hit %",
           "refId": "A"
         }
@@ -495,32 +470,113 @@
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
+          "decimals": 1,
           "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 70 }, { "color": "green", "value": 90 } ] }
         }
-      }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
     },
     {
-      "type": "stat",
-      "title": "Postgres: Version",
-      "description": "Reports the PostgreSQL server version reported by the exporter.",
-      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 34 },
+      "type": "timeseries",
+      "title": "Commit vs Rollback Rate",
+      "description": "Transaction throughput — rollbacks indicate failed writes.",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 35 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "max(pg_postmaster_version)",
-          "legendFormat": "version",
+          "expr": "sum(rate(pg_stat_database_xact_commit{datname=\"observability\"}[1m]))",
+          "legendFormat": "commits/s",
           "refId": "A"
+        },
+        {
+          "expr": "sum(rate(pg_stat_database_xact_rollback{datname=\"observability\"}[1m]))",
+          "legendFormat": "rollbacks/s",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 8 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "rollbacks/s" }, "properties": [ { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ] }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rows Fetched / Inserted / Updated",
+      "description": "Row-level activity to understand database workload patterns.",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "sum(rate(pg_stat_database_tup_fetched{datname=\"observability\"}[1m]))",
+          "legendFormat": "fetched/s",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(pg_stat_database_tup_inserted{datname=\"observability\"}[1m]))",
+          "legendFormat": "inserted/s",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(pg_stat_database_tup_updated{datname=\"observability\"}[1m]))",
+          "legendFormat": "updated/s",
+          "refId": "C"
         }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 8 } }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Logs (Loki)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 42 },
+      "collapsed": false
+    },
+    {
+      "type": "logs",
+      "title": "Application Logs",
+      "description": "Live log stream from the observability-demo service.",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 43 },
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "targets": [
+        {
+          "expr": "{service_name=\"observability-demo\"}",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showTime": true,
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Error Logs Only",
+      "description": "Filtered view showing only ERROR level log lines.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 53 },
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "targets": [
+        {
+          "expr": "{service_name=\"observability-demo\", detected_level=\"error\"}",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "showTime": true,
+        "wrapLogMessage": true
       }
     }
   ],
-  "time": { "from": "now-1h", "to": "now" },
+  "time": { "from": "now-30m", "to": "now" },
   "timepicker": {},
   "templating": { "list": [] }
 }

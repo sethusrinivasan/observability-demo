@@ -171,14 +171,6 @@ def get_process_cpu_seconds() -> float:
     return usage.ru_utime + usage.ru_stime
 
 
-def observe_process_memory(options):
-    return [Observation(get_process_memory_rss(), {"process": "python"})]
-
-
-def observe_process_cpu_seconds(options):
-    return [Observation(get_process_cpu_seconds(), {"process": "python"})]
-
-
 def get_cgroup_memory_current() -> int:
     if os.path.exists("/sys/fs/cgroup/memory.current"):
         with open("/sys/fs/cgroup/memory.current", "r") as f:
@@ -310,7 +302,7 @@ def record_request_metrics(response):
 
 # 4. Setup Logging with Trace correlation
 logger_provider = LoggerProvider(resource=service_resource)
-log_exporter = OTLPLogExporter(endpoint="http://localhost:4317", insecure=True)
+log_exporter = OTLPLogExporter(endpoint=OTLP_ENDPOINT, insecure=True)
 logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
 set_logger_provider(logger_provider)
 

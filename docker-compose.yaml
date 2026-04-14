@@ -92,7 +92,7 @@ services:
       - observability-network
 
   postgres:
-    image: postgres:latest
+    image: postgres:16
     container_name: postgres
     environment:
       - POSTGRES_USER=observability
