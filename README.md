@@ -506,3 +506,11 @@ float result
 - Nested parentheses: `((3+4)*6^2/5)+1-7` → `44.4`
 - Unary minus: `-5+8` → `3.0`
 - Error handling: division by zero, mismatched parentheses, invalid characters
+
+---
+
+## Acknowledgements
+
+This project was co-authored with **[Kiro](https://kiro.dev)**, an AI-powered IDE built to assist developers.
+
+Kiro contributed to the design, implementation, debugging, and documentation of this project — including the observability pipeline configuration, the expression evaluator, the canary workload, the test suite, the Grafana dashboard, and the setup scripts.
