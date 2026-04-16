@@ -139,6 +139,26 @@ POST /auditlog
 
 ---
 
+## Grafana Dashboard
+
+The pre-provisioned dashboard is available at **http://localhost:3000** immediately after `./launch.sh` completes. No login required (anonymous admin).
+
+![Grafana Dashboard](docs/grafana-dashboard.png)
+
+The dashboard is organised into collapsible rows:
+
+| Row | What it shows |
+|---|---|
+| SLO / Health | Overall success rate, compute journey success rate, error budget burn, total RPS, P95 latency, alert indicator |
+| Traffic, Latency & Errors (RED) | Request rate by route, latency percentiles (p50/p95/p99), error rate + error % |
+| Saturation | Process RSS memory, system load average (1m), process CPU rate |
+| Container Resources | Memory used vs limit, memory %, CPU cores |
+| Synthetic Workload | Canary request rate by path, canary P95 latency by path |
+| PostgreSQL | Active connections, cache hit rate, commit vs rollback rate, rows fetched/inserted/updated |
+| Logs (Loki) | Live application log stream, errors-only filtered view |
+
+---
+
 ## Services
 
 | Container | Image | Port | Role |

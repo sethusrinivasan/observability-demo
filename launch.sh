@@ -30,7 +30,7 @@ sleep 3
 
 # Force-remove all containers by name (handles both compose and manually started)
 for name in observability-demo canary otel-collector tempo redpanda mimir loki \
-            grafana postgres postgres-exporter prometheus; do
+            grafana grafana-renderer postgres postgres-exporter prometheus; do
     docker rm -f "$name" 2>/dev/null || true
 done
 
@@ -53,7 +53,7 @@ fi
 # Remove any leftover named containers that compose missed (e.g. manually
 # started containers or those whose PIDs were killed above)
 for name in observability-demo canary otel-collector tempo redpanda mimir loki \
-            grafana postgres postgres-exporter prometheus; do
+            grafana grafana-renderer postgres postgres-exporter prometheus; do
     docker rm -f "$name" 2>/dev/null || true
 done
 
