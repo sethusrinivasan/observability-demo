@@ -10,7 +10,7 @@ kill_container() {
     pid=$(docker inspect "$name" --format '{{.State.Pid}}' 2>/dev/null || echo "")
     if [ -n "$pid" ] && [ "$pid" != "0" ]; then
         echo "  Killing $name (PID $pid)..."
-        kill -9 "$pid" 2>/dev/null || true
+        sudo kill -9 "$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
         sleep 2
     fi
     docker rm -f "$name" 2>/dev/null || true
