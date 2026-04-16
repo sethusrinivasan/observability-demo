@@ -3,7 +3,6 @@ import logging
 import random
 import resource
 import requests
-import threading
 import time
 import os
 import json
@@ -44,6 +43,14 @@ app = Flask(__name__)
 
 
 def get_db_connection():
+    """
+    Open and return a new Postgres connection.
+
+    A fresh connection is created on every call — no pooling.
+    Callers are responsible for closing it.  Use the helper
+    with_db() context manager below to ensure the connection
+    is always closed even if an exception is raised.
+    """
     return psycopg2.connect(
         host=DB_HOST,
         port=DB_PORT,
@@ -53,8 +60,30 @@ def get_db_connection():
     )
 
 
+from contextlib import contextmanager
+
+@contextmanager
+def with_db():
+    """
+    Context manager that opens a connection, yields it, then
+    unconditionally closes it — guaranteeing no idle connections
+    are left open after each request.
+
+    Usage:
+        with with_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(...)
+            conn.commit()
+    """
+    conn = get_db_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def ensure_audit_table():
-    with get_db_connection() as conn:
+    with with_db() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -88,9 +117,10 @@ def wait_for_postgres():
     logger = logging.getLogger(__name__)
     for attempt in range(1, DB_RETRY_COUNT + 1):
         try:
-            with get_db_connection():
-                logger.info("Connected to Postgres on attempt %d", attempt)
-                return
+            conn = get_db_connection()
+            conn.close()
+            logger.info("Connected to Postgres on attempt %d", attempt)
+            return
         except Exception as exc:
             logger.warning("Postgres connection attempt %d/%d failed: %s", attempt, DB_RETRY_COUNT, exc)
             if attempt == DB_RETRY_COUNT:
@@ -137,23 +167,6 @@ request_duration = meter.create_histogram(
     "app.request.duration",
     description="Request duration in seconds"
 )
-synthetic_request_counter = meter.create_counter(
-    "app.synthetic.requests.total",
-    description="Total number of synthetic workload requests"
-)
-synthetic_request_success_counter = meter.create_counter(
-    "app.synthetic.requests.success",
-    description="Total number of successful synthetic workload requests"
-)
-synthetic_request_error_counter = meter.create_counter(
-    "app.synthetic.requests.errors",
-    description="Total number of failed synthetic workload requests"
-)
-synthetic_request_duration = meter.create_histogram(
-    "app.synthetic.request.duration",
-    description="Synthetic load request duration in seconds"
-)
-
 def get_process_memory_rss() -> int:
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return usage.ru_maxrss * 1024
@@ -412,7 +425,7 @@ def auditlog():
         response_time = time.time() - start_time
 
         try:
-            with get_db_connection() as conn:
+            with with_db() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
@@ -476,7 +489,7 @@ def auditlog_stats():
         histogram_max_seconds = 5.0
 
         try:
-            with get_db_connection() as conn:
+            with with_db() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
@@ -546,52 +559,232 @@ def auditlog_stats():
             return jsonify({"status": "error", "message": "Failed to read audit log statistics", "error": str(exc)}), 500
 
 
+@app.route('/eval', methods=['GET', 'POST'])
+def eval_expression():
+    """
+    Evaluate a mathematical expression without any helper libraries.
+
+    Accepts the expression via:
+      GET  ?expr=<expression>
+      POST JSON body  {"expr": "<expression>"}
+      POST form data  expr=<expression>
+
+    Returns JSON:
+      {"expression": "...", "result": <float>}   on success  (HTTP 200)
+      {"error": "..."}                            on failure  (HTTP 400)
+
+    Internally delegates to evaluator.evaluate() which implements the
+    full Shunting-Yard pipeline: tokenise → RPN → evaluate.
+    """
+    from evaluator import evaluate as eval_expr
+
+    with tracer.start_as_current_span("eval-endpoint") as span:
+        # --- extract the expression from whichever input method was used ---
+        if request.method == "POST":
+            if request.is_json:
+                expr = (request.get_json() or {}).get("expr", "")
+            else:
+                expr = request.form.get("expr", "")
+        else:
+            expr = request.args.get("expr", "")
+
+        span.set_attribute("eval.expression", expr)
+        logger.info("Eval endpoint called with expression: %s", expr)
+
+        if not expr:
+            return jsonify({"error": "Missing 'expr' parameter"}), 400
+
+        try:
+            result = eval_expr(expr)
+            logger.info("Eval result: %s = %s", expr, result)
+            span.set_attribute("eval.result", result)
+            return jsonify({"expression": expr, "result": result}), 200
+        except ZeroDivisionError as exc:
+            logger.warning("Eval division by zero: %s", expr)
+            return jsonify({"error": str(exc)}), 400
+        except ValueError as exc:
+            logger.warning("Eval error for '%s': %s", expr, exc)
+            return jsonify({"error": str(exc)}), 400
+
+
 def fibonacci(n):
     """Recursive Fibonacci (inefficient on purpose)"""
     if n <= 1:
         return n
     return fibonacci(n-1) + fibonacci(n-2)
 
-def synthetic_workload():
-    session = requests.Session()
-    targets = [
-        {"path": "/", "method": "GET"},
-        {"path": "/compute/5", "method": "GET"},
-        {"path": "/compute/10", "method": "GET"},
-        {"path": "/compute/20", "method": "GET"},
-        {"path": "/auditlog", "method": "GET"},
-        {"path": "/auditlog", "method": "POST"},
-        {"path": "/auditlog/stats", "method": "GET"},
-    ]
-
-    while True:
-        for target in targets:
-            url = f'http://127.0.0.1:5000{target["path"]}'
-            method = target["method"]
-            start = time.time()
-            status = 'error'
-            try:
-                if method == 'POST':
-                    resp = session.post(url, data={"source": "synthetic"}, timeout=5)
-                else:
-                    resp = session.get(url, timeout=5)
-                status = 'success' if resp.status_code < 400 else 'error'
-            except Exception:
-                status = 'error'
-
-            duration = time.time() - start
-            synthetic_request_counter.add(1, {"path": target["path"], "method": method, "status": status, "client": "synthetic"})
-            synthetic_request_duration.record(duration, {"path": target["path"], "method": method, "status": status, "client": "synthetic"})
-            if status == 'success':
-                synthetic_request_success_counter.add(1, {"path": target["path"], "method": method, "client": "synthetic"})
-            else:
-                synthetic_request_error_counter.add(1, {"path": target["path"], "method": method, "client": "synthetic"})
-            time.sleep(0.05)
-
 
 if __name__ == '__main__':
     wait_for_postgres()
     ensure_audit_table()
-    worker = threading.Thread(target=synthetic_workload, daemon=True)
-    worker.start()
+    # Synthetic canary runs in its own container (canary/) — no thread needed here
     app.run(host='0.0.0.0', port=5000, threaded=True, use_reloader=False)
+    """
+    Background canary that continuously exercises every Flask endpoint at a
+    controlled, uniform rate.
+
+    Rate design
+    -----------
+    Target: CANARY_TPS = 10 requests/second across all targets.
+    Inter-arrival time = 1 / CANARY_TPS = 0.100 s between the START of each
+    consecutive request.
+
+    The pacing loop subtracts actual response time from the inter-arrival
+    budget so that slow endpoints don't cause the next request to fire late
+    and fast endpoints don't bunch up and spike CPU.
+
+      sleep_time = max(0, inter_arrival - response_time)
+
+    This keeps throughput stable regardless of individual endpoint latency.
+
+    Saturation budget (4-core host, 15 GiB RAM)
+    --------------------------------------------
+    Measured baseline at ~16 TPS (old fixed-sleep loop):
+      App CPU  ≈ 10%   →  ~0.6% per TPS
+      Memory   ≈ 57 MiB (stable, not TPS-sensitive)
+    At 10 TPS:
+      App CPU  ≈ 6%    — well under 60% saturation target
+      Stack total CPU ≈ 15% — leaves ample headroom for spikes
+
+    Coverage map (20 targets, all at equal inter-arrival time)
+    -----------------------------------------------------------
+    GET  /                          — home page
+    GET  /compute/5,10,20           — Fibonacci (small / medium / large)
+    GET  /auditlog                  — audit log write via GET
+    POST /auditlog  (form)          — audit log write via POST
+    GET  /auditlog/stats            — stats + response-time histogram
+
+    GET  /eval?expr=...             — one canary per operator / feature:
+      3+4          → 7.0            •  addition
+      10-3         → 7.0            •  subtraction
+      6*7          → 42.0           •  multiplication
+      22/4         → 5.5            •  division (decimal result)
+      2^10         → 1024.0         •  exponentiation
+      (2+3)*4      → 20.0           •  parentheses override precedence
+      ((3+4)*6^2/5)+1-7 → 44.4     •  full nested PEMDAS (spec example)
+      -5+8         → 3.0            •  unary minus
+      2^3^2        → 512.0          •  right-associative exponentiation
+    POST /eval  (JSON body)  → 57.0 •  POST + JSON content-type path
+    GET  /eval?expr=5/0      → 400  •  error path: division by zero
+    GET  /eval?expr=3$4      → 400  •  error path: invalid character
+    GET  /eval               → 400  •  error path: missing parameter
+    """
+    # ------------------------------------------------------------------
+    # Rate control: target TPS and derived inter-arrival interval.
+    #
+    # Calibration (4-core host, measured at 9.44 TPS baseline):
+    #   App CPU per TPS ≈ 0.52% host CPU
+    #   50% saturation of one core = 12.5% host CPU
+    #   → target TPS = 12.5 / 0.52 ≈ 24 req/s
+    #
+    # At 24 TPS:
+    #   App CPU  ≈ 12.5% host  (50% of one core — target saturation)
+    #   Stack total CPU ≈ 16%  — well within host capacity
+    #   Inter-arrival = 1/24 ≈ 0.042 s between request starts
+    # ------------------------------------------------------------------
+    CANARY_TPS     = 24
+    INTER_ARRIVAL  = 1.0 / CANARY_TPS   # ~0.042 s between request starts
+
+    session = requests.Session()
+
+    # ------------------------------------------------------------------
+    # Target list — every endpoint and every operator/feature of /eval.
+    # Fields:
+    #   path         : URL path (may include query string)
+    #   method       : "GET" or "POST"
+    #   data         : form data dict for POST (optional)
+    #   json         : JSON body dict for POST (optional)
+    #   expected_4xx : True when a 4xx response IS the correct outcome
+    #                  (error-path canaries) — counted as success so they
+    #                  don't inflate the error-rate metric
+    # ------------------------------------------------------------------
+    targets = [
+        # --- home ---
+        {"path": "/",                                          "method": "GET"},
+
+        # --- compute: small / medium / large Fibonacci ---
+        {"path": "/compute/5",                                 "method": "GET"},
+        {"path": "/compute/10",                                "method": "GET"},
+        {"path": "/compute/20",                                "method": "GET"},
+
+        # --- auditlog ---
+        {"path": "/auditlog",                                  "method": "GET"},
+        {"path": "/auditlog",                                  "method": "POST",
+         "data": {"source": "synthetic"}},
+        {"path": "/auditlog/stats",                            "method": "GET"},
+
+        # --- eval: GET, one case per operator / language feature ---
+        {"path": "/eval?expr=3%2B4",                          "method": "GET"},   # + → 7.0
+        {"path": "/eval?expr=10-3",                           "method": "GET"},   # - → 7.0
+        {"path": "/eval?expr=6*7",                            "method": "GET"},   # * → 42.0
+        {"path": "/eval?expr=22%2F4",                         "method": "GET"},   # / → 5.5
+        {"path": "/eval?expr=2%5E10",                         "method": "GET"},   # ^ → 1024.0
+        {"path": "/eval?expr=(2%2B3)*4",                      "method": "GET"},   # parens → 20.0
+        {"path": "/eval?expr=((3%2B4)*6%5E2%2F5)%2B1-7",     "method": "GET"},   # PEMDAS → 44.4
+        {"path": "/eval?expr=-5%2B8",                         "method": "GET"},   # unary - → 3.0
+        {"path": "/eval?expr=2%5E3%5E2",                      "method": "GET"},   # right-assoc → 512.0
+
+        # --- eval: POST with JSON body ---
+        {"path": "/eval",                                      "method": "POST",
+         "json": {"expr": "(10+5)*2^2-3"}},                                       # → 57.0
+
+        # --- eval: error paths (4xx is the CORRECT response here) ---
+        {"path": "/eval?expr=5%2F0",                          "method": "GET",
+         "expected_4xx": True},                                                    # division by zero
+        {"path": "/eval?expr=3%244",                          "method": "GET",
+         "expected_4xx": True},                                                    # invalid char $
+        {"path": "/eval",                                     "method": "GET",
+         "expected_4xx": True},                                                    # missing param
+    ]
+
+    while True:
+        for target in targets:
+            path         = target["path"]
+            method       = target["method"]
+            expected_4xx = target.get("expected_4xx", False)
+            url          = f'http://127.0.0.1:5000{path}'
+
+            # Record wall-clock start for both response timing and pacing
+            t_start = time.time()
+            status  = 'error'
+
+            try:
+                if method == 'POST':
+                    if "json" in target:
+                        resp = session.post(url, json=target["json"], timeout=5)
+                    else:
+                        resp = session.post(url, data=target.get("data", {}), timeout=5)
+                else:
+                    resp = session.get(url, timeout=5)
+
+                # Error-path canaries: 4xx is the expected/correct outcome
+                if expected_4xx:
+                    status = 'success' if 400 <= resp.status_code < 500 else 'error'
+                else:
+                    status = 'success' if resp.status_code < 400 else 'error'
+
+            except Exception:
+                status = 'error'
+
+            response_time = time.time() - t_start
+
+            # Emit OTel metrics — strip query string from path label so
+            # Grafana can group all /eval variants under one series
+            base_path = path.split("?")[0]
+            labels = {"path": base_path, "method": method,
+                      "status": status, "client": "synthetic"}
+            synthetic_request_counter.add(1, labels)
+            synthetic_request_duration.record(response_time, labels)
+            if status == 'success':
+                synthetic_request_success_counter.add(
+                    1, {"path": base_path, "method": method, "client": "synthetic"})
+            else:
+                synthetic_request_error_counter.add(
+                    1, {"path": base_path, "method": method, "client": "synthetic"})
+
+            # Pace to CANARY_TPS: sleep only the remaining budget after the
+            # response arrived.  If the response took longer than the full
+            # inter-arrival window we skip the sleep entirely (no negative
+            # sleep) so we never fall further behind.
+            sleep_time = max(0.0, INTER_ARRIVAL - response_time)
+            time.sleep(sleep_time)

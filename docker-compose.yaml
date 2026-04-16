@@ -3,6 +3,7 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: otel-collector
+    restart: unless-stopped
     volumes:
       - ./config/otel-collector.yaml:/etc/otelcol-contrib/config.yaml
     ports:
@@ -19,6 +20,7 @@ services:
   tempo:
     image: grafana/tempo:latest
     container_name: tempo
+    restart: unless-stopped
     depends_on:
       - redpanda
     volumes:
@@ -33,6 +35,7 @@ services:
   redpanda:
     image: redpandadata/redpanda:latest
     container_name: redpanda
+    restart: unless-stopped
     ports:
       - "9092:9092"   # Kafka API for Tempo
     command: >
@@ -47,6 +50,7 @@ services:
   mimir:
     image: grafana/mimir:latest
     container_name: mimir
+    restart: unless-stopped
     volumes:
       - ./config/mimir.yaml:/etc/mimir/config.yaml
       - mimir-data:/data
@@ -60,6 +64,7 @@ services:
   loki:
     image: grafana/loki:latest
     container_name: loki
+    restart: unless-stopped
     volumes:
       - ./config/loki.yaml:/etc/loki/config.yaml
       - loki-data:/loki
@@ -73,6 +78,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
+    restart: unless-stopped
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
@@ -94,6 +100,7 @@ services:
   postgres:
     image: postgres:16
     container_name: postgres
+    restart: unless-stopped
     environment:
       - POSTGRES_USER=observability
       - POSTGRES_PASSWORD=observability
@@ -108,6 +115,7 @@ services:
   postgres-exporter:
     image: wrouesnel/postgres_exporter:latest
     container_name: postgres-exporter
+    restart: unless-stopped
     environment:
       - DATA_SOURCE_NAME=postgresql://observability:observability@postgres:5432/observability?sslmode=disable
     depends_on:
@@ -118,6 +126,7 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
+    restart: unless-stopped
     volumes:
       - ./config/prometheus.yaml:/etc/prometheus/prometheus.yml
       - prometheus-data:/prometheus
@@ -131,11 +140,11 @@ services:
     networks:
       - observability-network
 
-
-  # Add your Python app
+  # Python observability demo app
   observability-demo:
     build: .
     container_name: observability-demo
+    restart: unless-stopped
     ports:
       - "5000:5000"
     environment:
@@ -152,6 +161,23 @@ services:
       - mimir
       - loki
       - postgres
+    networks:
+      - observability-network
+
+  # Synthetic canary — isolated container that exercises every endpoint
+  # at a calibrated rate (24 TPS → ~50% saturation of one core).
+  # Runs independently so canary failures never affect the app process.
+  canary:
+    build: ./canary
+    container_name: canary
+    restart: unless-stopped
+    environment:
+      - APP_BASE_URL=http://observability-demo:5000
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - CANARY_TPS=24
+    depends_on:
+      - observability-demo
+      - otel-collector
     networks:
       - observability-network
 

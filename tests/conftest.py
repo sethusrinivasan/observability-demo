@@ -30,6 +30,19 @@ def _resolve_postgres_host() -> str:
 os.environ.setdefault("POSTGRES_HOST", _resolve_postgres_host())
 
 # ---------------------------------------------------------------------------
+# Silence OTel SDK export retry stderr noise during tests.
+# When running on the host there is no collector on localhost:4317, so the
+# SDK logs "Transient error ... retrying" to stderr on every test that
+# imports app.py.  Setting the exporter timeout to 1 s and suppressing the
+# internal OTel logger keeps the test output clean.
+# ---------------------------------------------------------------------------
+os.environ.setdefault("OTEL_EXPORTER_OTLP_TIMEOUT", "1")
+
+import logging
+logging.getLogger("opentelemetry.exporter.otlp").setLevel(logging.CRITICAL)
+logging.getLogger("opentelemetry.sdk").setLevel(logging.CRITICAL)
+
+# ---------------------------------------------------------------------------
 # Stub pkg_resources (removed in Python 3.13, still used by older OTel pkgs)
 # ---------------------------------------------------------------------------
 if "pkg_resources" not in sys.modules:
