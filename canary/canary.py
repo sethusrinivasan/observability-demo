@@ -54,7 +54,7 @@ from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExp
 # ---------------------------------------------------------------------------
 # Configuration from environment variables
 # ---------------------------------------------------------------------------
-APP_BASE_URL   = os.getenv("APP_BASE_URL",       "http://observability-demo:5000")
+APP_BASE_URL   = os.getenv("APP_BASE_URL",       "http://observability-python-app:5000")
 OTLP_ENDPOINT  = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
 CANARY_TPS     = float(os.getenv("CANARY_TPS",   "24"))
 INTER_ARRIVAL  = 1.0 / CANARY_TPS

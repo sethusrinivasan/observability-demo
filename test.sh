@@ -28,7 +28,7 @@ check "home page" "Observability Lab" "$(curl -s "$BASE/")"
 echo ""
 echo "=== GET /compute/<n> ==="
 for n in 5 10 20; do
-    # retry up to 5 times to avoid the 10% random error
+    # retry up to 5 times
     for attempt in $(seq 1 5); do
         resp=$(curl -s "$BASE/compute/$n")
         code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/compute/$n")

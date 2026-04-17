@@ -174,7 +174,7 @@ class TestTempo:
     def test_trace_has_expected_service(self):
         resp = requests.get(f"{TEMPO_URL}/api/search", params={"limit": 10}, timeout=5)
         services = {t["rootServiceName"] for t in resp.json().get("traces", [])}
-        assert "observability-demo" in services
+        assert "observability-python-app" in services
 
     def test_trace_fetch_by_id(self):
         """Fetch a specific trace by ID and verify it has spans."""
@@ -211,7 +211,7 @@ class TestLoki:
         resp = requests.get(
             f"{LOKI_URL}/loki/api/v1/query_range",
             params={
-                "query": '{service_name="observability-demo"}',
+                "query": '{service_name="observability-python-app"}',
                 "limit": 5,
                 "start": start_ns,
                 "end": now_ns,
@@ -229,7 +229,7 @@ class TestLoki:
         resp = requests.get(
             f"{LOKI_URL}/loki/api/v1/query_range",
             params={
-                "query": '{service_name="observability-demo"}',
+                "query": '{service_name="observability-python-app"}',
                 "limit": 5,
                 "start": start_ns,
                 "end": now_ns,

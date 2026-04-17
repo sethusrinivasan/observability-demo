@@ -29,7 +29,7 @@ done
 sleep 3
 
 # Force-remove all containers by name (handles both compose and manually started)
-for name in observability-demo canary otel-collector tempo redpanda mimir loki \
+for name in observability-python-app canary otel-collector tempo redpanda mimir loki \
             grafana grafana-renderer postgres postgres-exporter prometheus; do
     docker rm -f "$name" 2>/dev/null || true
 done
@@ -52,7 +52,7 @@ fi
 
 # Remove any leftover named containers that compose missed (e.g. manually
 # started containers or those whose PIDs were killed above)
-for name in observability-demo canary otel-collector tempo redpanda mimir loki \
+for name in observability-python-app canary otel-collector tempo redpanda mimir loki \
             grafana grafana-renderer postgres postgres-exporter prometheus; do
     docker rm -f "$name" 2>/dev/null || true
 done
@@ -141,7 +141,7 @@ fi
 echo ""
 echo "=== Stack status ==="
 docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | \
-    grep -E "NAMES|observability-demo|canary|grafana|prometheus|tempo|loki|mimir|otel|postgres|redpanda"
+    grep -E "NAMES|observability-python-app|canary|grafana|prometheus|tempo|loki|mimir|otel|postgres|redpanda"
 
 echo ""
 echo "  App:        http://localhost:5000"
@@ -152,4 +152,4 @@ echo "  Loki:       http://localhost:3100"
 echo "  Mimir:      http://localhost:9009"
 echo ""
 echo "  Canary logs: docker logs -f canary"
-echo "  App logs:    docker logs -f observability-demo"
+echo "  App logs:    docker logs -f observability-python-app"

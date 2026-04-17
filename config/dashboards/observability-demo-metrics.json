@@ -239,14 +239,14 @@
     },
     {
       "type": "timeseries",
-      "title": "Error Rate by Route",
-      "description": "Errors per second and overall error percentage.",
+      "title": "Error Rate by Route & Status Code",
+      "description": "Errors per second broken down by route and HTTP status code, plus overall error percentage on the right axis.",
       "gridPos": { "h": 7, "w": 8, "x": 16, "y": 6 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "sum(rate(app_requests_errors_total[1m])) by (route)",
-          "legendFormat": "errors {{route}}",
+          "expr": "sum(rate(app_requests_errors_total[1m])) by (route, status_code)",
+          "legendFormat": "{{status_code}} {{route}}",
           "refId": "A"
         },
         {
@@ -258,7 +258,9 @@
       "fieldConfig": {
         "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "error %" }, "properties": [ { "id": "unit", "value": "percent" }, { "id": "custom.axisPlacement", "value": "right" } ] }
+          { "matcher": { "id": "byName", "options": "error %" }, "properties": [ { "id": "unit", "value": "percent" }, { "id": "custom.axisPlacement", "value": "right" } ] },
+          { "matcher": { "id": "byRegexp", "options": "^4.*" }, "properties": [ { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byRegexp", "options": "^5.*" }, "properties": [ { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ] }
         ]
       },
       "options": { "tooltip": { "mode": "multi" } }
@@ -542,7 +544,7 @@
       "datasource": { "type": "loki", "uid": "Loki" },
       "targets": [
         {
-          "expr": "{service_name=\"observability-demo\"}",
+          "expr": "{service_name=\"observability-python-app\"}",
           "legendFormat": "",
           "refId": "A"
         }
@@ -563,7 +565,7 @@
       "datasource": { "type": "loki", "uid": "Loki" },
       "targets": [
         {
-          "expr": "{service_name=\"observability-demo\", detected_level=\"error\"}",
+          "expr": "{service_name=\"observability-python-app\", detected_level=\"error\"}",
           "legendFormat": "",
           "refId": "A"
         }

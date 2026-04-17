@@ -4,6 +4,8 @@
 
 set -e
 
+NETWORK=$(docker network ls --filter name=observability-network --format '{{.Name}}' | head -1)
+
 kill_container() {
     local name="$1"
     local pid
@@ -17,38 +19,38 @@ kill_container() {
 }
 
 echo "=== Rebuilding images ==="
-docker build -t observability-demo-observability-demo .
-docker build -t observability-demo-canary ./canary
+docker build -t observability-python-app .
+docker build -t observability-canary ./canary
 
 echo ""
 echo "=== Replacing app container ==="
-kill_container observability-demo
+kill_container observability-python-app
 docker run -d \
-    --name observability-demo \
-    --network observability-demo_observability-network \
+    --name observability-python-app \
+    --network "$NETWORK" \
     --restart unless-stopped \
     -p 5000:5000 \
     -e OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 \
-    -e OTEL_SERVICE_NAME=observability-demo \
+    -e OTEL_SERVICE_NAME=observability-python-app \
     -e POSTGRES_HOST=postgres \
     -e POSTGRES_PORT=5432 \
     -e POSTGRES_DB=observability \
     -e POSTGRES_USER=observability \
     -e POSTGRES_PASSWORD=observability \
-    observability-demo-observability-demo
-echo "  observability-demo started"
+    observability-python-app
+echo "  observability-python-app started"
 
 echo ""
 echo "=== Replacing canary container ==="
 kill_container canary
 docker run -d \
     --name canary \
-    --network observability-demo_observability-network \
+    --network "$NETWORK" \
     --restart unless-stopped \
-    -e APP_BASE_URL=http://observability-demo:5000 \
+    -e APP_BASE_URL=http://observability-python-app:5000 \
     -e OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 \
     -e CANARY_TPS=24 \
-    observability-demo-canary
+    observability-canary
 echo "  canary started"
 
 echo ""
@@ -63,4 +65,4 @@ for i in $(seq 1 30); do
 done
 
 echo ""
-docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "NAME|observability-demo|canary"
+docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "NAME|observability-python-app|canary"

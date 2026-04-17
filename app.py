@@ -129,7 +129,7 @@ def wait_for_postgres():
 
 # 1. Create resource
 service_resource = Resource(attributes={
-    SERVICE_NAME: "observability-demo",
+    SERVICE_NAME: "observability-python-app",
     DEPLOYMENT_ENVIRONMENT: "local-dev"
 })
 
@@ -302,13 +302,21 @@ def record_request_metrics(response):
     route = request.endpoint or endpoint
     journey = "compute" if endpoint.startswith("/compute") else "home" if endpoint == "/" else "other"
 
-    request_counter.add(1, {"endpoint": endpoint, "route": route, "status": status, "journey": journey})
-    request_duration.record(duration, {"endpoint": endpoint, "route": route, "status": status, "journey": journey})
+    labels = {
+        "endpoint": endpoint,
+        "route": route,
+        "status": status,
+        "status_code": str(status_code),
+        "journey": journey,
+    }
+
+    request_counter.add(1, labels)
+    request_duration.record(duration, labels)
 
     if status == "error":
-        request_error_counter.add(1, {"endpoint": endpoint, "route": route, "status": status, "journey": journey})
+        request_error_counter.add(1, labels)
     else:
-        request_success_counter.add(1, {"endpoint": endpoint, "route": route, "status": status, "journey": journey})
+        request_success_counter.add(1, labels)
 
     return response
 

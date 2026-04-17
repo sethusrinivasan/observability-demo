@@ -157,16 +157,16 @@ services:
     networks:
       - observability-network
 
-  # Python observability demo app
-  observability-demo:
+  # Python observability app
+  observability-python-app:
     build: .
-    container_name: observability-demo
+    container_name: observability-python-app
     restart: unless-stopped
     ports:
       - "5000:5000"
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-      - OTEL_SERVICE_NAME=observability-demo
+      - OTEL_SERVICE_NAME=observability-python-app
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=observability
@@ -189,11 +189,11 @@ services:
     container_name: canary
     restart: unless-stopped
     environment:
-      - APP_BASE_URL=http://observability-demo:5000
+      - APP_BASE_URL=http://observability-python-app:5000
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - CANARY_TPS=24
     depends_on:
-      - observability-demo
+      - observability-python-app
       - otel-collector
     networks:
       - observability-network
