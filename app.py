@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify
 import logging
-import random
 import resource
 import requests
 import time
@@ -373,9 +372,6 @@ def home():
     with tracer.start_as_current_span("home-endpoint") as span:
         span.set_attribute("http.method", "GET")
         logger.info("Home endpoint called")
-
-        # Simulate some work
-        time.sleep(0.1)
         return get_home_html(), 200, {"Content-Type": "text/html"}
 
 @app.route('/compute/<int:n>')
@@ -385,14 +381,7 @@ def compute(n):
         span.set_attribute("compute.value", n)
         logger.info(f"Computing Fibonacci for {n}")
 
-        # Compute Fibonacci (simulate work)
         result = fibonacci(n)
-
-        # Simulate random errors (10% chance)
-        if random.random() < 0.1:
-            logger.error(f"Random error occurred for n={n}")
-            span.set_attribute("error", True)
-            return jsonify({"error": "Random error occurred"}), 500
 
         logger.info(f"Computed fibonacci({n}) = {result}")
         return jsonify({"input": n, "result": result})

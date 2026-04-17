@@ -138,44 +138,37 @@ class TestHomeRoute:
 
 class TestComputeRoute:
     def test_correct_fibonacci_result(self, client):
-        # Seed random so the 10 % error path is not triggered
-        with mock.patch("random.random", return_value=0.5):
-            resp = client.get("/compute/10")
+        resp = client.get("/compute/10")
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["input"] == 10
         assert data["result"] == 55
 
     def test_zero_input(self, client):
-        with mock.patch("random.random", return_value=0.5):
-            resp = client.get("/compute/0")
+        resp = client.get("/compute/0")
         assert resp.status_code == 200
         assert resp.get_json()["result"] == 0
 
     def test_one_input(self, client):
-        with mock.patch("random.random", return_value=0.5):
-            resp = client.get("/compute/1")
+        resp = client.get("/compute/1")
         assert resp.status_code == 200
         assert resp.get_json()["result"] == 1
 
     def test_random_error_returns_500(self, client):
-        with mock.patch("random.random", return_value=0.0):  # always < 0.1
-            resp = client.get("/compute/5")
-        assert resp.status_code == 500
-        assert "error" in resp.get_json()
+        # Artificial random errors have been removed — /compute always succeeds
+        # for valid input. This test is replaced by the non-integer 404 test below.
+        pass
 
     def test_non_integer_returns_404(self, client):
         assert client.get("/compute/abc").status_code == 404
 
     def test_response_is_json(self, client):
-        with mock.patch("random.random", return_value=0.5):
-            resp = client.get("/compute/5")
+        resp = client.get("/compute/5")
         assert resp.content_type.startswith("application/json")
 
     @pytest.mark.parametrize("n,expected", [(0, 0), (1, 1), (5, 5), (7, 13), (10, 55)])
     def test_parametrized_fibonacci_values(self, client, n, expected):
-        with mock.patch("random.random", return_value=0.5):
-            resp = client.get(f"/compute/{n}")
+        resp = client.get(f"/compute/{n}")
         assert resp.status_code == 200
         assert resp.get_json()["result"] == expected
 
