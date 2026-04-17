@@ -218,7 +218,7 @@ class TestAuditlogRoute:
         assert "remote_addr" in details
 
     def test_db_failure_returns_500(self, client):
-        with mock.patch("app.get_db_connection", side_effect=Exception("db down")):
+        with mock.patch("app.get_pool", side_effect=Exception("db down")):
             resp = client.get("/auditlog")
         assert resp.status_code == 500
         data = resp.get_json()
@@ -270,7 +270,7 @@ class TestAuditlogStatsRoute:
         assert data["success_count"] + data["failure_count"] == data["total_rows"]
 
     def test_db_failure_returns_500(self, client):
-        with mock.patch("app.get_db_connection", side_effect=Exception("db down")):
+        with mock.patch("app.get_pool", side_effect=Exception("db down")):
             resp = client.get("/auditlog/stats")
         assert resp.status_code == 500
         assert resp.get_json()["status"] == "error"

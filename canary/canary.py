@@ -162,6 +162,8 @@ def run() -> None:
     # Wait until the app is up before firing requests
     wait_for_app(session)
     logger.info("Starting canary loop")
+    
+    next_tick = time.time()
 
     while True:
         for target in TARGETS:
@@ -208,8 +210,9 @@ def run() -> None:
                 request_error_counter.add(
                     1, {"path": base_path, "method": method, "client": "canary"})
 
-            # Pace to CANARY_TPS — sleep only the remaining inter-arrival budget
-            sleep_time = max(0.0, INTER_ARRIVAL - response_time)
+            # Pace to CANARY_TPS — advance the timeline and sleep to catch up
+            next_tick += INTER_ARRIVAL
+            sleep_time = max(0.0, next_tick - time.time())
             time.sleep(sleep_time)
 
 

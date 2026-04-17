@@ -6,3 +6,4 @@ opentelemetry-instrumentation-flask==0.42b0
 requests==2.31.0
 psycopg2-binary==2.9.10
 pytest==7.4.0
+gunicorn==21.2.0
