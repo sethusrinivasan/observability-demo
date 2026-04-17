@@ -1,0 +1,428 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+spec:
+  selector:
+    app: otel-collector
+  ports:
+  - name: grpc
+    port: 4317
+    targetPort: 4317
+  - name: http
+    port: 4318
+    targetPort: 4318
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 4317
+        - containerPort: 4318
+        volumeMounts:
+        - name: config
+          mountPath: /etc/otelcol-contrib/config.yaml
+          subPath: config.yaml
+      volumes:
+      - name: config
+        configMap:
+          name: otel-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+spec:
+  selector:
+    app: tempo
+  ports:
+  - port: 3200
+    targetPort: 3200
+    nodePort: 30003
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tempo
+  template:
+    metadata:
+      labels:
+        app: tempo
+    spec:
+      containers:
+      - name: tempo
+        image: grafana/tempo:latest
+        imagePullPolicy: Never
+        args: ["-config.file=/etc/tempo/config.yaml"]
+        ports:
+        - containerPort: 3200
+        volumeMounts:
+        - name: config
+          mountPath: /etc/tempo/config.yaml
+          subPath: config.yaml
+      volumes:
+      - name: config
+        configMap:
+          name: tempo-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda
+spec:
+  selector:
+    app: redpanda
+  ports:
+  - port: 9092
+    targetPort: 9092
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redpanda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redpanda
+  template:
+    metadata:
+      labels:
+        app: redpanda
+    spec:
+      containers:
+      - name: redpanda
+        image: redpandadata/redpanda:latest
+        imagePullPolicy: Never
+        command:
+        - rpk
+        - redpanda
+        - start
+        - --overprovisioned
+        - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+        - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+        - --pandaproxy-addr=0.0.0.0:8082
+        - --advertise-pandaproxy-addr=redpanda:8082
+        - --rpc-addr=0.0.0.0:33145
+        - --advertise-rpc-addr=redpanda:33145
+        - --mode=dev-container
+        ports:
+        - containerPort: 9092
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mimir
+spec:
+  selector:
+    app: mimir
+  ports:
+  - port: 9009
+    targetPort: 9009
+    nodePort: 30004
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mimir
+  template:
+    metadata:
+      labels:
+        app: mimir
+    spec:
+      containers:
+      - name: mimir
+        image: grafana/mimir:latest
+        imagePullPolicy: Never
+        args: ["-config.file=/etc/mimir/config.yaml"]
+        ports:
+        - containerPort: 9009
+        volumeMounts:
+        - name: config
+          mountPath: /etc/mimir/config.yaml
+          subPath: config.yaml
+      volumes:
+      - name: config
+        configMap:
+          name: mimir-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+spec:
+  selector:
+    app: loki
+  ports:
+  - port: 3100
+    targetPort: 3100
+    nodePort: 30002
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      containers:
+      - name: loki
+        image: grafana/loki:latest
+        imagePullPolicy: Never
+        args: ["-config.file=/etc/loki/config.yaml"]
+        ports:
+        - containerPort: 3100
+        volumeMounts:
+        - name: config
+          mountPath: /etc/loki/config.yaml
+          subPath: config.yaml
+      volumes:
+      - name: config
+        configMap:
+          name: loki-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+spec:
+  selector:
+    app: grafana
+  ports:
+  - port: 3000
+    targetPort: 3000
+    nodePort: 30000
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:latest
+        imagePullPolicy: Never
+        env:
+        - name: GF_AUTH_ANONYMOUS_ENABLED
+          value: "true"
+        - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+          value: "Admin"
+        - name: GF_AUTH_DISABLE_LOGIN_FORM
+          value: "true"
+        - name: GF_RENDERING_SERVER_URL
+          value: "http://grafana-renderer:8081/render"
+        - name: GF_RENDERING_CALLBACK_URL
+          value: "http://grafana:3000/"
+        ports:
+        - containerPort: 3000
+        volumeMounts:
+        - name: provisioning
+          mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
+          subPath: datasources.yaml
+        - name: provisioning
+          mountPath: /etc/grafana/provisioning/dashboards/dashboard.yml
+          subPath: dashboard.yml
+        - name: dashboards
+          mountPath: /var/lib/grafana/dashboards
+      volumes:
+      - name: provisioning
+        configMap:
+          name: grafana-provisioning
+      - name: dashboards
+        configMap:
+          name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-renderer
+spec:
+  selector:
+    app: grafana-renderer
+  ports:
+  - port: 8081
+    targetPort: 8081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana-renderer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana-renderer
+  template:
+    metadata:
+      labels:
+        app: grafana-renderer
+    spec:
+      containers:
+      - name: renderer
+        image: grafana/grafana-image-renderer:latest
+        imagePullPolicy: Never
+        env:
+        - name: ENABLE_METRICS
+          value: "true"
+        ports:
+        - containerPort: 8081
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16
+        imagePullPolicy: Never
+        env:
+        - name: POSTGRES_USER
+          value: "observability"
+        - name: POSTGRES_PASSWORD
+          value: "observability"
+        - name: POSTGRES_DB
+          value: "observability"
+        ports:
+        - containerPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-exporter
+  template:
+    metadata:
+      labels:
+        app: postgres-exporter
+    spec:
+      containers:
+      - name: exporter
+        image: wrouesnel/postgres_exporter:latest
+        imagePullPolicy: Never
+        env:
+        - name: DATA_SOURCE_NAME
+          value: "postgresql://observability:observability@postgres:5432/observability?sslmode=disable"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-exporter
+spec:
+  selector:
+    app: postgres-exporter
+  ports:
+  - port: 9187
+    targetPort: 9187
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+spec:
+  selector:
+    app: prometheus
+  ports:
+  - port: 9090
+    targetPort: 9090
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+      - name: prometheus
+        image: prom/prometheus:latest
+        imagePullPolicy: Never
+        args:
+        - "--config.file=/etc/prometheus/prometheus.yml"
+        ports:
+        - containerPort: 9090
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus/prometheus.yml
+          subPath: prometheus.yml
+      volumes:
+      - name: config
+        configMap:
+          name: prometheus-config
