@@ -5,12 +5,12 @@
   "tags": ["observability", "app", "metrics", "sre"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 3,
+  "version": 6,
   "refresh": "5s",
   "panels": [
     {
       "type": "row",
-      "title": "SLO / Health",
+      "title": "SLO / Health ($language)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "collapsed": false
     },
@@ -22,7 +22,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "100 * sum(rate(app_requests_success_total[5m])) / sum(rate(app_requests_total[5m]))",
+          "expr": "100 * sum(rate(app_requests_success_total{language=~\"$language\"}[5m])) / sum(rate(app_requests_total{language=~\"$language\"}[5m]))",
           "legendFormat": "success rate",
           "refId": "A"
         }
@@ -51,7 +51,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "100 * sum(rate(app_requests_success_total{journey=\"compute\"}[5m])) / sum(rate(app_requests_total{journey=\"compute\"}[5m]))",
+          "expr": "100 * sum(rate(app_requests_success_total{journey=\"compute\", language=~\"$language\"}[5m])) / sum(rate(app_requests_total{journey=\"compute\", language=~\"$language\"}[5m]))",
           "legendFormat": "compute success rate",
           "refId": "A"
         }
@@ -80,7 +80,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "100 * sum(rate(app_requests_errors_total[5m])) / sum(rate(app_requests_total[5m])) / 0.01",
+          "expr": "100 * sum(rate(app_requests_errors_total{language=~\"$language\"}[5m])) / sum(rate(app_requests_total{language=~\"$language\"}[5m])) / 0.01",
           "legendFormat": "burn %",
           "refId": "A"
         }
@@ -109,7 +109,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "sum(rate(app_requests_total[1m]))",
+          "expr": "sum(rate(app_requests_total{language=~\"$language\"}[1m]))",
           "legendFormat": "req/s",
           "refId": "A"
         }
@@ -134,7 +134,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(app_request_duration_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate({__name__=~\"app_request_duration(_seconds)?_bucket\", language=~\"$language\"}[5m])) by (le))",
           "legendFormat": "p95",
           "refId": "A"
         }
@@ -163,7 +163,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "clamp_max(sum((sum(rate(app_requests_errors_total[5m])) / sum(rate(app_requests_total[5m])) > bool 0.02) or (avg(app_system_loadavg_1m) > bool 1.5) or (sum(rate(app_requests_success_total[5m])) / sum(rate(app_requests_total[5m])) < bool 0.995)), 1)",
+          "expr": "clamp_max(sum((sum(rate(app_requests_errors_total{language=~\"$language\"}[5m])) / sum(rate(app_requests_total{language=~\"$language\"}[5m])) > bool 0.02) or (avg(app_system_loadavg_1m{language=~\"$language\"}) > bool 1.5) or (sum(rate(app_requests_success_total{language=~\"$language\"}[5m])) / sum(rate(app_requests_total{language=~\"$language\"}[5m])) < bool 0.995)), 1)",
           "legendFormat": "alert",
           "refId": "A"
         }
@@ -187,7 +187,7 @@
     },
     {
       "type": "row",
-      "title": "Traffic, Latency & Errors (RED)",
+      "title": "Traffic, Latency & Errors (RED) - $language",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
       "collapsed": false
     },
@@ -199,7 +199,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "sum(rate(app_requests_total[1m])) by (route)",
+          "expr": "sum(rate(app_requests_total{language=~\"$language\"}[1m])) by (route)",
           "legendFormat": "{{route}}",
           "refId": "A"
         }
@@ -217,17 +217,17 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(app_request_duration_bucket[5m])) by (le, route))",
+          "expr": "histogram_quantile(0.50, sum(rate({__name__=~\"app_request_duration(_seconds)?_bucket\", language=~\"$language\"}[5m])) by (le, route))",
           "legendFormat": "p50 {{route}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(app_request_duration_bucket[5m])) by (le, route))",
+          "expr": "histogram_quantile(0.95, sum(rate({__name__=~\"app_request_duration(_seconds)?_bucket\", language=~\"$language\"}[5m])) by (le, route))",
           "legendFormat": "p95 {{route}}",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(app_request_duration_bucket[5m])) by (le, route))",
+          "expr": "histogram_quantile(0.99, sum(rate({__name__=~\"app_request_duration(_seconds)?_bucket\", language=~\"$language\"}[5m])) by (le, route))",
           "legendFormat": "p99 {{route}}",
           "refId": "C"
         }
@@ -245,12 +245,12 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "sum(rate(app_requests_errors_total[1m])) by (route, status_code)",
+          "expr": "sum(rate(app_requests_errors_total{language=~\"$language\"}[1m])) by (route, status_code)",
           "legendFormat": "{{status_code}} {{route}}",
           "refId": "A"
         },
         {
-          "expr": "100 * sum(rate(app_requests_errors_total[5m])) / sum(rate(app_requests_total[5m]))",
+          "expr": "100 * sum(rate(app_requests_errors_total{language=~\"$language\"}[5m])) / sum(rate(app_requests_total{language=~\"$language\"}[5m]))",
           "legendFormat": "error %",
           "refId": "B"
         }
@@ -267,7 +267,7 @@
     },
     {
       "type": "row",
-      "title": "Saturation (CPU, Memory, Load)",
+      "title": "Saturation (CPU, Memory, Load) - $language",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
       "collapsed": false
     },
@@ -279,7 +279,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "avg(app_process_memory_rss)",
+          "expr": "avg({__name__=~\"app_process_memory_rss(_bytes)?\", language=~\"$language\"})",
           "legendFormat": "RSS",
           "refId": "A"
         }
@@ -296,7 +296,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "avg(app_system_loadavg_1m)",
+          "expr": "avg(app_system_loadavg_1m{language=~\"$language\"})",
           "legendFormat": "load avg 1m",
           "refId": "A"
         }
@@ -324,7 +324,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "rate(app_process_cpu_seconds[1m])",
+          "expr": "rate(app_process_cpu_seconds{language=~\"$language\"}[1m])",
           "legendFormat": "CPU sec/s",
           "refId": "A"
         }
@@ -335,7 +335,7 @@
     },
     {
       "type": "row",
-      "title": "Container Resources",
+      "title": "Container Resources - $language",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
       "collapsed": false
     },
@@ -347,12 +347,12 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "avg(app_container_memory_current)",
+          "expr": "avg({__name__=~\"app_container_memory_current(_bytes)?\", language=~\"$language\"})",
           "legendFormat": "used",
           "refId": "A"
         },
         {
-          "expr": "avg(app_container_memory_limit)",
+          "expr": "avg({__name__=~\"app_container_memory_limit(_bytes)?\", language=~\"$language\"})",
           "legendFormat": "limit",
           "refId": "B"
         }
@@ -372,12 +372,12 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "avg(app_container_memory_percent)",
+          "expr": "avg(app_container_memory_percent{language=~\"$language\"})",
           "legendFormat": "memory %",
           "refId": "A"
         },
         {
-          "expr": "rate(app_container_cpu_usage_ns[1m]) / 1e9",
+          "expr": "rate(app_container_cpu_usage_ns{language=~\"$language\"}[1m]) / 1e9",
           "legendFormat": "CPU cores",
           "refId": "B"
         }
@@ -391,7 +391,7 @@
     },
     {
       "type": "row",
-      "title": "Synthetic Workload",
+      "title": "Synthetic Workload - $language",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
       "collapsed": false
     },
@@ -403,7 +403,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "sum(rate(app_synthetic_requests_total[1m])) by (path)",
+          "expr": "sum(rate(app_synthetic_requests_total{language=~\"$language\"}[1m])) by (path)",
           "legendFormat": "{{path}}",
           "refId": "A"
         }
@@ -420,7 +420,7 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(app_synthetic_request_duration_bucket[5m])) by (le, path))",
+          "expr": "histogram_quantile(0.95, sum(rate(app_synthetic_request_duration_bucket{language=~\"$language\"}[5m])) by (le, path))",
           "legendFormat": "p95 {{path}}",
           "refId": "A"
         }
@@ -431,7 +431,7 @@
     },
     {
       "type": "row",
-      "title": "PostgreSQL",
+      "title": "PostgreSQL (Global)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
       "collapsed": false
     },
@@ -479,72 +479,20 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
     },
     {
-      "type": "timeseries",
-      "title": "Commit vs Rollback Rate",
-      "description": "Transaction throughput — rollbacks indicate failed writes.",
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 35 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "sum(rate(pg_stat_database_xact_commit{datname=\"observability\"}[1m]))",
-          "legendFormat": "commits/s",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(rate(pg_stat_database_xact_rollback{datname=\"observability\"}[1m]))",
-          "legendFormat": "rollbacks/s",
-          "refId": "B"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 8 } },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "rollbacks/s" }, "properties": [ { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ] }
-        ]
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Rows Fetched / Inserted / Updated",
-      "description": "Row-level activity to understand database workload patterns.",
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 35 },
-      "datasource": { "type": "prometheus", "uid": "Mimir" },
-      "targets": [
-        {
-          "expr": "sum(rate(pg_stat_database_tup_fetched{datname=\"observability\"}[1m]))",
-          "legendFormat": "fetched/s",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(rate(pg_stat_database_tup_inserted{datname=\"observability\"}[1m]))",
-          "legendFormat": "inserted/s",
-          "refId": "B"
-        },
-        {
-          "expr": "sum(rate(pg_stat_database_tup_updated{datname=\"observability\"}[1m]))",
-          "legendFormat": "updated/s",
-          "refId": "C"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 8 } }
-      }
-    },
-    {
       "type": "row",
-      "title": "Logs (Loki)",
+      "title": "Logs ($language)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 42 },
       "collapsed": false
     },
     {
       "type": "logs",
       "title": "Application Logs",
-      "description": "Live log stream from the observability-demo service.",
+      "description": "Live log stream from the observability services.",
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 43 },
       "datasource": { "type": "loki", "uid": "Loki" },
       "targets": [
         {
-          "expr": "{service_name=\"observability-python-app\"}",
+          "expr": "{language=~\"$language\"}",
           "legendFormat": "",
           "refId": "A"
         }
@@ -556,29 +504,27 @@
         "showTime": true,
         "wrapLogMessage": true
       }
-    },
-    {
-      "type": "logs",
-      "title": "Error Logs Only",
-      "description": "Filtered view showing only ERROR level log lines.",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 53 },
-      "datasource": { "type": "loki", "uid": "Loki" },
-      "targets": [
-        {
-          "expr": "{service_name=\"observability-python-app\", detected_level=\"error\"}",
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "showTime": true,
-        "wrapLogMessage": true
-      }
     }
   ],
   "time": { "from": "now-30m", "to": "now" },
   "timepicker": {},
-  "templating": { "list": [] }
+  "templating": {
+    "list": [
+      {
+        "name": "language",
+        "type": "custom",
+        "datasource": null,
+        "query": "python, java, rust",
+        "includeAll": true,
+        "multi": false,
+        "current": { "text": "python", "value": "python" },
+        "options": [
+          { "text": "All", "value": ".*", "selected": false },
+          { "text": "python", "value": "python", "selected": true },
+          { "text": "java", "value": "java", "selected": false },
+          { "text": "rust", "value": "rust", "selected": false }
+        ]
+      }
+    ]
+  }
 }

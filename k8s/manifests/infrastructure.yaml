@@ -51,9 +51,13 @@ spec:
   selector:
     app: tempo
   ports:
-  - port: 3200
+  - name: http
+    port: 3200
     targetPort: 3200
     nodePort: 30003
+  - name: grpc
+    port: 4317
+    targetPort: 4317
   type: NodePort
 ---
 apiVersion: apps/v1

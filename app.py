@@ -134,7 +134,8 @@ def wait_for_postgres():
 # 1. Create resource
 service_resource = Resource(attributes={
     SERVICE_NAME: "observability-python-app",
-    DEPLOYMENT_ENVIRONMENT: "local-dev"
+    DEPLOYMENT_ENVIRONMENT: "local-dev",
+    "language": "python"
 })
 
 # 2. Setup Tracing
@@ -230,31 +231,31 @@ def get_cgroup_cpu_usage_ns() -> int:
 
 
 def observe_process_memory(options):
-    return [Observation(get_process_memory_rss(), {"process": "python"})]
+    return [Observation(get_process_memory_rss(), {"language": "python"})]
 
 
 def observe_process_cpu_seconds(options):
-    return [Observation(get_process_cpu_seconds(), {"process": "python"})]
+    return [Observation(get_process_cpu_seconds(), {"language": "python"})]
 
 
 def observe_system_loadavg(options):
-    return [Observation(get_system_loadavg(), {"process": "python"})]
+    return [Observation(get_system_loadavg(), {"language": "python"})]
 
 
 def observe_container_memory_current(options):
-    return [Observation(get_cgroup_memory_current(), {"container": "self"})]
+    return [Observation(get_cgroup_memory_current(), {"language": "python"})]
 
 
 def observe_container_memory_limit(options):
-    return [Observation(get_cgroup_memory_limit(), {"container": "self"})]
+    return [Observation(get_cgroup_memory_limit(), {"language": "python"})]
 
 
 def observe_container_memory_percent(options):
-    return [Observation(get_cgroup_memory_percent(), {"container": "self"})]
+    return [Observation(get_cgroup_memory_percent(), {"language": "python"})]
 
 
 def observe_container_cpu_usage_ns(options):
-    return [Observation(get_cgroup_cpu_usage_ns(), {"container": "self"})]
+    return [Observation(get_cgroup_cpu_usage_ns(), {"language": "python"})]
 
 meter.create_observable_gauge(
     "app.process.memory.rss",
@@ -312,6 +313,7 @@ def record_request_metrics(response):
         "status": status,
         "status_code": str(status_code),
         "journey": journey,
+        "language": "python",
     }
 
     request_counter.add(1, labels)
@@ -618,7 +620,9 @@ def fibonacci(n):
     return fibonacci(n-1) + fibonacci(n-2)
 
 
+# Initialize database
+wait_for_postgres()
+ensure_audit_table()
+
 if __name__ == '__main__':
-    wait_for_postgres()
-    ensure_audit_table()
     app.run(host='0.0.0.0', port=5000, threaded=True, use_reloader=False)
