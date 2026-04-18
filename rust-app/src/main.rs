@@ -119,7 +119,7 @@ fn system_loadavg_1m() -> f64 {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initializing subscriber later with OTel layer
+    tracing_subscriber::fmt::init();
 
     let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .unwrap_or_else(|_| "http://otel-collector:4317".to_string());
@@ -136,28 +136,7 @@ async fn main() -> anyhow::Result<()> {
             KeyValue::new("language", "rust"),
         ]))
         .build()?;
-    global::set_meter_provider(meter_provider.clone());
-
-    let log_provider = opentelemetry_otlp::new_pipeline()
-        .logging()
-        .with_resource(opentelemetry_sdk::Resource::new(vec![
-            KeyValue::new("service.name", "observability-rust-app"),
-            KeyValue::new("language", "rust"),
-        ]))
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint(&otlp_endpoint),
-        )
-        .build_log_handler(opentelemetry_sdk::runtime::Tokio)?;
-
-    let otel_log_appender = opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(&log_provider);
-
-    use tracing_subscriber::layer::SubscriberExt;
-    let subscriber = tracing_subscriber::Registry::default()
-        .with(tracing_subscriber::fmt::Layer::default())
-        .with(otel_log_appender);
-    tracing::subscriber::set_global_default(subscriber)?;
+    global::set_meter_provider(meter_provider);
 
     let meter = global::meter("observability-rust-app");
 

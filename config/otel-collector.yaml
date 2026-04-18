@@ -15,6 +15,12 @@ processors:
       - key: environment
         value: local-dev
         action: upsert
+  transform:
+    log_statements:
+      - context: log
+        statements:
+          - set(attributes["language"], resource.attributes["language"])
+          - set(attributes["service_name"], resource.attributes["service.name"])
 
 exporters:
   otlp/tempo:

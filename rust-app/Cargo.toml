@@ -15,7 +15,6 @@ opentelemetry_sdk = { version = "0.21", features = ["rt-tokio", "metrics"] }
 opentelemetry-otlp = { version = "0.14", features = ["metrics", "grpc-tonic"] }
 tracing = "0.1"
 tracing-opentelemetry = "0.22"
-opentelemetry-appender-tracing = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower-http = { version = "0.5", features = ["trace"] }
 prometheus = "0.13"
