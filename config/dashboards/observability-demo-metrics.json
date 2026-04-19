@@ -199,8 +199,8 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "sum(rate(app_requests_total{language=~\"$language\"}[1m])) by (route)",
-          "legendFormat": "{{route}}",
+          "expr": "sum(rate(app_requests_total[1m])) by (route, language)",
+          "legendFormat": "{{route}} ({{language}})",
           "refId": "A"
         }
       ],
@@ -245,8 +245,8 @@
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "expr": "sum(rate(app_requests_errors_total{language=~\"$language\"}[1m])) by (route, status_code)",
-          "legendFormat": "{{status_code}} {{route}}",
+          "expr": "sum(rate(app_requests_errors_total[1m])) by (route, status_code, language)",
+          "legendFormat": "{{status_code}} {{route}} ({{language}})",
           "refId": "A"
         },
         {

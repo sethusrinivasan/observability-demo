@@ -206,8 +206,8 @@ class MetricsInterceptor implements HandlerInterceptor {
         String route = endpoint;
         if (endpoint.equals("/")) route = "home";
         else if (endpoint.startsWith("/compute")) route = "compute";
-        else if (endpoint.equals("/auditlog")) route = "audit_log";
-        else if (endpoint.equals("/auditlog/stats")) route = "audit_log_stats";
+        else if (endpoint.equals("/auditlog")) route = "auditlog";
+        else if (endpoint.equals("/auditlog/stats")) route = "auditlog_stats";
         else if (endpoint.equals("/eval")) route = "eval_expression";
 
         Attributes labels = Attributes.of(
