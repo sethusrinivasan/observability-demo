@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # k8s/deploy-k8s.sh - Setup Kind cluster and deploy the observability stack
 
+cd "$(dirname "$0")/.."
+
 set -euo pipefail
 
 CLUSTER_NAME="observability-cluster"

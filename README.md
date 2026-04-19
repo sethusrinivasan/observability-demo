@@ -161,19 +161,21 @@ The dashboard is organised into collapsible rows:
 
 ## Services
 
-| Container | Image | Port | Role |
-|---|---|---|---|
-| `observability-demo` | local build | 5000 | Flask app — compute, audit log, expression eval |
-| `canary` | local build | — | Synthetic canary, 24 TPS, all endpoints |
-| `otel-collector` | otel-contrib | 4317 (gRPC), 4318 (HTTP) | Receives OTLP, routes to backends |
-| `tempo` | grafana/tempo | 3200 | Distributed tracing backend |
-| `redpanda` | redpandadata/redpanda | 9092 | Kafka broker for Tempo ingest |
-| `mimir` | grafana/mimir | 9009 | Long-term metrics storage |
-| `loki` | grafana/loki | 3100 | Log aggregation |
-| `grafana` | grafana/grafana | 3000 | Dashboards — Tempo + Mimir + Loki |
-| `prometheus` | prom/prometheus | 9090 | Scrapes postgres-exporter, remote-writes to Mimir |
-| `postgres-exporter` | wrouesnel/postgres_exporter | 9187 (internal) | Exports pg_* metrics |
-| `postgres` | postgres:16 | 5432 | Audit log persistence |
+| Container | Image | Port (DC) | Port (K8s) | Role |
+|---|---|---|---|---|
+| `observability-python-app` | local build | 5000 | 30001 | Flask app — compute, audit log, expression eval |
+| `observability-java-app` | local build | 8080 | 30005 | Spring Boot app — compute, audit log |
+| `observability-rust-app` | local build | 8083 | 30006 | Axum app — compute, audit log |
+| `canary` | local build | — | — | Synthetic canary, TPS varies, all endpoints |
+| `otel-collector` | otel-contrib | 4317 (gRPC), 4318 (HTTP) | — | Receives OTLP, routes to backends |
+| `tempo` | grafana/tempo | 3200 | 30003 | Distributed tracing backend |
+| `redpanda` | redpandadata/redpanda | 9092 | — | Kafka broker for Tempo ingest |
+| `mimir` | grafana/mimir | 9009 | 30004 | Long-term metrics storage |
+| `loki` | grafana/loki | 3100 | 30002 | Log aggregation |
+| `grafana` | grafana/grafana | 3000 | 30000 | Dashboards — Tempo + Mimir + Loki |
+| `prometheus` | prom/prometheus | 9090 | — | Scrapes postgres-exporter, remote-writes to Mimir |
+| `postgres-exporter` | wrouesnel/postgres_exporter | 9187 (internal) | — | Exports pg_* metrics |
+| `postgres` | postgres:16 | 5432 | — | Audit log persistence |
 
 ---
 
@@ -211,9 +213,11 @@ curl "http://localhost:5000/eval?expr=5/0"
 
 ---
 
-## Quick Start — Existing Machine
+## Quick Start
 
-Requires: Docker 20+, Docker Compose v2+, `curl`, `git`.
+### Docker Compose (Python + Java + Rust apps)
+
+Requires: Docker 20+, Docker Compose v2+.
 
 ```bash
 git clone https://github.com/sethusrinivasan/observability-demo.git
@@ -221,144 +225,80 @@ cd observability-demo
 ./launch.sh
 ```
 
-`launch.sh` handles everything: teardown of any previous stack, fresh build, startup, and readiness polling. When it completes:
+### Kubernetes (Kind cluster)
 
-| Service | URL |
-|---|---|
-| App | http://localhost:5000 |
-| Grafana | http://localhost:3000 |
-| Prometheus | http://localhost:9090 |
-| Tempo | http://localhost:3200 |
-| Loki | http://localhost:3100 |
-| Mimir | http://localhost:9009 |
+Requires: Docker 20+, kubectl, kind.
+
+```bash
+git clone https://github.com/sethusrinivasan/observability-demo.git
+cd observability-demo
+./k8s/deploy-k8s.sh
+```
+
+When deployment completes:
+
+| Service | Docker Compose URL | Kubernetes URL |
+|---|---|---|
+| Python App | http://localhost:5000 | http://localhost:30001 |
+| Java App | http://localhost:8080 | http://localhost:30005 |
+| Rust App | http://localhost:8083 | http://localhost:30006 |
+| Grafana | http://localhost:3000 | http://localhost:3000 |
+| Prometheus | http://localhost:9090 | http://localhost:9090 |
+| Tempo | http://localhost:3200 | http://localhost:3200 |
+| Loki | http://localhost:3100 | http://localhost:3100 |
+| Mimir | http://localhost:9009 | http://localhost:9009 |
 
 ---
 
-## Setup — Brand New Ubuntu Machine
+## Architecture
 
-Tested on Ubuntu 22.04 LTS, 24.04 LTS, and 25.10. Requires a user with `sudo` access.
-
-### 1. System update
-
-```bash
-sudo apt-get update && sudo apt-get upgrade -y
 ```
-
-### 2. Install prerequisites
-
-```bash
-sudo apt-get install -y \
-    ca-certificates \
-    curl \
-    gnupg \
-    git \
-    python3 \
-    python3-venv \
-    python3-pip
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        observability-network (Docker/K8s)               │
+│                                                                         │
+│  ┌──────────────┐   HTTP/gRPC    ┌─────────────────────────────────┐   │
+│  │    canary    │ ─────────────► │   Multi-language apps           │   │
+│  │  (Python)    │                │   (Python/Flask, Java/Spring,   │   │
+│  │  TPS: 24 DC  │                │    Rust/Axum)                   │   │
+│  │       2 K8s  │                │  GET /                           │   │
+│  │  20 targets  │                │  GET /compute/<n>                │   │
+│  └──────────────┘                │  GET|POST /auditlog              │   │
+│                                  │  GET /auditlog/stats             │   │
+│                                  │  GET|POST /eval                  │   │
+│                                  └──────────┬──────────────────────┘   │
+│                                             │ OTLP gRPC (4317)         │
+│                                             ▼                           │
+│                                  ┌──────────────────┐                  │
+│                                  │  otel-collector  │                  │
+│                                  │  (OTel Contrib)  │                  │
+│                                  └──┬───────┬───────┘                  │
+│                    traces ──────────┘       │ metrics    logs           │
+│                       ▼                     ▼              ▼            │
+│              ┌────────────────┐  ┌────────────────┐  ┌──────────┐     │
+│              │     tempo      │  │     mimir      │  │   loki   │     │
+│              │  (tracing)     │  │  (metrics)     │  │  (logs)  │     │
+│              └───────┬────────┘  └───────┬────────┘  └────┬─────┘     │
+│                      │ Kafka ingest       │ remote write   │           │
+│              ┌───────▼────────┐  ┌───────▼────────┐       │           │
+│              │   redpanda     │  │   prometheus   │       │           │
+│              │  (Kafka broker)│  │  (scrape+fwd)  │       │           │
+│              └────────────────┘  └───────┬────────┘       │           │
+│                                          │ pg metrics      │           │
+│                                  ┌───────▼────────┐        │           │
+│                                  │postgres-export │        │           │
+│                                  └───────┬────────┘        │           │
+│                                          │                  │           │
+│                                  ┌───────▼────────┐        │           │
+│                                  │   postgres     │        │           │
+│                                  │  (audit_logs)  │        │           │
+│                                  └────────────────┘        │           │
+│                                                             │           │
+│  ┌──────────────────────────────────────────────────────────▼────────┐ │
+│  │                          grafana                                   │ │
+│  │   datasources: Tempo · Mimir · Loki    dashboard: auto-provisioned │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
-
-### 3. Install Docker Engine
-
-```bash
-# Add Docker's official GPG key
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
-
-# Add the Docker repository
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-  https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-# Install Docker Engine + Compose plugin
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io \
-    docker-buildx-plugin docker-compose-plugin
-```
-
-### 4. Add your user to the docker group
-
-```bash
-sudo usermod -aG docker $USER
-newgrp docker          # apply without logging out
-```
-
-Verify:
-```bash
-docker run --rm hello-world
-docker compose version
-```
-
-### 5. Configure passwordless sudo (recommended for launch.sh)
-
-`launch.sh` uses `sudo` to kill root-owned containers and restore iptables rules after Docker daemon restarts. To avoid password prompts:
-
-```bash
-echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$USER-nopasswd
-sudo chmod 440 /etc/sudoers.d/$USER-nopasswd
-```
-
-### 6. Clone and launch
-
-```bash
-git clone https://github.com/sethusrinivasan/observability-demo.git
-cd observability-demo
-chmod +x launch.sh start.sh test.sh build.sh redeploy.sh
-./launch.sh
-```
-
-Expected output:
-```
-=== Clearing any existing containers ===
-=== Tearing down compose stack ===
-  (volumes wiped)
-=== Building and launching stack ===
-  [builds observability-demo and canary images]
-=== Waiting for services ===
-  ✓ Tempo
-  ✓ Loki
-  ✓ Mimir
-  ✓ Prometheus
-  ✓ App
-  Waiting for Grafana ✓
-  ✓ Canary
-=== Stack status ===
-  [table of all 11 containers]
-```
-
-> **Note on Grafana startup time:** On a fresh volume Grafana runs database migrations which takes 30–60 seconds. `launch.sh` polls until it's ready.
-
-### 7. Set up Python virtual environment (for running tests locally)
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install setuptools   # required on Python 3.13+
-```
-
-### 8. Run tests
-
-```bash
-# Unit + integration tests (no stack required for unit tests)
-.venv/bin/python -m pytest tests/ -v
-
-# Smoke test against the running stack
-./test.sh
-```
-
-### Minimum hardware requirements
-
-| Resource | Minimum | Recommended |
-|---|---|---|
-| CPU | 2 cores | 4 cores |
-| RAM | 4 GB | 8 GB |
-| Disk | 5 GB free | 10 GB free |
-
-> Redpanda alone uses ~1 GB RAM. The full stack at idle uses ~2.5 GB.
 
 ---
 
@@ -392,12 +332,10 @@ Test breakdown:
 
 | Script | Purpose |
 |---|---|
-| `./launch.sh` | Full teardown + fresh deploy. Use on first run or after config changes. Accepts `--keep-data` to preserve volumes |
-| `./launch.sh --keep-data` | Redeploy without wiping Postgres/Grafana/Mimir data |
-| `./start.sh` | Start stack without teardown (faster, keeps existing containers) |
-| `./test.sh` | Smoke test all endpoints against the running stack |
-| `./redeploy.sh` | Rebuild and replace only `observability-demo` and `canary` containers |
-| `./build.sh` | Build the app Docker image only |
+| `./launch.sh` | Full teardown + fresh deploy (Docker Compose). Use on first run or after config changes. Accepts `--keep-data` to preserve volumes |
+| `./start.sh` | Start Docker Compose stack without teardown (faster, keeps existing containers) |
+| `./test.sh` | Smoke test Python app endpoints against the running Docker Compose stack |
+| `./k8s/deploy-k8s.sh` | Deploy full observability stack to Kind Kubernetes cluster |
 
 ---
 

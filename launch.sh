@@ -11,6 +11,16 @@
 
 set -euo pipefail
 
+# Check Docker permissions
+if ! docker ps &>/dev/null; then
+    echo "ERROR: Cannot run Docker commands. Please ensure:"
+    echo "1. Docker is installed and running"
+    echo "2. Current user is in the 'docker' group: sudo usermod -aG docker \$USER"
+    echo "3. Run 'newgrp docker' after adding to group, or log out and back in"
+    echo "4. Or run this script with sudo (not recommended)"
+    exit 1
+fi
+
 KEEP_DATA=false
 [[ "${1:-}" == "--keep-data" ]] && KEEP_DATA=true
 

@@ -181,6 +181,43 @@ services:
     networks:
       - observability-network
 
+  # Java observability app
+  observability-java-app:
+    build: ./java-app
+    container_name: observability-java-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=observability-java-app
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/observability
+      - SPRING_DATASOURCE_USERNAME=observability
+      - SPRING_DATASOURCE_PASSWORD=observability
+      - OTEL_RESOURCE_ATTRIBUTES=language=java,service.name=observability-java-app
+      - OTEL_LOGS_EXPORTER=otlp
+    depends_on:
+      - otel-collector
+      - postgres
+    networks:
+      - observability-network
+
+  # Rust observability app
+  observability-rust-app:
+    build: ./rust-app
+    container_name: observability-rust-app
+    restart: unless-stopped
+    ports:
+      - "8083:8081"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability
+    depends_on:
+      - otel-collector
+      - postgres
+    networks:
+      - observability-network
+
   # Synthetic canary — isolated container that exercises every endpoint
   # at a calibrated rate (24 TPS → ~50% saturation of one core).
   # Runs independently so canary failures never affect the app process.
@@ -190,10 +227,14 @@ services:
     restart: unless-stopped
     environment:
       - APP_BASE_URL=http://observability-python-app:5000
+      - JAVA_APP_BASE_URL=http://observability-java-app:8080
+      - RUST_APP_BASE_URL=http://observability-rust-app:8081
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-      - CANARY_TPS=24
+      - CANARY_TPS=2
     depends_on:
       - observability-python-app
+      - observability-java-app
+      - observability-rust-app
       - otel-collector
     networks:
       - observability-network
