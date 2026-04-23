@@ -5,14 +5,12 @@
 # Handles root-owned containers (from background docker compose runs) by
 # killing their host PIDs before attempting compose teardown.
 #
-# Usage:
-#   ./launch.sh           — full teardown + fresh deploy (wipes volumes)
-#   ./launch.sh --keep-data — teardown + redeploy but keep existing volumes
+# Run with no arguments (or --help) to see this usage message.
 
 set -euo pipefail
 
 # Check Docker permissions
-if ! docker ps &>/dev/null; then
+if ! docker ps >/dev/null 2>&1; then
     echo "ERROR: Cannot run Docker commands. Please ensure:"
     echo "1. Docker is installed and running"
     echo "2. Current user is in the 'docker' group: sudo usermod -aG docker \$USER"
@@ -22,7 +20,39 @@ if ! docker ps &>/dev/null; then
 fi
 
 KEEP_DATA=false
-[[ "${1:-}" == "--keep-data" ]] && KEEP_DATA=true
+TEARDOWN_ONLY=false
+RUN=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --run)           RUN=true ;;
+        --keep-data)     KEEP_DATA=true ;;
+        --teardown-only) TEARDOWN_ONLY=true ;;
+        --help|-h)       ;; # handled below
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Print help and exit when no meaningful action is requested
+# ---------------------------------------------------------------------------
+if [ "$RUN" = false ] && [ "$TEARDOWN_ONLY" = false ]; then
+    cat <<'EOF'
+Usage: launch_docker.sh [OPTIONS]
+
+Options:
+  --run              Perform a full teardown then build and launch the stack
+                     (wipes all volumes by default)
+  --run --keep-data  Teardown and redeploy but preserve existing data volumes
+  --teardown-only    Stop and remove all containers/networks/volumes, then exit
+  --help, -h         Show this help message and exit
+
+Examples:
+  ./launch_docker.sh --run                 # fresh deploy (clears all data)
+  ./launch_docker.sh --run --keep-data     # redeploy, keep Postgres/Mimir/Loki data
+  ./launch_docker.sh --teardown-only       # clean shutdown with no redeploy
+EOF
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Step 1: Force-kill any root-owned containers that compose can't stop,
@@ -70,6 +100,13 @@ done
 # Remove stale anonymous volumes
 docker volume prune -f 2>/dev/null || true
 
+# Exit here if --teardown-only was requested
+if [ "$TEARDOWN_ONLY" = true ]; then
+    echo ""
+    echo "=== Teardown complete (--teardown-only; skipping build and launch) ==="
+    exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # Step 3: Build and launch
 # ---------------------------------------------------------------------------
@@ -88,7 +125,7 @@ sleep 5
 BRIDGE=$(docker network inspect observability-demo_observability-network \
     --format '{{.Id}}' 2>/dev/null | cut -c1-12)
 BRIDGE_IF="br-${BRIDGE}"
-if ip link show "$BRIDGE_IF" &>/dev/null; then
+if ip link show "$BRIDGE_IF" >/dev/null 2>&1; then
     # Check if the bridge already has a FORWARD rule
     if ! sudo iptables -C FORWARD -i "$BRIDGE_IF" -o "$BRIDGE_IF" -j ACCEPT 2>/dev/null; then
         echo "  Restoring iptables rules for $BRIDGE_IF..."
