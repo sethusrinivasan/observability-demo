@@ -30,7 +30,7 @@ spec:
       containers:
       - name: otel-collector
         image: otel/opentelemetry-collector-contrib:latest
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 4317
         - containerPort: 4318
@@ -77,7 +77,7 @@ spec:
       containers:
       - name: tempo
         image: grafana/tempo:latest
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
         args: ["-config.file=/etc/tempo/config.yaml"]
         ports:
         - containerPort: 3200
@@ -118,7 +118,7 @@ spec:
       containers:
       - name: redpanda
         image: redpandadata/redpanda:latest
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
         command:
         - rpk
         - redpanda
@@ -164,7 +164,7 @@ spec:
       containers:
       - name: mimir
         image: grafana/mimir:latest
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
         args: ["-config.file=/etc/mimir/config.yaml"]
         ports:
         - containerPort: 9009
@@ -207,7 +207,7 @@ spec:
       containers:
       - name: loki
         image: grafana/loki:latest
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
         args: ["-config.file=/etc/loki/config.yaml"]
         ports:
         - containerPort: 3100
@@ -250,7 +250,7 @@ spec:
       containers:
       - name: grafana
         image: grafana/grafana:latest
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
         env:
         - name: GF_AUTH_ANONYMOUS_ENABLED
           value: "true"
@@ -258,6 +258,8 @@ spec:
           value: "Admin"
         - name: GF_AUTH_DISABLE_LOGIN_FORM
           value: "true"
+        - name: GF_INSTALL_PLUGINS
+          value: "redis-datasource"
         - name: GF_RENDERING_SERVER_URL
           value: "http://grafana-renderer:8081/render"
         - name: GF_RENDERING_CALLBACK_URL
@@ -309,7 +311,7 @@ spec:
       containers:
       - name: renderer
         image: grafana/grafana-image-renderer:latest
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
         env:
         - name: ENABLE_METRICS
           value: "true"
@@ -344,7 +346,7 @@ spec:
       containers:
       - name: postgres
         image: postgres:16
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_USER
           value: "observability"
@@ -371,11 +373,13 @@ spec:
     spec:
       containers:
       - name: exporter
-        image: wrouesnel/postgres_exporter:latest
-        imagePullPolicy: Never
+        image: bitnami/postgres-exporter:latest
+        imagePullPolicy: IfNotPresent
         env:
         - name: DATA_SOURCE_NAME
-          value: "postgresql://observability:observability@postgres:5432/observability?sslmode=disable"
+          value: "postgresql://postgres:observability@postgres:5432/postgres?sslmode=disable"
+        - name: PG_EXPORTER_DISABLE_SETTINGS_METRICS
+          value: "true"
 ---
 apiVersion: v1
 kind: Service
@@ -417,7 +421,7 @@ spec:
       containers:
       - name: prometheus
         image: prom/prometheus:latest
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
         args:
         - "--config.file=/etc/prometheus/prometheus.yml"
         ports:
@@ -430,3 +434,35 @@ spec:
       - name: config
         configMap:
           name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+spec:
+  selector:
+    app: valkey
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valkey
+  template:
+    metadata:
+      labels:
+        app: valkey
+    spec:
+      containers:
+      - name: valkey
+        image: valkey/valkey:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6379

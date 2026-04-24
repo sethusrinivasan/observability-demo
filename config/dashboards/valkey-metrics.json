@@ -1,0 +1,91 @@
+{
+  "id": null,
+  "uid": "valkey-metrics",
+  "title": "Valkey Canary Metrics",
+  "tags": ["valkey", "canary", "metrics"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "row",
+      "title": "Total Requests (from Valkey Hash)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "type": "barplot",
+      "title": "Requests by Path/Status",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 1 },
+      "datasource": { "type": "redis-datasource", "uid": "valkey" },
+      "targets": [
+        {
+          "query": "HGETALL canary:total_requests",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 1, "fillOpacity": 80 },
+          "color": { "mode": "palette-classic" }
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Average Latency (Calculated from Sum/Count)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "collapsed": false
+    },
+    {
+      "type": "table",
+      "title": "Path Latency Table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 10 },
+      "datasource": { "type": "redis-datasource", "uid": "valkey" },
+      "targets": [
+        {
+          "query": "HGETALL canary:duration_sum",
+          "refId": "Sum"
+        },
+        {
+          "query": "HGETALL canary:duration_count",
+          "refId": "Count"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "seriesToColumns",
+          "options": { "byField": "Field" }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "Latency (ms)",
+            "binaryOperation": {
+              "left": "Value (Sum)",
+              "operator": "/",
+              "right": "Value (Count)"
+            },
+            "mode": "binaryOperation",
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {},
+            "renameByName": {
+              "Field": "Path/Status",
+              "Value (Sum)": "Total Duration (s)",
+              "Value (Count)": "Total Count"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {}
+}

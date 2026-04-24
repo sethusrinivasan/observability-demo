@@ -3,20 +3,22 @@ apiVersion: 1
 datasources:
   - name: Tempo
     type: tempo
+    uid: Tempo
     access: proxy
     url: http://tempo:3200
     isDefault: false
     jsonData:
       tracesToLogsV2:
-        datasourceUid: loki
+        datasourceUid: Loki
         filterByTraceID: true
       tracesToMetrics:
-        datasourceUid: mimir
+        datasourceUid: Mimir
       nodeGraph:
         enabled: true
 
   - name: Mimir
     type: prometheus
+    uid: Mimir
     access: proxy
     url: http://mimir:9009/prometheus
     isDefault: true
@@ -25,12 +27,20 @@ datasources:
 
   - name: Loki
     type: loki
+    uid: Loki
     access: proxy
     url: http://loki:3100
     isDefault: false
     jsonData:
       derivedFields:
-        - datasourceUid: tempo
+        - datasourceUid: Tempo
           matcherRegex: "trace_id=(\\w+)"
           name: TraceID
           url: "$${__value.raw}"
+
+  - name: Valkey
+    type: redis-datasource
+    uid: valkey
+    access: proxy
+    url: valkey:6379
+    isDefault: false

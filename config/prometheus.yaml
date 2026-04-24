@@ -1,6 +1,6 @@
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 30s
+  evaluation_interval: 30s
 
 remote_write:
   - url: http://mimir:9009/api/v1/push
@@ -11,6 +11,7 @@ remote_write:
 
 scrape_configs:
   - job_name: 'postgres-exporter'
+    scrape_timeout: 30s
     static_configs:
       - targets: ['postgres-exporter:9187']
     metrics_path: /metrics

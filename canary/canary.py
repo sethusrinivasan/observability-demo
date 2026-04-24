@@ -7,6 +7,7 @@ import time
 import logging
 
 import requests
+import redis
 from opentelemetry import metrics
 from opentelemetry.sdk.resources import SERVICE_NAME, DEPLOYMENT_ENVIRONMENT, Resource
 from opentelemetry.sdk.metrics import MeterProvider
@@ -20,6 +21,7 @@ APP_BASE_URL        = os.getenv("APP_BASE_URL",        "http://observability-pyt
 JAVA_APP_BASE_URL   = os.getenv("JAVA_APP_BASE_URL",   "http://observability-java-app:8080")
 RUST_APP_BASE_URL   = os.getenv("RUST_APP_BASE_URL",   "http://observability-rust-app:8081")
 OTLP_ENDPOINT       = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
+VALKEY_HOST         = os.getenv("VALKEY_HOST",         "valkey")
 CANARY_TPS          = float(os.getenv("CANARY_TPS",    "12"))
 INTER_ARRIVAL       = 1.0 / CANARY_TPS
 
@@ -102,6 +104,7 @@ def wait_for_apps(session: requests.Session) -> None:
 
 def run() -> None:
     session = requests.Session()
+    vk = redis.Redis(host=VALKEY_HOST, port=6379, decode_responses=True)
     logger.info("Canary starting — Python: %s, Java: %s, Rust: %s, TPS: %.0f",
                 APP_BASE_URL, JAVA_APP_BASE_URL, RUST_APP_BASE_URL, CANARY_TPS)
 
@@ -148,6 +151,20 @@ def run() -> None:
                 request_counter.add(1, labels)
                 request_duration.record(response_time, labels)
                 
+                # Report to Valkey
+                try:
+                    # Increment total requests hash
+                    # Format: canary:total_requests { "python:/compute/5:success": 42 }
+                    field = f"{app_lang}:{base_path}:{status}"
+                    vk.hincrby("canary:total_requests", field, 1)
+                    
+                    # Update average duration using sum and count
+                    duration_field = f"{app_lang}:{base_path}"
+                    vk.hincrbyfloat("canary:duration_sum", duration_field, response_time)
+                    vk.hincrby("canary:duration_count", duration_field, 1)
+                except Exception as vk_exc:
+                    logger.debug("Failed to report to Valkey: %s", vk_exc)
+
                 next_tick += INTER_ARRIVAL
                 sleep_time = max(0.0, next_tick - time.time())
                 time.sleep(sleep_time)
