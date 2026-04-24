@@ -50,5 +50,5 @@ service:
       exporters: [prometheusremotewrite/mimir, debug]
     logs:
       receivers: [otlp]
-      processors: [resource, batch]
+      processors: [resource, transform, batch]
       exporters: [otlphttp/loki, debug]

@@ -14,9 +14,7 @@ scrape_configs:
     scrape_timeout: 30s
     static_configs:
       - targets: ['postgres-exporter:9187']
-    metrics_path: /metrics
-    scheme: http
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: instance
-        replacement: postgres
+  - job_name: 'redis-exporter'
+    scrape_timeout: 30s
+    static_configs:
+      - targets: ['redis-exporter:9121']

@@ -87,6 +87,8 @@ spec:
           value: "http://observability-rust-app:8081"
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: "http://otel-collector:4317"
+        - name: VALKEY_HOST
+          value: "valkey"
         - name: CANARY_TPS
           value: "6"
         resources:

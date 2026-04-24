@@ -260,10 +260,12 @@ spec:
           value: "true"
         - name: GF_INSTALL_PLUGINS
           value: "redis-datasource"
-        - name: GF_RENDERING_SERVER_URL
-          value: "http://grafana-renderer:8081/render"
-        - name: GF_RENDERING_CALLBACK_URL
-          value: "http://grafana:3000/"
+        - name: GF_SERVER_HTTP_ADDR
+          value: "0.0.0.0"
+        # - name: GF_RENDERING_SERVER_URL
+        #   value: "http://grafana-renderer:8081/render"
+        # - name: GF_RENDERING_CALLBACK_URL
+        #   value: "http://grafana:3000/"
         ports:
         - containerPort: 3000
         volumeMounts:
@@ -377,7 +379,7 @@ spec:
         imagePullPolicy: IfNotPresent
         env:
         - name: DATA_SOURCE_NAME
-          value: "postgresql://postgres:observability@postgres:5432/postgres?sslmode=disable"
+          value: "postgresql://observability:observability@postgres:5432/observability?sslmode=disable"
         - name: PG_EXPORTER_DISABLE_SETTINGS_METRICS
           value: "true"
 ---
@@ -429,7 +431,7 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /etc/prometheus/prometheus.yml
-          subPath: prometheus.yml
+          subPath: prometheus.yaml
       volumes:
       - name: config
         configMap:
@@ -466,3 +468,40 @@ spec:
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-exporter
+  template:
+    metadata:
+      labels:
+        app: redis-exporter
+    spec:
+      containers:
+      - name: redis-exporter
+        image: oliver006/redis_exporter:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9121
+        env:
+        - name: REDIS_ADDR
+          value: "valkey:6379"
+        - name: REDIS_PASSWORD
+          value: ""
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-exporter
+spec:
+  selector:
+    app: redis-exporter
+  ports:
+  - port: 9121
+    targetPort: 9121
