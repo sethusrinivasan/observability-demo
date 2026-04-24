@@ -10,18 +10,43 @@
   "panels": [
     {
       "type": "row",
-      "title": "Total Requests (from Valkey Hash)",
+      "title": "Total Requests (from Prometheus)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "collapsed": false
     },
     {
-      "type": "barplot",
-      "title": "Requests by Path/Status",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 1 },
-      "datasource": { "type": "redis-datasource", "uid": "valkey" },
+      "type": "stat",
+      "title": "Total Synthetic Requests",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "query": "HGETALL canary:total_requests",
+          "expr": "sum(app_synthetic_requests_total{client=\"canary\"})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 80 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "barplot",
+      "title": "Requests by Path/Status",
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "sum by (path, status) (app_synthetic_requests_total{client=\"canary\"})",
+          "legendFormat": "{{path}} {{status}}",
           "refId": "A"
         }
       ],
@@ -34,7 +59,7 @@
     },
     {
       "type": "row",
-      "title": "Average Latency (Calculated from Sum/Count)",
+      "title": "Average Latency (from Histogram)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
       "collapsed": false
     },
@@ -42,46 +67,109 @@
       "type": "table",
       "title": "Path Latency Table",
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 10 },
-      "datasource": { "type": "redis-datasource", "uid": "valkey" },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
-          "query": "HGETALL canary:duration_sum",
-          "refId": "Sum"
-        },
+          "expr": "histogram_quantile(0.5, sum(rate(app_synthetic_request_duration_bucket[5m])) by (le, path))",
+          "legendFormat": "{{path}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Valkey System Metrics",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "Valkey Up",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
         {
-          "query": "HGETALL canary:duration_count",
-          "refId": "Count"
+          "expr": "redis_up",
+          "refId": "A"
         }
       ],
-      "transformations": [
-        {
-          "id": "seriesToColumns",
-          "options": { "byField": "Field" }
-        },
-        {
-          "id": "calculateField",
-          "options": {
-            "alias": "Latency (ms)",
-            "binaryOperation": {
-              "left": "Value (Sum)",
-              "operator": "/",
-              "right": "Value (Count)"
-            },
-            "mode": "binaryOperation",
-            "replaceFields": false
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
           }
-        },
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Connected Clients",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
         {
-          "id": "organize",
-          "options": {
-            "excludeByName": {},
-            "indexByName": {},
-            "renameByName": {
-              "Field": "Path/Status",
-              "Value (Sum)": "Total Duration (s)",
-              "Value (Count)": "Total Count"
-            }
-          }
+          "expr": "redis_connected_clients",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Memory Used (Bytes)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "redis_memory_used_bytes",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Total Commands Processed",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "redis_total_commands_processed",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "graph",
+      "title": "Memory Usage Over Time",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "redis_memory_used_bytes",
+          "legendFormat": "Memory Used",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "graph",
+      "title": "Connected Clients Over Time",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "redis_connected_clients",
+          "legendFormat": "Connected Clients",
+          "refId": "A"
         }
       ]
     }
