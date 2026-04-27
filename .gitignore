@@ -2,16 +2,36 @@
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 .pytest_cache/
 .venv/
+venv/
+*.egg-info/
+dist/
+build/
 
-# Runtime output files
+# Runtime / temp files
 *.out
 *.log
+*.tmp
+*.bak
+*~
+.scratch/
+scratch/
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # OS
 .DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore
+
+# Kubernetes
+.kube/
+kubeconfig

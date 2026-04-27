@@ -437,9 +437,30 @@
     },
     {
       "type": "stat",
+      "title": "PostgreSQL Version",
+      "description": "Currently running PostgreSQL version.",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "Mimir" },
+      "targets": [
+        {
+          "expr": "pg_settings_server_version_num / 10000",
+          "legendFormat": "{{setting}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": { "hideFrom": { "tooltip": false, "viz": false, "legend": false } }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "textMode": "auto", "justifyMode": "auto" }
+    },
+    {
+      "type": "stat",
       "title": "Active Connections",
       "description": "Current active connections to the observability database.",
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 35 },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 35 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {
@@ -460,7 +481,7 @@
       "type": "stat",
       "title": "Cache Hit Rate",
       "description": "Buffer cache hit ratio — low values indicate I/O pressure.",
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 35 },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 35 },
       "datasource": { "type": "prometheus", "uid": "Mimir" },
       "targets": [
         {

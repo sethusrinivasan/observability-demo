@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify as original_jsonify
 import logging
 import resource
 import requests
@@ -38,6 +38,16 @@ from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
 
 app = Flask(__name__)
+
+def jsonify(data, *args, **kwargs):
+    if isinstance(data, dict):
+        data.update({
+            "app_name": "observability-python-app",
+            "version": "1.0.1",
+            "language": "python",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+    return original_jsonify(data, *args, **kwargs)
 
 
 def get_db_connection():
@@ -86,34 +96,38 @@ def with_db():
 
 
 def ensure_audit_table():
-    with with_db() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS audit_logs (
-                    id SERIAL PRIMARY KEY,
-                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-                    endpoint TEXT NOT NULL,
-                    status_code INTEGER NOT NULL,
-                    response_time_seconds DOUBLE PRECISION,
-                    process_memory_rss BIGINT,
-                    process_cpu_seconds DOUBLE PRECISION,
-                    system_loadavg_1m DOUBLE PRECISION,
-                    container_memory_current BIGINT,
-                    container_memory_limit BIGINT,
-                    container_memory_percent DOUBLE PRECISION,
-                    container_cpu_usage_ns BIGINT,
-                    details JSONB
-                );
-                """
-            )
-            cursor.execute(
-                """
-                ALTER TABLE audit_logs
-                ADD COLUMN IF NOT EXISTS response_time_seconds DOUBLE PRECISION;
-                """
-            )
-            conn.commit()
+    try:
+        with with_db() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_logs (
+                        id SERIAL PRIMARY KEY,
+                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+                        endpoint TEXT NOT NULL,
+                        status_code INTEGER NOT NULL,
+                        response_time_seconds DOUBLE PRECISION,
+                        process_memory_rss BIGINT,
+                        process_cpu_seconds DOUBLE PRECISION,
+                        system_loadavg_1m DOUBLE PRECISION,
+                        container_memory_current BIGINT,
+                        container_memory_limit BIGINT,
+                        container_memory_percent DOUBLE PRECISION,
+                        container_cpu_usage_ns BIGINT,
+                        details JSONB
+                    );
+                    """
+                )
+                cursor.execute(
+                    """
+                    ALTER TABLE audit_logs
+                    ADD COLUMN IF NOT EXISTS response_time_seconds DOUBLE PRECISION;
+                    """
+                )
+                conn.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("ensure_audit_table skipped due to concurrency: %s", e)
 
 
 def wait_for_postgres():
@@ -135,6 +149,7 @@ def wait_for_postgres():
 service_resource = Resource(attributes={
     SERVICE_NAME: "observability-python-app",
     DEPLOYMENT_ENVIRONMENT: "local-dev",
+    "service.version": "1.0.1",
     "language": "python"
 })
 
@@ -358,6 +373,7 @@ def get_home_html() -> str:
   </head>
   <body>
     <h1>Hello from Observability Lab!</h1>
+    <p><strong>App:</strong> observability-python-app | <strong>Version:</strong> 1.0.1 | <strong>Language:</strong> python</p>
     <p>Discover the compute endpoint with a number:</p>
     <ul>
 {example_links}
@@ -387,6 +403,40 @@ def home():
         span.set_attribute("http.method", "GET")
         logger.info("Home endpoint called")
         return get_home_html(), 200, {"Content-Type": "text/html"}
+
+@app.route('/version')
+def version():
+    """Returns the application version"""
+    return jsonify({"version": "1.0.1", "language": "python"})
+
+import unittest
+import io
+
+class AppSelfTest(unittest.TestCase):
+    def test_fibonacci(self):
+        from app import fibonacci
+        self.assertEqual(fibonacci(5), 5)
+        self.assertEqual(fibonacci(10), 55)
+
+    def test_evaluator(self):
+        from evaluator import evaluate
+        self.assertEqual(evaluate("2+3*4"), 14)
+        self.assertEqual(evaluate("2^10"), 1024)
+
+@app.route('/selftest')
+def selftest():
+    stream = io.StringIO()
+    runner = unittest.TextTestRunner(stream=stream, verbosity=2)
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(AppSelfTest)
+    result = runner.run(suite)
+    
+    return jsonify({
+        "tests_run": result.testsRun,
+        "failures": len(result.failures),
+        "errors": len(result.errors),
+        "success": result.wasSuccessful(),
+        "output": stream.getvalue()
+    }), 200 if result.wasSuccessful() else 500
 
 @app.route('/compute/<int:n>')
 def compute(n):
@@ -592,7 +642,15 @@ def eval_expression():
             else:
                 expr = request.form.get("expr", "")
         else:
-            expr = request.args.get("expr", "")
+            import urllib.parse
+            qs = request.query_string.decode('utf-8')
+            expr = ""
+            for pair in qs.split('&'):
+                if pair.startswith('expr='):
+                    expr = urllib.parse.unquote(pair[5:])
+                    break
+            if not expr:
+                expr = request.args.get("expr", "")
 
         span.set_attribute("eval.expression", expr)
         logger.info("Eval endpoint called with expression: %s", expr)
@@ -604,7 +662,7 @@ def eval_expression():
             result = eval_expr(expr)
             logger.info("Eval result: %s = %s", expr, result)
             span.set_attribute("eval.result", result)
-            return jsonify({"expression": expr, "result": result}), 200
+            return jsonify({"expression": expr, "result": result, "context": "Python", "version": "1.0.1"}), 200
         except ZeroDivisionError as exc:
             logger.warning("Eval division by zero: %s", expr)
             return jsonify({"error": str(exc)}), 400

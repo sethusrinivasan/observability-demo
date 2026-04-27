@@ -138,7 +138,7 @@ services:
       - "9187:9187"
     environment:
       - DATA_SOURCE_NAME=postgresql://observability:observability@postgres:5432/observability?sslmode=disable
-      - PG_EXPORTER_DISABLE_SETTINGS_METRICS=true
+      - PG_EXPORTER_DISABLE_SETTINGS_METRICS=false
       - PG_EXPORTER_DISABLE_DEFAULT_METRICS=false
     depends_on:
       - postgres

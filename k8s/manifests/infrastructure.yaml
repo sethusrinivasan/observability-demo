@@ -347,7 +347,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:16
+        image: postgres:18
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_USER
@@ -381,7 +381,7 @@ spec:
         - name: DATA_SOURCE_NAME
           value: "postgresql://observability:observability@postgres:5432/observability?sslmode=disable"
         - name: PG_EXPORTER_DISABLE_SETTINGS_METRICS
-          value: "true"
+          value: "false"
 ---
 apiVersion: v1
 kind: Service

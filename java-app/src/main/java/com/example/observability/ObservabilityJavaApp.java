@@ -36,6 +36,32 @@ import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import org.junit.platform.launcher.Launcher;
+import org.junit.platform.launcher.LauncherDiscoveryRequest;
+import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
+import org.junit.platform.launcher.core.LauncherFactory;
+import org.junit.platform.engine.discovery.DiscoverySelectors;
+import org.junit.platform.launcher.listeners.SummaryGeneratingListener;
+import org.junit.platform.launcher.listeners.TestExecutionSummary;
+
+class AppSelfTest {
+    @Test
+    void testFibonacci() {
+        AppController controller = new AppController();
+        assertEquals(5L, controller.fibonacci(5));
+        assertEquals(55L, controller.fibonacci(10));
+    }
+
+    @Test
+    void testEvaluator() {
+        AppController controller = new AppController();
+        assertEquals(14.0, controller.evaluate("2+3*4"));
+        assertEquals(1024.0, controller.evaluate("2^10"));
+    }
+}
+
 @SpringBootApplication
 public class ObservabilityJavaApp {
     public static void main(String[] args) {
@@ -105,7 +131,10 @@ class OTelConfig {
         OperatingSystemMXBean osBean = ManagementFactory.getOperatingSystemMXBean();
         MemoryMXBean memBean = ManagementFactory.getMemoryMXBean();
 
-        Attributes javaAttrs = Attributes.of(AttributeKey.stringKey("language"), "java");
+        Attributes javaAttrs = Attributes.of(
+            AttributeKey.stringKey("language"), "java",
+            AttributeKey.stringKey("service.version"), "1.0.1"
+        );
 
         meter.gaugeBuilder("app.system.loadavg.1m")
                 .setDescription("System load average (1 minute)")
@@ -250,6 +279,15 @@ class AppController {
     @Autowired private Tracer tracer;
     @Autowired private JdbcTemplate jdbcTemplate;
 
+    private Map<String, Object> withContext(Map<String, Object> data) {
+        Map<String, Object> res = new HashMap<>(data);
+        res.put("app_name", "observability-java-app");
+        res.put("version", "1.0.1");
+        res.put("language", "java");
+        res.put("timestamp", java.time.Instant.now().toString());
+        return res;
+    }
+
     @GetMapping("/")
     public String home() {
         Span span = tracer.spanBuilder("home-endpoint").startSpan();
@@ -261,17 +299,41 @@ class AppController {
         }
     }
 
+    @GetMapping("/version")
+    public ResponseEntity<?> version() {
+        return ResponseEntity.ok(withContext(Map.of()));
+    }
+
+    @GetMapping("/selftest")
+    public ResponseEntity<?> selftest() {
+        LauncherDiscoveryRequest request = LauncherDiscoveryRequestBuilder.request()
+            .selectors(DiscoverySelectors.selectClass(AppSelfTest.class))
+            .build();
+        Launcher launcher = LauncherFactory.create();
+        SummaryGeneratingListener listener = new SummaryGeneratingListener();
+        launcher.registerTestExecutionListeners(listener);
+        launcher.execute(request);
+        TestExecutionSummary summary = listener.getSummary();
+
+        return ResponseEntity.status(summary.getTestsFailedCount() == 0 ? HttpStatus.OK : HttpStatus.INTERNAL_SERVER_ERROR)
+            .body(withContext(Map.of(
+                "tests_run", summary.getTestsFoundCount(),
+                "success", summary.getTestsFailedCount() == 0,
+                "failures", summary.getTestsFailedCount()
+            )));
+    }
+
     @GetMapping("/compute/{n}")
     public ResponseEntity<?> compute(@PathVariable int n) {
         if (n > 25) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(Map.of("error", "Value too large, Max is 25 to prevent DoS"));
+                    .body(withContext(Map.of("error", "Value too large, Max is 25 to prevent DoS")));
         }
         Span span = tracer.spanBuilder("compute-endpoint").startSpan();
         span.setAttribute("compute.value", n);
         try {
             long result = fibonacci(n);
-            return ResponseEntity.ok(Map.of("input", n, "result", result, "language", "java"));
+            return ResponseEntity.ok(withContext(Map.of("input", n, "result", result)));
         } finally {
             span.end();
         }
@@ -287,10 +349,10 @@ class AppController {
                     "INSERT INTO audit_logs (endpoint, status_code, details) VALUES (?, ?, ?::jsonb)",
                     endpoint, statusCode, "{\"language\": \"java\", \"service\": \"observability-java-app\"}"
             );
-            return ResponseEntity.status(HttpStatus.CREATED).body(Map.of("status", "ok", "language", "java"));
+            return ResponseEntity.status(HttpStatus.CREATED).body(withContext(Map.of("status", "ok")));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("status", "error", "message", e.getMessage()));
+                    .body(withContext(Map.of("status", "error", "message", e.getMessage())));
         } finally {
             span.end();
         }
@@ -301,7 +363,7 @@ class AppController {
         Span span = tracer.spanBuilder("auditlog-stats-endpoint").startSpan();
         try {
             Map<String, Object> stats = jdbcTemplate.queryForMap("SELECT count(*) AS total_rows FROM audit_logs");
-            return ResponseEntity.ok(stats);
+            return ResponseEntity.ok(withContext(stats));
         } finally {
             span.end();
         }
@@ -314,31 +376,31 @@ class AppController {
             expressionStr = body.get("expr");
         }
         if (expressionStr == null || expressionStr.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", "Missing 'expr' parameter"));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(withContext(Map.of("error", "Missing 'expr' parameter")));
         }
         Span span = tracer.spanBuilder("eval-endpoint").startSpan();
         span.setAttribute("eval.expression", expressionStr);
         try {
             double result = evaluate(expressionStr);
-            return ResponseEntity.ok(Map.of("expression", expressionStr, "result", result, "language", "java"));
+            return ResponseEntity.ok(withContext(Map.of("expression", expressionStr, "result", result)));
         } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", e.getMessage()));
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(withContext(Map.of("error", e.getMessage())));
         } finally {
             span.end();
         }
     }
 
     private String getHomeHtml() {
-        return "<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Observability Lab (Java)</title></head><body><h1>Hello from Observability Lab (Java)!</h1><p>Discover the compute endpoint with a number:</p><ul><li><a href='/compute/5'>Compute 5</a></li><li><a href='/compute/10'>Compute 10</a></li><li><a href='/compute/20'>Compute 20</a></li></ul></body></html>";
+        return "<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Observability Lab (Java)</title></head><body><h1>Hello from Observability Lab (Java)!</h1><p><strong>App:</strong> observability-java-app | <strong>Version:</strong> 1.0.1 | <strong>Language:</strong> java</p><p>Discover the compute endpoint with a number:</p><ul><li><a href='/compute/5'>Compute 5</a></li><li><a href='/compute/10'>Compute 10</a></li><li><a href='/compute/20'>Compute 20</a></li></ul></body></html>";
     }
 
-    private long fibonacci(int n) {
+    public long fibonacci(int n) {
         if (n <= 1) return n;
         return fibonacci(n - 1) + fibonacci(n - 2);
     }
 
     // Simplified recursive descent parser for expression evaluation (no external libs)
-    private double evaluate(final String str) {
+    public double evaluate(final String str) {
         return new Object() {
             int pos = -1, ch;
 

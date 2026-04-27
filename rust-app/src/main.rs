@@ -133,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .with_resource(opentelemetry_sdk::Resource::new(vec![
             KeyValue::new("service.name", "observability-rust-app"),
+            KeyValue::new("service.version", "1.0.1"),
             KeyValue::new("language", "rust"),
         ]))
         .build()?;
@@ -223,6 +224,8 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(home))
+        .route("/version", get(version))
+        .route("/selftest", get(selftest))
         .route("/compute/:n", get(compute))
         .route("/auditlog", get(audit_log).post(audit_log))
         .route("/auditlog/stats", get(audit_log_stats))
@@ -238,6 +241,16 @@ async fn main() -> anyhow::Result<()> {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+fn attach_context(mut data: serde_json::Value) -> serde_json::Value {
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert("app_name".to_string(), serde_json::json!("observability-rust-app"));
+        obj.insert("version".to_string(), serde_json::json!("1.0.1"));
+        obj.insert("language".to_string(), serde_json::json!("rust"));
+        obj.insert("timestamp".to_string(), serde_json::json!(chrono::Utc::now().to_rfc3339()));
+    }
+    data
+}
 
 fn record_metrics(state: &AppState, endpoint: &str, route: &str, status: &str, journey: &str, duration: f64) {
     let labels = [
@@ -260,20 +273,37 @@ fn record_metrics(state: &AppState, endpoint: &str, route: &str, status: &str, j
 
 async fn home(State(state): State<AppState>) -> impl IntoResponse {
     let t = Instant::now();
-    let resp = Html("<h1>Hello from Rust</h1>");
+    let resp = Html("<h1>Hello from Rust</h1><p><strong>App:</strong> observability-rust-app | <strong>Version:</strong> 1.0.1 | <strong>Language:</strong> rust</p>");
     record_metrics(&state, "/", "home", "success", "home", t.elapsed().as_secs_f64());
     resp
+}
+
+async fn version() -> impl IntoResponse {
+    Json(attach_context(serde_json::json!({}))).into_response()
 }
 
 async fn compute(State(state): State<AppState>, Path(n): Path<usize>) -> impl IntoResponse {
     let t = Instant::now();
     if n > 25 {
         record_metrics(&state, "/compute", "compute", "error", "compute", t.elapsed().as_secs_f64());
-        return (StatusCode::BAD_REQUEST, "Too large").into_response();
+        return (StatusCode::BAD_REQUEST, Json(attach_context(serde_json::json!({"error": "Too large"})))).into_response();
     }
     let res = fibonacci(n);
     record_metrics(&state, "/compute", "compute", "success", "compute", t.elapsed().as_secs_f64());
-    Json(serde_json::json!({"result": res, "language": "rust"})).into_response()
+    Json(attach_context(serde_json::json!({"result": res}))).into_response()
+}
+
+async fn selftest() -> impl IntoResponse {
+    let res = std::panic::catch_unwind(|| {
+        assert_eq!(fibonacci(5), 5);
+        assert_eq!(fibonacci(10), 55);
+        assert_eq!(evaluate("2+3*4").unwrap(), 14.0);
+        assert_eq!(evaluate("2^10").unwrap(), 1024.0);
+    });
+    match res {
+        Ok(_) => Json(attach_context(serde_json::json!({"success": true, "tests_run": 4}))).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(attach_context(serde_json::json!({"success": false, "error": "Tests failed"})))).into_response(),
+    }
 }
 
 async fn audit_log(State(state): State<AppState>) -> impl IntoResponse {
@@ -288,11 +318,11 @@ async fn audit_log(State(state): State<AppState>) -> impl IntoResponse {
     match res {
         Ok(_) => {
             record_metrics(&state, "/auditlog", "auditlog", "success", "other", t.elapsed().as_secs_f64());
-            (StatusCode::CREATED, "ok").into_response()
+            (StatusCode::CREATED, Json(attach_context(serde_json::json!({"status": "ok"})))).into_response()
         }
         Err(e) => {
             record_metrics(&state, "/auditlog", "auditlog", "error", "other", t.elapsed().as_secs_f64());
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(attach_context(serde_json::json!({"error": e.to_string()})))).into_response()
         }
     }
 }
@@ -305,11 +335,11 @@ async fn audit_log_stats(State(state): State<AppState>) -> impl IntoResponse {
     match row {
         Ok(r) => {
             record_metrics(&state, "/auditlog/stats", "auditlog_stats", "success", "other", t.elapsed().as_secs_f64());
-            Json(serde_json::json!({"total_rows": r.0})).into_response()
+            Json(attach_context(serde_json::json!({"total_rows": r.0}))).into_response()
         }
         Err(e) => {
             record_metrics(&state, "/auditlog/stats", "auditlog_stats", "error", "other", t.elapsed().as_secs_f64());
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(attach_context(serde_json::json!({"error": e.to_string()})))).into_response()
         }
     }
 }
@@ -328,17 +358,17 @@ async fn handle_eval(state: AppState, expr: Option<String>) -> impl IntoResponse
         Some(e) if !e.is_empty() => e,
         _ => {
             record_metrics(&state, "/eval", "eval_expression", "error", "other", t.elapsed().as_secs_f64());
-            return (StatusCode::BAD_REQUEST, "Missing expr").into_response();
+            return (StatusCode::BAD_REQUEST, Json(attach_context(serde_json::json!({"error": "Missing expr"})))).into_response();
         }
     };
     match evaluate(&expr) {
         Ok(res) => {
             record_metrics(&state, "/eval", "eval_expression", "success", "other", t.elapsed().as_secs_f64());
-            Json(serde_json::json!({"result": res, "expression": expr})).into_response()
+            Json(attach_context(serde_json::json!({"result": res, "expression": expr}))).into_response()
         }
         Err(e) => {
             record_metrics(&state, "/eval", "eval_expression", "error", "other", t.elapsed().as_secs_f64());
-            (StatusCode::BAD_REQUEST, e).into_response()
+            (StatusCode::BAD_REQUEST, Json(attach_context(serde_json::json!({"error": e})))).into_response()
         }
     }
 }
