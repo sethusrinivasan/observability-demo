@@ -137,6 +137,44 @@ class TestHomeRoute:
 # ===========================================================================
 
 class TestComputeRoute:
+    def test_valid_n_returns_200(self, client):
+        response = client.get("/compute/10")
+        assert response.status_code == 200
+
+    def test_valid_n_returns_correct_fibonacci(self, client):
+        response = client.get("/compute/10")
+        data = json.loads(response.data)
+        assert data["result"] == 55
+
+    def test_n_too_large_returns_400(self, client):
+        response = client.get("/compute/36")
+        assert response.status_code == 400
+
+    def test_n_too_large_returns_error_message(self, client):
+        response = client.get("/compute/1000")
+        data = json.loads(response.data)
+        assert "error" in data
+        assert "35" in data["error"]
+
+    def test_boundary_n_35_returns_200(self, client):
+        response = client.get("/compute/35")
+        assert response.status_code == 200
+
+    def test_boundary_n_35_correct_value(self, client):
+        response = client.get("/compute/35")
+        data = json.loads(response.data)
+        assert data["result"] == fibonacci(35)
+
+    def test_n_zero_returns_200(self, client):
+        response = client.get("/compute/0")
+        assert response.status_code == 200
+
+    def test_n_zero_correct_value(self, client):
+        response = client.get("/compute/0")
+        data = json.loads(response.data)
+        assert data["result"] == 0===============================================
+
+class TestComputeRoute:
     def test_correct_fibonacci_result(self, client):
         resp = client.get("/compute/10")
         assert resp.status_code == 200
