@@ -1,0 +1,214 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: observability-python-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: observability-python-app
+  template:
+    metadata:
+      labels:
+        app: observability-python-app
+    spec:
+      containers:
+      - name: observability-python-app
+        image: observability-python-app:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 5000
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector:4317"
+        - name: OTEL_SERVICE_NAME
+          value: "observability-python-app"
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "observability"
+        - name: POSTGRES_USER
+          value: "observability"
+        - name: POSTGRES_PASSWORD
+          value: "observability"
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 5000
+          initialDelaySeconds: 15
+          periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: observability-python-app
+spec:
+  selector:
+    app: observability-python-app
+  ports:
+  - port: 5000
+    targetPort: 5000
+    nodePort: 30001
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: canary
+  template:
+    metadata:
+      labels:
+        app: canary
+    spec:
+      containers:
+      - name: canary
+        image: observability-canary:latest
+        imagePullPolicy: Never
+        env:
+        - name: APP_BASE_URL
+          value: "http://observability-python-app:5000"
+        - name: JAVA_APP_BASE_URL
+          value: "http://observability-java-app:8080"
+        - name: RUST_APP_BASE_URL
+          value: "http://observability-rust-app:8081"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector:4317"
+        - name: VALKEY_HOST
+          value: "valkey"
+        - name: CANARY_TPS
+          value: "6"
+        resources:
+          requests:
+            cpu: "20m"
+            memory: "64Mi"
+          limits:
+            cpu: "100m"
+            memory: "128Mi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: observability-java-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: observability-java-app
+  template:
+    metadata:
+      labels:
+        app: observability-java-app
+    spec:
+      containers:
+      - name: observability-java-app
+        image: observability-java-app:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector:4317"
+        - name: OTEL_SERVICE_NAME
+          value: "observability-java-app"
+        - name: SPRING_DATASOURCE_URL
+          value: "jdbc:postgresql://postgres:5432/observability"
+        - name: SPRING_DATASOURCE_USERNAME
+          value: "observability"
+        - name: SPRING_DATASOURCE_PASSWORD
+          value: "observability"
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "language=java,service.name=observability-java-app"
+        - name: OTEL_LOGS_EXPORTER
+          value: "otlp"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "512Mi"
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 45
+          periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: observability-java-app
+spec:
+  selector:
+    app: observability-java-app
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30005
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: observability-rust-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: observability-rust-app
+  template:
+    metadata:
+      labels:
+        app: observability-rust-app
+    spec:
+      containers:
+      - name: observability-rust-app
+        image: observability-rust-app:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8081
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector:4317"
+        - name: DATABASE_URL
+          value: "postgres://observability:observability@postgres:5432/observability"
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: observability-rust-app
+spec:
+  selector:
+    app: observability-rust-app
+  ports:
+  - port: 8081
+    targetPort: 8081
+    nodePort: 30006
+  type: NodePort

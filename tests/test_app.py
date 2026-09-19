@@ -137,45 +137,76 @@ class TestHomeRoute:
 # ===========================================================================
 
 class TestComputeRoute:
+    def test_valid_n_returns_200(self, client):
+        response = client.get("/compute/10")
+        assert response.status_code == 200
+
+    def test_valid_n_returns_correct_fibonacci(self, client):
+        response = client.get("/compute/10")
+        data = json.loads(response.data)
+        assert data["result"] == 55
+
+    def test_n_too_large_returns_400(self, client):
+        response = client.get("/compute/36")
+        assert response.status_code == 400
+
+    def test_n_too_large_returns_error_message(self, client):
+        response = client.get("/compute/1000")
+        data = json.loads(response.data)
+        assert "error" in data
+        assert "35" in data["error"]
+
+    def test_boundary_n_35_returns_200(self, client):
+        response = client.get("/compute/35")
+        assert response.status_code == 200
+
+    def test_boundary_n_35_correct_value(self, client):
+        response = client.get("/compute/35")
+        data = json.loads(response.data)
+        assert data["result"] == fibonacci(35)
+
+    def test_n_zero_returns_200(self, client):
+        response = client.get("/compute/0")
+        assert response.status_code == 200
+
+    def test_n_zero_correct_value(self, client):
+        response = client.get("/compute/0")
+        data = json.loads(response.data)
+        assert data["result"] == 0===============================================
+
+class TestComputeRoute:
     def test_correct_fibonacci_result(self, client):
-        # Seed random so the 10 % error path is not triggered
-        with mock.patch("random.random", return_value=0.5):
-            resp = client.get("/compute/10")
+        resp = client.get("/compute/10")
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["input"] == 10
         assert data["result"] == 55
 
     def test_zero_input(self, client):
-        with mock.patch("random.random", return_value=0.5):
-            resp = client.get("/compute/0")
+        resp = client.get("/compute/0")
         assert resp.status_code == 200
         assert resp.get_json()["result"] == 0
 
     def test_one_input(self, client):
-        with mock.patch("random.random", return_value=0.5):
-            resp = client.get("/compute/1")
+        resp = client.get("/compute/1")
         assert resp.status_code == 200
         assert resp.get_json()["result"] == 1
 
     def test_random_error_returns_500(self, client):
-        with mock.patch("random.random", return_value=0.0):  # always < 0.1
-            resp = client.get("/compute/5")
-        assert resp.status_code == 500
-        assert "error" in resp.get_json()
+        # Artificial random errors have been removed — /compute always succeeds
+        # for valid input. This test is replaced by the non-integer 404 test below.
+        pass
 
     def test_non_integer_returns_404(self, client):
         assert client.get("/compute/abc").status_code == 404
 
     def test_response_is_json(self, client):
-        with mock.patch("random.random", return_value=0.5):
-            resp = client.get("/compute/5")
+        resp = client.get("/compute/5")
         assert resp.content_type.startswith("application/json")
 
     @pytest.mark.parametrize("n,expected", [(0, 0), (1, 1), (5, 5), (7, 13), (10, 55)])
     def test_parametrized_fibonacci_values(self, client, n, expected):
-        with mock.patch("random.random", return_value=0.5):
-            resp = client.get(f"/compute/{n}")
+        resp = client.get(f"/compute/{n}")
         assert resp.status_code == 200
         assert resp.get_json()["result"] == expected
 
@@ -225,7 +256,7 @@ class TestAuditlogRoute:
         assert "remote_addr" in details
 
     def test_db_failure_returns_500(self, client):
-        with mock.patch("app.get_db_connection", side_effect=Exception("db down")):
+        with mock.patch("app.get_pool", side_effect=Exception("db down")):
             resp = client.get("/auditlog")
         assert resp.status_code == 500
         data = resp.get_json()
@@ -277,7 +308,7 @@ class TestAuditlogStatsRoute:
         assert data["success_count"] + data["failure_count"] == data["total_rows"]
 
     def test_db_failure_returns_500(self, client):
-        with mock.patch("app.get_db_connection", side_effect=Exception("db down")):
+        with mock.patch("app.get_pool", side_effect=Exception("db down")):
             resp = client.get("/auditlog/stats")
         assert resp.status_code == 500
         assert resp.get_json()["status"] == "error"

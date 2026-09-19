@@ -30,6 +30,48 @@ def _resolve_postgres_host() -> str:
 os.environ.setdefault("POSTGRES_HOST", _resolve_postgres_host())
 
 # ---------------------------------------------------------------------------
+# Ensure audit_logs table exists before any test that hits Postgres.
+# On a fresh volume the app creates the table on startup, but the test
+# process connects directly and may run before the app container has started.
+# ---------------------------------------------------------------------------
+def _ensure_audit_table() -> None:
+    try:
+        import psycopg2
+        host = os.getenv("POSTGRES_HOST", "localhost")
+        port = int(os.getenv("POSTGRES_PORT", 5432))
+        dbname = os.getenv("POSTGRES_DB", "observability")
+        user = os.getenv("POSTGRES_USER", "observability")
+        password = os.getenv("POSTGRES_PASSWORD", "observability")
+        conn = psycopg2.connect(
+            host=host, port=port, dbname=dbname,
+            user=user, password=password, connect_timeout=2,
+        )
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS audit_logs (
+                    id SERIAL PRIMARY KEY,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+                    endpoint TEXT NOT NULL,
+                    status_code INTEGER NOT NULL,
+                    response_time_seconds DOUBLE PRECISION,
+                    process_memory_rss BIGINT,
+                    process_cpu_seconds DOUBLE PRECISION,
+                    system_loadavg_1m DOUBLE PRECISION,
+                    container_memory_current BIGINT,
+                    container_memory_limit BIGINT,
+                    container_memory_percent DOUBLE PRECISION,
+                    container_cpu_usage_ns BIGINT,
+                    details JSONB
+                );
+            """)
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # Postgres not available — DB tests will be skipped anyway
+
+_ensure_audit_table()
+
+# ---------------------------------------------------------------------------
 # Silence OTel SDK export retry stderr noise during tests.
 # When running on the host there is no collector on localhost:4317, so the
 # SDK logs "Transient error ... retrying" to stderr on every test that
