@@ -238,6 +238,32 @@ services:
     networks:
       - observability-network
 
+  # JavaScript observability app
+  observability-javascript-app:
+    build: ./javascript-app
+    container_name: observability-javascript-app
+    restart: unless-stopped
+    ports:
+      - "8084:8082"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=observability-javascript-app
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=observability
+      - POSTGRES_USER=observability
+      - POSTGRES_PASSWORD=observability
+    depends_on:
+      - otel-collector
+      - postgres
+    networks:
+      - observability-network
+
   # Synthetic canary — isolated container that exercises every endpoint
   # at a calibrated rate (24 TPS → ~50% saturation of one core).
   # Runs independently so canary failures never affect the app process.
@@ -249,12 +275,14 @@ services:
       - APP_BASE_URL=http://observability-python-app:5000
       - JAVA_APP_BASE_URL=http://observability-java-app:8080
       - RUST_APP_BASE_URL=http://observability-rust-app:8081
+      - JAVASCRIPT_APP_BASE_URL=http://observability-javascript-app:8082
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - CANARY_TPS=6
     depends_on:
       - observability-python-app
       - observability-java-app
       - observability-rust-app
+      - observability-javascript-app
       - otel-collector
     networks:
       - observability-network
