@@ -18,6 +18,8 @@ needing to be inside the Docker network.  The suite is skipped entirely
 when the stack is not running.
 """
 
+import os
+import shutil
 import json
 import time
 import pytest
@@ -27,17 +29,28 @@ import psycopg2
 # ---------------------------------------------------------------------------
 # Base URLs
 # ---------------------------------------------------------------------------
-APP_URL       = "http://localhost:5000"
-OTEL_HTTP_URL = "http://localhost:4318"
-TEMPO_URL     = "http://localhost:3200"
-LOKI_URL      = "http://localhost:3100"
-MIMIR_URL     = "http://localhost:9009"
-PROMETHEUS_URL= "http://localhost:9090"
-GRAFANA_URL   = "http://localhost:3000"
+APP_URL       = os.getenv("PYTHON_APP_URL", "http://localhost:5000")
+JAVA_APP_URL  = os.getenv("JAVA_APP_URL", "http://localhost:8080")
+RUST_APP_URL  = os.getenv("RUST_APP_URL", "http://localhost:8083")
+OTEL_HTTP_URL = os.getenv("OTEL_HTTP_URL", "http://localhost:4318")
+TEMPO_URL     = os.getenv("TEMPO_URL", "http://localhost:3200")
+LOKI_URL      = os.getenv("LOKI_URL", "http://localhost:3100")
+MIMIR_URL     = os.getenv("MIMIR_URL", "http://localhost:9009")
+PROMETHEUS_URL= os.getenv("PROMETHEUS_URL", "http://localhost:9090")
+GRAFANA_URL   = os.getenv("GRAFANA_URL", "http://localhost:3000")
+GRAFANA_AUTH  = (os.getenv("GRAFANA_USER", "admin"), os.getenv("GRAFANA_PASSWORD", "admin"))
+REDIS_EXPORTER_URL = os.getenv("REDIS_EXPORTER_URL", "http://localhost:9121")
+VALKEY_PORT   = int(os.getenv("VALKEY_PORT", "6379"))
 REDPANDA_KAFKA= ("localhost", 9092)
 
-PG_CONN = dict(host="localhost", port=5432, dbname="observability",
-               user="observability", password="observability", connect_timeout=2)
+PG_CONN = dict(
+    host=os.getenv("POSTGRES_HOST", "localhost"),
+    port=int(os.getenv("POSTGRES_PORT", 5432)),
+    dbname=os.getenv("POSTGRES_DB", "observability"),
+    user=os.getenv("POSTGRES_USER", "observability"),
+    password=os.getenv("POSTGRES_PASSWORD", "observability"),
+    connect_timeout=2,
+)
 
 # ---------------------------------------------------------------------------
 # Session-scoped availability guards — skip whole module if stack is down
@@ -61,6 +74,21 @@ def _tcp_ok(host: str, port: int, timeout: int = 2) -> bool:
 requires_stack = pytest.mark.skipif(
     not _http_ok(f"{APP_URL}/"),
     reason="Observability stack not running"
+)
+
+requires_java = pytest.mark.skipif(
+    not _http_ok(f"{JAVA_APP_URL}/"),
+    reason="Java app not running"
+)
+
+requires_rust = pytest.mark.skipif(
+    not _http_ok(f"{RUST_APP_URL}/"),
+    reason="Rust app not running"
+)
+
+requires_valkey = pytest.mark.skipif(
+    not _tcp_ok("localhost", VALKEY_PORT),
+    reason="Valkey not running"
 )
 
 
@@ -455,6 +483,7 @@ class TestRedpanda:
         """TCP connect to the Kafka API port."""
         assert _tcp_ok(*REDPANDA_KAFKA)
 
+    @pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI not available in test environment")
     def test_tempo_ingest_topic_exists(self):
         """tempo-ingest topic must exist — created by Tempo on startup."""
         import subprocess
@@ -467,6 +496,7 @@ class TestRedpanda:
         # but the broker must respond
         assert "Error" not in result.stderr or result.returncode == 0
 
+    @pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI not available in test environment")
     def test_cluster_info_returns_broker(self):
         """rpk cluster info must report at least one broker."""
         import subprocess
@@ -493,13 +523,14 @@ class TestGrafana:
         assert data["database"] == "ok"
 
     def test_three_datasources_provisioned(self):
-        resp = requests.get(f"{GRAFANA_URL}/api/datasources", timeout=5)
+        resp = requests.get(f"{GRAFANA_URL}/api/datasources", auth=GRAFANA_AUTH, timeout=5)
         assert resp.status_code == 200
         names = {ds["name"] for ds in resp.json()}
         assert {"Tempo", "Mimir", "Loki"}.issubset(names)
 
     def test_datasource_types_correct(self):
-        resp = requests.get(f"{GRAFANA_URL}/api/datasources", timeout=5)
+        resp = requests.get(f"{GRAFANA_URL}/api/datasources", auth=GRAFANA_AUTH, timeout=5)
+        assert resp.status_code == 200
         by_name = {ds["name"]: ds["type"] for ds in resp.json()}
         assert by_name["Tempo"] == "tempo"
         assert by_name["Mimir"] == "prometheus"
@@ -508,6 +539,7 @@ class TestGrafana:
     def test_dashboard_loaded(self):
         resp = requests.get(
             f"{GRAFANA_URL}/api/dashboards/uid/observability-demo-metrics",
+            auth=GRAFANA_AUTH,
             timeout=5,
         )
         assert resp.status_code == 200
@@ -515,11 +547,23 @@ class TestGrafana:
         assert db["title"] == "Observability Demo"
         assert len(db["panels"]) > 0
 
+    def test_valkey_dashboard_loaded(self):
+        resp = requests.get(
+            f"{GRAFANA_URL}/api/dashboards/uid/valkey-metrics",
+            auth=GRAFANA_AUTH,
+            timeout=5,
+        )
+        assert resp.status_code == 200
+        db = resp.json()["dashboard"]
+        assert len(db["panels"]) > 0
+
     def test_dashboard_has_loki_panels(self):
         resp = requests.get(
             f"{GRAFANA_URL}/api/dashboards/uid/observability-demo-metrics",
+            auth=GRAFANA_AUTH,
             timeout=5,
         )
+        assert resp.status_code == 200
         panels = resp.json()["dashboard"]["panels"]
         loki_panels = [
             p for p in panels
@@ -527,3 +571,135 @@ class TestGrafana:
             and p["datasource"].get("type") == "loki"
         ]
         assert len(loki_panels) > 0
+
+
+# ===========================================================================
+# 11. observability-java-app
+#     Core function: Spring Boot MVC app with Fibonacci, JDBC audit log,
+#     math evaluator, and Actuator endpoints.
+# ===========================================================================
+
+@requires_java
+class TestJavaApp:
+    def test_home_returns_200(self):
+        resp = requests.get(f"{JAVA_APP_URL}/", timeout=5)
+        assert resp.status_code == 200
+
+    def test_version_returns_java(self):
+        resp = requests.get(f"{JAVA_APP_URL}/version", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["language"] == "java"
+        assert data["version"] == "1.0.1"
+
+    def test_selftest_passes(self):
+        resp = requests.get(f"{JAVA_APP_URL}/selftest", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert data["failures"] == 0
+
+    def test_compute_fibonacci(self):
+        resp = requests.get(f"{JAVA_APP_URL}/compute/10", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["input"] == 10
+        assert data["result"] == 55
+
+    def test_eval_expression(self):
+        resp = requests.post(f"{JAVA_APP_URL}/eval", json={"expr": "2 + 3 * 4"}, timeout=5)
+        assert resp.status_code == 200
+        assert resp.json()["result"] == 14.0
+
+    def test_auditlog_get(self):
+        resp = requests.get(f"{JAVA_APP_URL}/auditlog", timeout=5)
+        assert resp.status_code in [200, 201]
+        assert resp.json()["status"] == "ok"
+
+    def test_actuator_health(self):
+        resp = requests.get(f"{JAVA_APP_URL}/actuator/health", timeout=5)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "UP"
+
+    def test_actuator_health_liveness(self):
+        resp = requests.get(f"{JAVA_APP_URL}/actuator/health/liveness", timeout=5)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "UP"
+
+    def test_actuator_health_readiness(self):
+        resp = requests.get(f"{JAVA_APP_URL}/actuator/health/readiness", timeout=5)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "UP"
+
+    def test_actuator_info(self):
+        resp = requests.get(f"{JAVA_APP_URL}/actuator/info", timeout=5)
+        assert resp.status_code == 200
+
+
+# ===========================================================================
+# 12. observability-rust-app
+#     Core function: Axum async app with Fibonacci, sqlx audit log,
+#     math evaluator, and OTLP telemetry.
+# ===========================================================================
+
+@requires_rust
+class TestRustApp:
+    def test_home_returns_200(self):
+        resp = requests.get(f"{RUST_APP_URL}/", timeout=5)
+        assert resp.status_code == 200
+
+    def test_version_returns_rust(self):
+        resp = requests.get(f"{RUST_APP_URL}/version", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["language"] == "rust"
+        assert data["version"] == "1.0.1"
+
+    def test_selftest_passes(self):
+        resp = requests.get(f"{RUST_APP_URL}/selftest", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+
+    def test_compute_fibonacci(self):
+        resp = requests.get(f"{RUST_APP_URL}/compute/10", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["result"] == 55
+
+    def test_eval_expression(self):
+        resp = requests.post(f"{RUST_APP_URL}/eval", json={"expr": "2 + 3 * 4"}, timeout=5)
+        assert resp.status_code == 200
+        assert resp.json()["result"] == 14.0
+
+    def test_auditlog_get(self):
+        resp = requests.get(f"{RUST_APP_URL}/auditlog", timeout=5)
+        assert resp.status_code in [200, 201]
+        assert resp.json()["status"] == "ok"
+
+
+# ===========================================================================
+# 13. valkey & redis-exporter
+#     Core function: In-memory store for canary metrics, scraped by Prometheus.
+# ===========================================================================
+
+@requires_valkey
+class TestValkeyAndRedisExporter:
+    def test_valkey_port_reachable(self):
+        assert _tcp_ok("localhost", VALKEY_PORT)
+
+    def test_redis_exporter_metrics(self):
+        resp = requests.get(f"{REDIS_EXPORTER_URL}/metrics", timeout=5)
+        assert resp.status_code == 200
+        assert "redis_up 1" in resp.text
+
+    def test_prometheus_scrapes_redis_exporter(self):
+        resp = requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query",
+            params={"query": "redis_up"},
+            timeout=5,
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]["result"]
+        assert len(data) > 0
+        assert data[0]["value"][1] == "1"

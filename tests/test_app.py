@@ -136,51 +136,56 @@ class TestHomeRoute:
 # GET /compute/<n>
 # ===========================================================================
 
+class TestVersionRoute:
+    def test_version_returns_200(self, client):
+        resp = client.get("/version")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["version"] == "1.0.1"
+        assert data["language"] == "python"
+
+
+class TestSelftestRoute:
+    def test_selftest_returns_200_and_success(self, client):
+        resp = client.get("/selftest")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["failures"] == 0
+        assert data["errors"] == 0
+        assert data["tests_run"] >= 2
+
+
 class TestComputeRoute:
     def test_valid_n_returns_200(self, client):
-        response = client.get("/compute/10")
-        assert response.status_code == 200
+        resp = client.get("/compute/10")
+        assert resp.status_code == 200
 
-    def test_valid_n_returns_correct_fibonacci(self, client):
-        response = client.get("/compute/10")
-        data = json.loads(response.data)
-        assert data["result"] == 55
-
-    def test_n_too_large_returns_400(self, client):
-        response = client.get("/compute/36")
-        assert response.status_code == 400
-
-    def test_n_too_large_returns_error_message(self, client):
-        response = client.get("/compute/1000")
-        data = json.loads(response.data)
-        assert "error" in data
-        assert "35" in data["error"]
-
-    def test_boundary_n_35_returns_200(self, client):
-        response = client.get("/compute/35")
-        assert response.status_code == 200
-
-    def test_boundary_n_35_correct_value(self, client):
-        response = client.get("/compute/35")
-        data = json.loads(response.data)
-        assert data["result"] == fibonacci(35)
-
-    def test_n_zero_returns_200(self, client):
-        response = client.get("/compute/0")
-        assert response.status_code == 200
-
-    def test_n_zero_correct_value(self, client):
-        response = client.get("/compute/0")
-        data = json.loads(response.data)
-        assert data["result"] == 0===============================================
-
-class TestComputeRoute:
     def test_correct_fibonacci_result(self, client):
         resp = client.get("/compute/10")
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["input"] == 10
         assert data["result"] == 55
+
+    def test_boundary_n_25_returns_200(self, client):
+        resp = client.get("/compute/25")
+        assert resp.status_code == 200
+        assert resp.get_json()["result"] == fibonacci(25)
+
+    def test_n_too_large_returns_400(self, client):
+        resp = client.get("/compute/26")
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert "error" in data
+        assert "25" in data["error"]
+
+    def test_n_large_value_returns_error_message(self, client):
+        resp = client.get("/compute/1000")
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert "error" in data
+        assert "25" in data["error"]
 
     def test_zero_input(self, client):
         resp = client.get("/compute/0")
@@ -192,11 +197,6 @@ class TestComputeRoute:
         assert resp.status_code == 200
         assert resp.get_json()["result"] == 1
 
-    def test_random_error_returns_500(self, client):
-        # Artificial random errors have been removed — /compute always succeeds
-        # for valid input. This test is replaced by the non-integer 404 test below.
-        pass
-
     def test_non_integer_returns_404(self, client):
         assert client.get("/compute/abc").status_code == 404
 
@@ -204,7 +204,7 @@ class TestComputeRoute:
         resp = client.get("/compute/5")
         assert resp.content_type.startswith("application/json")
 
-    @pytest.mark.parametrize("n,expected", [(0, 0), (1, 1), (5, 5), (7, 13), (10, 55)])
+    @pytest.mark.parametrize("n,expected", [(0, 0), (1, 1), (5, 5), (7, 13), (10, 55), (25, 75025)])
     def test_parametrized_fibonacci_values(self, client, n, expected):
         resp = client.get(f"/compute/{n}")
         assert resp.status_code == 200

@@ -85,13 +85,13 @@ Forwarding set up automatically. Access same as Docker Compose.
 | Tempo | 3200 | Trace storage | `latest` |
 | Loki | 3100 | Log storage | `latest` |
 | OpenTelemetry Collector | 4317 | OTLP ingestion point | `latest` |
-| PostgreSQL | 5432 | Audit log persistence | 16 |
+| PostgreSQL | 5432 | Audit log persistence | 18.6 |
 | postgres-exporter | 9187 | PG metrics (version, connections, etc.) | `latest` |
 | Valkey | 6379 | Redis-compatible store for canary metrics | `latest` |
 | redis-exporter | 9121 | Prometheus metrics for Valkey | `latest` |
 | Redpanda | 9092 | Kafka API used by Tempo | `latest` |
 
-Compose pins these images to `latest` except PostgreSQL 16. The old pinned version numbers in this table were not what `docker compose` pulls.
+Compose pins these images to `latest` except PostgreSQL, which is pinned to 18.6, the current stable release. PostgreSQL 19 is still in beta.
 
 ## Testing
 
