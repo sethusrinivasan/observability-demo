@@ -65,7 +65,7 @@ Forwarding set up automatically. Access same as Docker Compose.
 | Component | Port | Purpose | Version |
 |-----------|------|---------|---------|
 | [Python Flask](./app.py) | 5000 | WSGI app: Fibonacci compute, Postgres audit log + pooling, math expression parser (Shunting-Yard) | 1.0.1 |
-| [Java Spring Boot](./java-app) | 8080 | Spring MVC app: Fibonacci compute, JDBC audit log, recursive descent expression parser | 1.0.1 |
+| [Java Spring Boot](./java-app) | 8080 | Spring MVC app: Fibonacci compute, JDBC audit log, recursive descent expression parser, Actuator health/info | 1.0.1 |
 | [Rust Axum](./rust-app) | 8083 | Async web server: Fibonacci compute, sqlx async Postgres, tokenizer-based expression evaluator | 1.0.1 |
 | Grafana | 3000 | Dashboards + data sources | [12.4.2](https://hub.docker.com/r/grafana/grafana) |
 | Prometheus | 9090 | Metrics scraper | [3.11.2](https://hub.docker.com/r/prom/prometheus) |
@@ -126,6 +126,19 @@ curl "http://localhost:8083/eval?expr=2+3*4"
 ```
 
 Supports: `+`, `-`, `*`, `/`, `^` (exponent), parentheses, floating point.
+
+## Spring Boot only
+
+The Java service is the only app that exposes [Spring Boot Actuator](https://docs.spring.io/spring-boot/reference/actuator/index.html). Python and Rust keep the shared demo routes.
+
+```bash
+curl http://localhost:8080/actuator/health
+curl http://localhost:8080/actuator/health/liveness
+curl http://localhost:8080/actuator/health/readiness
+curl http://localhost:8080/actuator/info
+```
+
+Liveness ignores the database. Readiness includes the database check and a custom `demo` health indicator. Docker Compose and the Kind manifest probe those paths.
 
 ## PostgreSQL Additions
 
