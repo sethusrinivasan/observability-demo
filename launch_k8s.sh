@@ -43,7 +43,8 @@ Services (after --run):
   Python App   http://localhost:5000
   Java App     http://localhost:8080
   Rust App     http://localhost:8081
-  Grafana      http://localhost:3000
+  Grafana      http://localhost:3000  (admin / admin)
+  Prometheus   http://localhost:9090
   Tempo        http://localhost:3200
   Loki         http://localhost:3100
   Mimir        http://localhost:9009
@@ -260,7 +261,8 @@ echo ""
 echo "  Python App   http://localhost:5000"
 echo "  Java App     http://localhost:8080"
 echo "  Rust App     http://localhost:8081"
-echo "  Grafana      http://localhost:3000"
+echo "  Grafana      http://localhost:3000  (admin / admin)"
+echo "  Prometheus   http://localhost:9090"
 echo "  Tempo        http://localhost:3200"
 echo "  Loki         http://localhost:3100"
 echo "  Mimir        http://localhost:9009"

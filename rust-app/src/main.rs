@@ -16,6 +16,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::info;
+use tracing_subscriber::prelude::*;
 
 #[derive(Clone)]
 struct AppState {
@@ -119,10 +120,33 @@ fn system_loadavg_1m() -> f64 {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-
     let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .unwrap_or_else(|_| "http://otel-collector:4317".to_string());
+    let resource = opentelemetry_sdk::Resource::new(vec![
+        KeyValue::new("service.name", "observability-rust-app"),
+        KeyValue::new("service.version", "1.0.1"),
+        KeyValue::new("language", "rust"),
+    ]);
+
+    let _logger = opentelemetry_otlp::new_pipeline()
+        .logging()
+        .with_exporter(
+            opentelemetry_otlp::new_exporter()
+                .tonic()
+                .with_endpoint(&otlp_endpoint),
+        )
+        .with_log_config(opentelemetry_sdk::logs::Config::default().with_resource(resource.clone()))
+        .install_batch(opentelemetry_sdk::runtime::Tokio)?;
+    let logger_provider = opentelemetry::global::logger_provider();
+    let otel_log_layer = opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(&logger_provider)
+        .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+            meta.target().starts_with("observability_rust_app")
+                && *meta.level() <= tracing::Level::INFO
+        }));
+    tracing_subscriber::registry()
+        .with(otel_log_layer)
+        .with(tracing_subscriber::fmt::layer().with_filter(tracing_subscriber::filter::LevelFilter::INFO))
+        .init();
 
     let meter_provider = opentelemetry_otlp::new_pipeline()
         .metrics(opentelemetry_sdk::runtime::Tokio)
@@ -131,11 +155,7 @@ async fn main() -> anyhow::Result<()> {
                 .tonic()
                 .with_endpoint(&otlp_endpoint),
         )
-        .with_resource(opentelemetry_sdk::Resource::new(vec![
-            KeyValue::new("service.name", "observability-rust-app"),
-            KeyValue::new("service.version", "1.0.1"),
-            KeyValue::new("language", "rust"),
-        ]))
+        .with_resource(resource)
         .build()?;
     global::set_meter_provider(meter_provider);
 
@@ -272,6 +292,7 @@ fn record_metrics(state: &AppState, endpoint: &str, route: &str, status: &str, j
 // ── handlers ──────────────────────────────────────────────────────────────────
 
 async fn home(State(state): State<AppState>) -> impl IntoResponse {
+    info!("Home endpoint called (rust)");
     let t = Instant::now();
     let resp = Html("<h1>Hello from Rust</h1><p><strong>App:</strong> observability-rust-app | <strong>Version:</strong> 1.0.1 | <strong>Language:</strong> rust</p>");
     record_metrics(&state, "/", "home", "success", "home", t.elapsed().as_secs_f64());

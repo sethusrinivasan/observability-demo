@@ -70,7 +70,7 @@ sleep 3
 
 # Force-remove all containers by name (handles both compose and manually started)
 for name in observability-python-app canary otel-collector tempo redpanda mimir loki \
-            grafana grafana-renderer postgres postgres-exporter prometheus; do
+            grafana grafana-renderer postgres postgres-exporter prometheus redis-exporter; do
     docker rm -f "$name" 2>/dev/null || true
 done
 
@@ -93,7 +93,7 @@ fi
 # Remove any leftover named containers that compose missed (e.g. manually
 # started containers or those whose PIDs were killed above)
 for name in observability-python-app canary otel-collector tempo redpanda mimir loki \
-            grafana grafana-renderer postgres postgres-exporter prometheus; do
+            grafana grafana-renderer postgres postgres-exporter prometheus redis-exporter; do
     docker rm -f "$name" 2>/dev/null || true
 done
 
@@ -163,15 +163,21 @@ wait_for "http://localhost:3200/ready"  "Tempo"      60 5
 wait_for "http://localhost:3100/ready"  "Loki"       30 3
 wait_for "http://localhost:9009/ready"  "Mimir"      30 3
 wait_for "http://localhost:9090/-/ready" "Prometheus" 20 3
-wait_for "http://localhost:5000/"       "App"        40 3
+wait_for "http://localhost:5000/"       "Python"     40 3
+wait_for "http://localhost:8080/actuator/health/liveness" "Java" 40 3
+wait_for "http://localhost:8083/"       "Rust"       40 3
 
 # Grafana runs DB migrations on first boot — takes longer
 echo -n "  Waiting for Grafana"
+grafana_ok=false
 for i in $(seq 1 48); do
     code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/health 2>/dev/null || echo "000")
-    if [ "$code" = "200" ]; then echo " ✓"; break; fi
+    if [ "$code" = "200" ]; then echo " ✓"; grafana_ok=true; break; fi
     echo -n "."; sleep 5
 done
+if [ "$grafana_ok" = false ]; then
+    echo " ✗"
+fi
 
 # Canary starts after app — just confirm it's running
 sleep 5
@@ -188,15 +194,16 @@ fi
 echo ""
 echo "=== Stack status ==="
 docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | \
-    grep -E "NAMES|observability-python-app|canary|grafana|prometheus|tempo|loki|mimir|otel|postgres|redpanda"
+    grep -E "NAMES|observability-|canary|grafana|prometheus|tempo|loki|mimir|otel|postgres|redpanda|valkey|redis-exporter"
 
 echo ""
-echo "  App:        http://localhost:5000"
-echo "  Grafana:    http://localhost:3000"
+echo "  Python:     http://localhost:5000"
+echo "  Java:       http://localhost:8080"
+echo "  Rust:       http://localhost:8083"
+echo "  Grafana:    http://localhost:3000  (admin / admin)"
 echo "  Prometheus: http://localhost:9090"
 echo "  Tempo:      http://localhost:3200"
 echo "  Loki:       http://localhost:3100"
 echo "  Mimir:      http://localhost:9009"
 echo ""
 echo "  Canary logs: docker logs -f canary"
-echo "  App logs:    docker logs -f observability-python-app"

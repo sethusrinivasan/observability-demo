@@ -26,12 +26,20 @@ Deploy this stack to cloud:
 ./launch_docker.sh --teardown-only     # cleanup
 ```
 
-After ~30s:
+After the script reports services ready:
+
 - **Python app**: http://localhost:5000
 - **Java app**: http://localhost:8080
 - **Rust app**: http://localhost:8083
-- **Grafana**: http://localhost:3000 (auto-provisioned dashboard)
+- **Grafana**: http://localhost:3000
 - **Prometheus**: http://localhost:9090
+- **Tempo**: http://localhost:3200
+- **Loki**: http://localhost:3100
+- **Mimir**: http://localhost:9009
+
+Grafana login is **admin** / **admin**. Open http://localhost:3000/login and use those fields. Anonymous access is off.
+
+On Kubernetes the Rust app is http://localhost:8081. Docker publishes Rust on 8083 because 8081 is the Grafana image renderer.
 
 ### Kubernetes (Kind)
 
@@ -44,20 +52,23 @@ Forwarding set up automatically. Access same as Docker Compose.
 
 ## What This Does
 
-**Apps have 5 endpoints each:**
+**Each app exposes:**
 - `/` — greeting page
-- `/compute/<n>` — Fibonacci(n) with 10% error rate (test error handling)
-- `/auditlog` — log system metrics to PostgreSQL
-- `/auditlog/stats` — response time stats (p50/p90/p95/p99)
-- `/eval?expr=...` — math expression evaluator (no external libs, Shunting-Yard algorithm)
+- `/version` — name, language, and version
+- `/selftest` — in-process Fibonacci and evaluator checks
+- `/compute/<n>` — Fibonacci(n). Values above 25 are rejected
+- `/auditlog` — write a row to PostgreSQL
+- `/auditlog/stats` — audit-log stats
+- `/eval?expr=...` — math expression evaluator (no `eval()`, no external parser libs)
 
 **Observability:**
 - Traces via OTLP → Tempo
-- Metrics via OTLP → Mimir (with Prometheus scrape from postgres-exporter)
-- Logs via OTLP + structured logging → Loki
-- PostgreSQL version widget in Grafana dashboard
+- Metrics via OTLP → Mimir, plus Prometheus scrapes of postgres-exporter and redis-exporter
+- Logs via OTLP → Loki from the Python, Java, and Rust apps
+- PostgreSQL version widget in the Grafana dashboard
+- Valkey (Redis-compatible) for canary metrics, scraped by redis-exporter
 
-**Canary:** Continuous synthetic load (24 TPS docker / 2 TPS k8s)
+**Canary:** Continuous synthetic load at 6 TPS in Docker Compose and on Kubernetes.
 
 
 ## Stack Overview
@@ -66,16 +77,21 @@ Forwarding set up automatically. Access same as Docker Compose.
 |-----------|------|---------|---------|
 | [Python Flask](./app.py) | 5000 | WSGI app: Fibonacci compute, Postgres audit log + pooling, math expression parser (Shunting-Yard) | 1.0.1 |
 | [Java Spring Boot](./java-app) | 8080 | Spring MVC app: Fibonacci compute, JDBC audit log, recursive descent expression parser, Actuator health/info | 1.0.1 |
-| [Rust Axum](./rust-app) | 8083 | Async web server: Fibonacci compute, sqlx async Postgres, tokenizer-based expression evaluator | 1.0.1 |
-| Grafana | 3000 | Dashboards + data sources | [12.4.2](https://hub.docker.com/r/grafana/grafana) |
-| Prometheus | 9090 | Metrics scraper | [3.11.2](https://hub.docker.com/r/prom/prometheus) |
-| Mimir | 9009 | Long-term metrics storage | [2.17.9](https://hub.docker.com/r/grafana/mimir) |
-| Tempo | 3200 | Trace storage | [2.10.3](https://hub.docker.com/r/grafana/tempo) |
-| Loki | 3100 | Log storage | [3.7.1](https://hub.docker.com/r/grafana/loki) |
-| OpenTelemetry Collector | 4317 | OTLP ingestion point | [0.149.0](https://hub.docker.com/r/otel/opentelemetry-collector-contrib) |
-| PostgreSQL | 5432 | Audit log persistence | [16](https://hub.docker.com/_/postgres) |
-| postgres-exporter | 9187 | PG metrics (version, connections, etc.) | [0.19.1](https://hub.docker.com/r/bitnami/postgres-exporter) |
-| Valkey | 6379 | Redis fork for storing custom metrics | [latest](https://hub.docker.com/r/valkey/valkey) |
+| [Rust Axum](./rust-app) | 8083 (Docker), 8081 (Kind) | Async web server: Fibonacci compute, sqlx async Postgres, tokenizer-based expression evaluator, OTLP logs | 1.0.1 |
+| Grafana | 3000 | Dashboards + data sources. Login `admin` / `admin` | `latest` |
+| Grafana image renderer | 8081 | PNG render sidecar for Grafana | `latest` |
+| Prometheus | 9090 | Metrics scraper | `latest` |
+| Mimir | 9009 | Long-term metrics storage | `latest` |
+| Tempo | 3200 | Trace storage | `latest` |
+| Loki | 3100 | Log storage | `latest` |
+| OpenTelemetry Collector | 4317 | OTLP ingestion point | `latest` |
+| PostgreSQL | 5432 | Audit log persistence | 16 |
+| postgres-exporter | 9187 | PG metrics (version, connections, etc.) | `latest` |
+| Valkey | 6379 | Redis-compatible store for canary metrics | `latest` |
+| redis-exporter | 9121 | Prometheus metrics for Valkey | `latest` |
+| Redpanda | 9092 | Kafka API used by Tempo | `latest` |
+
+Compose pins these images to `latest` except PostgreSQL 16. The old pinned version numbers in this table were not what `docker compose` pulls.
 
 ## Testing
 
@@ -91,7 +107,7 @@ python -m pytest tests/test_infrastructure.py -v
 # All tests
 python -m pytest tests/ -v
 
-# Shell smoke test (docker compose)
+# Shell smoke test of the Python app (docker compose must already be up)
 ./test.sh
 ```
 
@@ -101,12 +117,12 @@ python -m pytest tests/ -v
 .
 ├── app.py / java-app/ / rust-app/      Apps + Dockerfile
 ├── canary/                               Synthetic load generator
-├── config/                               YAML configs (otel, tempo, loki, mimir, prometheus)
+├── config/                               YAML configs (otel, tempo, loki, mimir, prometheus, grafana)
 │   └── dashboards/
-│       └── observability-demo-metrics.json
+│       ├── observability-demo-metrics.json
+│       └── valkey-metrics.json
 ├── k8s/                                  Kubernetes manifests + deploy script
 ├── tests/                                Test suite
-├── docs/                                 Diagrams, screenshots
 ├── docker-compose.yaml                   Full stack definition
 ├── launch_docker.sh / launch_k8s.sh      Entry points for deployment
 └── pytest.ini / requirements.txt         Python config
@@ -140,12 +156,48 @@ curl http://localhost:8080/actuator/info
 
 Liveness ignores the database. Readiness includes the database check and a custom `demo` health indicator. Docker Compose and the Kind manifest probe those paths.
 
+## URLs to try
+
+Dashboards:
+
+- http://localhost:3000/
+- http://localhost:3000/d/observability-demo-metrics/observability-demo
+- http://localhost:3000/d/valkey-metrics/valkey-canary-metrics
+
+In a browser, write `+` in the eval query as `%2B`.
+
+| | Python | Java | Rust (Docker) |
+|---|---|---|---|
+| Home | http://localhost:5000/ | http://localhost:8080/ | http://localhost:8083/ |
+| Version | http://localhost:5000/version | http://localhost:8080/version | http://localhost:8083/version |
+| Self-test | http://localhost:5000/selftest | http://localhost:8080/selftest | http://localhost:8083/selftest |
+| Fibonacci | http://localhost:5000/compute/10 | http://localhost:8080/compute/10 | http://localhost:8083/compute/10 |
+| Audit log | http://localhost:5000/auditlog | http://localhost:8080/auditlog | http://localhost:8083/auditlog |
+| Audit stats | http://localhost:5000/auditlog/stats | http://localhost:8080/auditlog/stats | http://localhost:8083/auditlog/stats |
+| Eval `2+3*4` | http://localhost:5000/eval?expr=2%2B3*4 | http://localhost:8080/eval?expr=2%2B3*4 | http://localhost:8083/eval?expr=2%2B3*4 |
+
+Java only:
+
+- http://localhost:8080/actuator/health
+- http://localhost:8080/actuator/health/liveness
+- http://localhost:8080/actuator/health/readiness
+- http://localhost:8080/actuator/info
+
+Backends:
+
+- http://localhost:9090/ and http://localhost:9090/targets
+- http://localhost:3200/ready
+- http://localhost:3100/ready
+- http://localhost:9009/ready
+- http://localhost:9187/metrics
+- http://localhost:9121/metrics
+
 ## PostgreSQL Additions
 
 - **Version widget** in Grafana dashboard (requires `PG_EXPORTER_DISABLE_SETTINGS_METRICS=false`)
 - **Audit table** auto-created on app startup
 - **Connection pooling** in all app services
-- **postgres-exporter** scrapes version, connections, cache hit rate, etc.
+- **postgres-exporter** scrapes version, connections, cache hit rate, etc. The Bitnami image needs `GODEBUG=fips140=off`, or the version widget stays empty.
 
 ---
 *Note: AI was used to learn, build, test, and deploy this project.*

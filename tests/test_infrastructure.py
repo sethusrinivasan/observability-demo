@@ -79,7 +79,6 @@ class TestObservabilityDemo:
 
     def test_compute_returns_correct_fibonacci(self):
         resp = requests.get(f"{APP_URL}/compute/10")
-        # 10% random error rate — retry a few times to get a success
         for _ in range(10):
             resp = requests.get(f"{APP_URL}/compute/10")
             if resp.status_code == 200:

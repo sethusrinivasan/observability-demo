@@ -253,11 +253,13 @@ spec:
         imagePullPolicy: IfNotPresent
         env:
         - name: GF_AUTH_ANONYMOUS_ENABLED
-          value: "true"
-        - name: GF_AUTH_ANONYMOUS_ORG_ROLE
-          value: "Admin"
+          value: "false"
+        - name: GF_SECURITY_ADMIN_USER
+          value: "admin"
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          value: "admin"
         - name: GF_AUTH_DISABLE_LOGIN_FORM
-          value: "true"
+          value: "false"
         - name: GF_INSTALL_PLUGINS
           value: "redis-datasource"
         - name: GF_SERVER_HTTP_ADDR
@@ -382,6 +384,8 @@ spec:
           value: "postgresql://observability:observability@postgres:5432/observability?sslmode=disable"
         - name: PG_EXPORTER_DISABLE_SETTINGS_METRICS
           value: "false"
+        - name: GODEBUG
+          value: "fips140=off"
 ---
 apiVersion: v1
 kind: Service

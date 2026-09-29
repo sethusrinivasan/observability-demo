@@ -9,6 +9,7 @@ import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.Meter;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender;
 import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -73,7 +74,10 @@ public class ObservabilityJavaApp {
 class OTelConfig {
     @Bean
     public OpenTelemetry openTelemetry() {
-        return AutoConfiguredOpenTelemetrySdk.initialize().getOpenTelemetrySdk();
+        OpenTelemetry openTelemetry = AutoConfiguredOpenTelemetrySdk.initialize().getOpenTelemetrySdk();
+        // Logback starts before the SDK. install() attaches the exporter and flushes buffered lines.
+        OpenTelemetryAppender.install(openTelemetry);
+        return openTelemetry;
     }
 
     @Bean
