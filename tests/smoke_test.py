@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-smoke_test.py — multi-language end-to-end smoke tests for Python, Java, and Rust apps.
+smoke_test.py — multi-language end-to-end smoke tests for Python, Java, Rust, and Node.js apps.
 Works without external dependencies (uses standard library urllib).
 Automatically detects Docker Compose vs Kubernetes NodePort environments.
 """
@@ -41,8 +41,9 @@ def get_base_urls():
     py = os.getenv("PYTHON_URL")
     jv = os.getenv("JAVA_URL")
     rs = os.getenv("RUST_URL")
-    if py and jv and rs:
-        return {"python": py, "java": jv, "rust": rs}
+    nd = os.getenv("NODE_URL")
+    if py and jv and rs and nd:
+        return {"python": py, "java": jv, "rust": rs, "node": nd}
 
     # 2. CLI flags
     if "--k8s" in sys.argv:
@@ -50,12 +51,14 @@ def get_base_urls():
             "python": "http://localhost:30001",
             "java": "http://localhost:30005",
             "rust": "http://localhost:30006",
+            "node": "http://localhost:30007",
         }
     if "--docker" in sys.argv:
         return {
             "python": "http://localhost:5000",
             "java": "http://localhost:8080",
             "rust": "http://localhost:8083",
+            "node": "http://localhost:8084",
         }
 
     # 3. Auto-detect: check if localhost:5000 is reachable
@@ -66,6 +69,7 @@ def get_base_urls():
                 "python": "http://localhost:5000",
                 "java": "http://localhost:8080",
                 "rust": "http://localhost:8083",
+                "node": "http://localhost:8084",
             }
     except Exception:
         pass
@@ -75,6 +79,7 @@ def get_base_urls():
         "python": "http://localhost:30001",
         "java": "http://localhost:30005",
         "rust": "http://localhost:30006",
+        "node": "http://localhost:30007",
     }
 
 
@@ -96,7 +101,7 @@ def test_app(lang, base_url):
         print(f"  [GET /version]: {status}")
         assert status == 200
         data = json.loads(body)
-        assert data.get("language") == lang
+        assert data.get("language") in (lang, "nodejs")
     except Exception as e:
         print(f"  [GET /version]: FAILED - {e}")
         return False

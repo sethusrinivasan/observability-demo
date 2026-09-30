@@ -43,6 +43,7 @@ Services (after --run):
   Python App   http://localhost:5000
   Java App     http://localhost:8080
   Rust App     http://localhost:8081
+  Node App     http://localhost:8084
   Grafana      http://localhost:3000  (admin / admin)
   Prometheus   http://localhost:9090
   Tempo        http://localhost:3200
@@ -160,6 +161,9 @@ nodes:
   - containerPort: 30006
     hostPort: 8081
     protocol: TCP
+  - containerPort: 30007
+    hostPort: 8084
+    protocol: TCP
 KINDCONF
     echo "  ✓ Cluster created"
 fi
@@ -173,6 +177,7 @@ docker build -t observability-python-app:latest .
 docker build -t observability-canary:latest ./canary
 docker build -t observability-java-app:latest ./java-app
 docker build -t observability-rust-app:latest ./rust-app
+docker build -t observability-node-app:latest ./node-app
 echo "  ✓ All images built"
 
 # ---------------------------------------------------------------------------
@@ -184,6 +189,7 @@ kind load docker-image observability-python-app:latest --name "$CLUSTER_NAME"
 kind load docker-image observability-canary:latest      --name "$CLUSTER_NAME"
 kind load docker-image observability-java-app:latest    --name "$CLUSTER_NAME"
 kind load docker-image observability-rust-app:latest    --name "$CLUSTER_NAME"
+kind load docker-image observability-node-app:latest    --name "$CLUSTER_NAME"
 echo "  ✓ Images loaded"
 
 # ---------------------------------------------------------------------------
@@ -249,6 +255,7 @@ wait_for_deployment postgres            60
 wait_for_deployment observability-python-app 120
 wait_for_deployment observability-java-app   120
 wait_for_deployment observability-rust-app   120
+wait_for_deployment observability-node-app   120
 
 # ---------------------------------------------------------------------------
 # Step 8: Summary
@@ -261,6 +268,7 @@ echo ""
 echo "  Python App   http://localhost:5000"
 echo "  Java App     http://localhost:8080"
 echo "  Rust App     http://localhost:8081"
+echo "  Node App     http://localhost:8084"
 echo "  Grafana      http://localhost:3000  (admin / admin)"
 echo "  Prometheus   http://localhost:9090"
 echo "  Tempo        http://localhost:3200"

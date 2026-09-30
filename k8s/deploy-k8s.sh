@@ -78,6 +78,9 @@ nodes:
   - containerPort: 30006
     hostPort: 8081
     protocol: TCP
+  - containerPort: 30007
+    hostPort: 8084
+    protocol: TCP
 KINDCONF
 else
     echo "Cluster $CLUSTER_NAME already exists."
@@ -89,12 +92,14 @@ docker build -t observability-python-app:latest .
 docker build -t observability-canary:latest ./canary
 docker build -t observability-java-app:latest ./java-app
 docker build -t observability-rust-app:latest ./rust-app
+docker build -t observability-node-app:latest ./node-app
 
 echo "=== Loading Images into Kind ==="
 kind load docker-image observability-python-app:latest --name "$CLUSTER_NAME"
 kind load docker-image observability-canary:latest --name "$CLUSTER_NAME"
 kind load docker-image observability-java-app:latest --name "$CLUSTER_NAME"
 kind load docker-image observability-rust-app:latest --name "$CLUSTER_NAME"
+kind load docker-image observability-node-app:latest --name "$CLUSTER_NAME"
 
 echo "=== Creating ConfigMaps ==="
 kubectl create configmap otel-config --from-file=config.yaml=./config/otel-collector.yaml -o yaml --dry-run=client | kubectl apply -f -

@@ -33,6 +33,7 @@ import requests
 APP_BASE_URL         = os.getenv("APP_BASE_URL",        "http://observability-python-app:5000")
 JAVA_APP_BASE_URL    = os.getenv("JAVA_APP_BASE_URL",   "http://observability-java-app:8080")
 RUST_APP_BASE_URL    = os.getenv("RUST_APP_BASE_URL",   "http://observability-rust-app:8081")
+NODE_APP_BASE_URL    = os.getenv("NODE_APP_BASE_URL",   "http://observability-node-app:8080")
 OTLP_ENDPOINT        = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
 MIMIR_URL            = os.getenv("MIMIR_URL",           "http://mimir:9009")
 VALKEY_HOST          = os.getenv("VALKEY_HOST",         "valkey")
@@ -122,7 +123,7 @@ class FaultManager:
 
             clean_tag = tag.strip() if tag and tag.strip() else f"DRILL-{int(now)}"
             target_clean = target.lower().strip()
-            if target_clean not in ("all", "python", "java", "rust"):
+            if target_clean not in ("all", "python", "java", "rust", "node"):
                 target_clean = "all"
 
             fault = {
@@ -250,6 +251,7 @@ class CanaryState:
             "python": {"url": APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
             "java":   {"url": JAVA_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
             "rust":   {"url": RUST_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
+            "node":   {"url": NODE_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
         }
         self.endpoints = {}
         self.recent_requests = deque(maxlen=30)
@@ -336,7 +338,8 @@ class CanaryState:
                     "total": 0, "success": 0, "error": 0, "dur_sum": 0.0, "dur_cnt": 0,
                     "apps": {"python": {"t": 0, "s": 0, "e": 0, "ds": 0.0},
                              "java":   {"t": 0, "s": 0, "e": 0, "ds": 0.0},
-                             "rust":   {"t": 0, "s": 0, "e": 0, "ds": 0.0}}
+                             "rust":   {"t": 0, "s": 0, "e": 0, "ds": 0.0},
+                             "node":   {"t": 0, "s": 0, "e": 0, "ds": 0.0}}
                 }
             b = self.ts_buckets[bucket_ts]
             b["total"] += 1
@@ -462,7 +465,7 @@ class CanaryState:
                 if b_ts < start_ts:
                     continue
                 b = self.ts_buckets[b_ts]
-                if service in ("python", "java", "rust"):
+                if service in ("python", "java", "rust", "node"):
                     ba = b["apps"].get(service, {"t": 0, "s": 0, "e": 0, "ds": 0.0})
                     tot = ba["t"]
                     succ = ba["s"]
@@ -514,7 +517,7 @@ def query_trend_metrics(range_str: str = "5m", service: str = "all") -> dict:
     rate_win = cfg["rate_win"]
     start = now - seconds
 
-    service_filter = f'language="{service}",' if service in ("python", "java", "rust") else ""
+    service_filter = f'language="{service}",' if service in ("python", "java", "rust", "node") else ""
 
     queries = {
         "throughput": f'sum(rate(app_synthetic_requests_total{{{service_filter}}}[{rate_win}])) or vector(0)',
@@ -599,6 +602,7 @@ def render_dashboard_html() -> str:
       --lang-java: #f97316;     /* Java: Orange */
       --lang-python: #3b82f6;   /* Python: Blue */
       --lang-rust: #d946ef;     /* Rust: Fuchsia */
+      --lang-node: #22c55e;     /* Node: Emerald */
       --lang-all: #ef4444;      /* All: Red */
     }}
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -801,6 +805,7 @@ def render_dashboard_html() -> str:
     .chip-btn.chip-java:hover {{ border-color: var(--lang-java); color: var(--lang-java); }}
     .chip-btn.chip-python:hover {{ border-color: var(--lang-python); color: var(--lang-python); }}
     .chip-btn.chip-rust:hover {{ border-color: var(--lang-rust); color: var(--lang-rust); }}
+    .chip-btn.chip-node:hover {{ border-color: var(--lang-node); color: var(--lang-node); }}
 
     /* Section Subheaders */
     .section-bar {{
@@ -916,11 +921,13 @@ def render_dashboard_html() -> str:
     .badge-python {{ background: #1e3a8a; color: #93c5fd; }}
     .badge-java {{ background: #7c2d12; color: #fdba74; }}
     .badge-rust {{ background: #701a75; color: #f0abfc; }}
+    .badge-node {{ background: #064e3b; color: #86efac; }}
 
     /* Language-specific Fault Badges */
     .badge-fault-java   {{ background: #7c2d12; color: #fed7aa; border: 1px solid #f97316; }}
     .badge-fault-python {{ background: #1e3a8a; color: #bfdbfe; border: 1px solid #3b82f6; }}
     .badge-fault-rust   {{ background: #701a75; color: #f5d0fe; border: 1px solid #d946ef; }}
+    .badge-fault-node   {{ background: #064e3b; color: #bbf7d0; border: 1px solid #22c55e; }}
     .badge-fault-all    {{ background: #7f1d1d; color: #fecaca; border: 1px solid #ef4444; }}
 
     code {{
@@ -1034,10 +1041,11 @@ def render_dashboard_html() -> str:
           <div class="form-field">
             <label>Target Language</label>
             <select id="fault-target-select" class="ctrl-input">
-              <option value="all">🔴 All (Python/Java/Rust)</option>
+              <option value="all">🔴 All (Python/Java/Rust/Node)</option>
               <option value="java">🟠 Java (Spring Boot)</option>
               <option value="python">🔵 Python (Flask)</option>
               <option value="rust">🟣 Rust (Axum)</option>
+              <option value="node">🟢 Node.js (Express)</option>
             </select>
           </div>
           <div class="form-field">
@@ -1059,6 +1067,7 @@ def render_dashboard_html() -> str:
           <button class="chip-btn chip-java" onclick="quickDrill('JAVA-ERR-SPIKE', 'error_spike', 'java', 60)">🟠 Java Errors (60s)</button>
           <button class="chip-btn chip-python" onclick="quickDrill('PY-LATENCY-SURGE', 'high_latency', 'python', 60)">🔵 Py Latency (60s)</button>
           <button class="chip-btn chip-rust" onclick="quickDrill('RUST-CHAOS-DRILL', 'intermittent_errors', 'rust', 60)">🟣 Rust Chaos (60s)</button>
+          <button class="chip-btn chip-node" onclick="quickDrill('NODE-ERR-SPIKE', 'error_spike', 'node', 60)">🟢 Node Errors (60s)</button>
           <button class="chip-btn" onclick="quickDrill('ALL-OUTAGE-DRILL', 'service_outage', 'all', 30)">🔴 Full Outage (30s)</button>
         </div>
       </div>
@@ -1125,6 +1134,7 @@ def render_dashboard_html() -> str:
             <button class="filter-btn" onclick="setServiceFilter('python', this)">Python</button>
             <button class="filter-btn" onclick="setServiceFilter('java', this)">Java</button>
             <button class="filter-btn" onclick="setServiceFilter('rust', this)">Rust</button>
+            <button class="filter-btn" onclick="setServiceFilter('node', this)">Node</button>
           </div>
         </div>
       </div>
@@ -1292,6 +1302,7 @@ def render_dashboard_html() -> str:
       'java':   {{ stroke: '#f97316', fill: 'rgba(249, 115, 22, 0.22)', badge: '#ea580c', border: '#f97316', text: '#fff' }},
       'python': {{ stroke: '#3b82f6', fill: 'rgba(59, 130, 246, 0.22)', badge: '#2563eb', border: '#3b82f6', text: '#fff' }},
       'rust':   {{ stroke: '#d946ef', fill: 'rgba(217, 70, 239, 0.22)', badge: '#c026d3', border: '#d946ef', text: '#fff' }},
+      'node':   {{ stroke: '#22c55e', fill: 'rgba(34, 197, 94, 0.22)', badge: '#16a34a', border: '#22c55e', text: '#fff' }},
       'all':    {{ stroke: '#ef4444', fill: 'rgba(239, 68, 68, 0.22)', badge: '#dc2626', border: '#ef4444', text: '#fff' }}
     }};
 
@@ -2018,7 +2029,8 @@ def start_dashboard_server(port: int) -> HTTPServer:
 def wait_for_apps(session: requests.Session) -> None:
     for name, lang, url in [("Python", "python", APP_BASE_URL),
                             ("Java", "java", JAVA_APP_BASE_URL),
-                            ("Rust", "rust", RUST_APP_BASE_URL)]:
+                            ("Rust", "rust", RUST_APP_BASE_URL),
+                            ("Node", "node", NODE_APP_BASE_URL)]:
         base = f"{url}/"
         while True:
             try:
@@ -2050,7 +2062,7 @@ def run() -> None:
     next_tick = time.time()
 
     while True:
-        for app_info in [("python", APP_BASE_URL), ("java", JAVA_APP_BASE_URL), ("rust", RUST_APP_BASE_URL)]:
+        for app_info in [("python", APP_BASE_URL), ("java", JAVA_APP_BASE_URL), ("rust", RUST_APP_BASE_URL), ("node", NODE_APP_BASE_URL)]:
             app_lang, base_url = app_info
             for target in TARGETS:
                 path         = target["path"]
