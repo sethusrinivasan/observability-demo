@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-smoke_test.py — multi-language end-to-end smoke tests for Python, Java, Rust, and Node.js apps.
+smoke_test.py — multi-language end-to-end smoke tests for Python, Java, Rust, Node.js, and Go apps.
 Works without external dependencies (uses standard library urllib).
 Automatically detects Docker Compose vs Kubernetes NodePort environments.
 """
@@ -42,8 +42,9 @@ def get_base_urls():
     jv = os.getenv("JAVA_URL")
     rs = os.getenv("RUST_URL")
     nd = os.getenv("NODE_URL")
-    if py and jv and rs and nd:
-        return {"python": py, "java": jv, "rust": rs, "node": nd}
+    go = os.getenv("GO_URL")
+    if py and jv and rs and nd and go:
+        return {"python": py, "java": jv, "rust": rs, "node": nd, "go": go}
 
     # 2. CLI flags
     if "--k8s" in sys.argv:
@@ -52,6 +53,7 @@ def get_base_urls():
             "java": "http://localhost:30005",
             "rust": "http://localhost:30006",
             "node": "http://localhost:30007",
+            "go": "http://localhost:30008",
         }
     if "--docker" in sys.argv:
         return {
@@ -59,6 +61,7 @@ def get_base_urls():
             "java": "http://localhost:8080",
             "rust": "http://localhost:8083",
             "node": "http://localhost:8084",
+            "go": "http://localhost:8086",
         }
 
     # 3. Auto-detect: check if localhost:5000 is reachable
@@ -70,6 +73,7 @@ def get_base_urls():
                 "java": "http://localhost:8080",
                 "rust": "http://localhost:8083",
                 "node": "http://localhost:8084",
+                "go": "http://localhost:8086",
             }
     except Exception:
         pass
@@ -80,6 +84,7 @@ def get_base_urls():
         "java": "http://localhost:30005",
         "rust": "http://localhost:30006",
         "node": "http://localhost:30007",
+        "go": "http://localhost:30008",
     }
 
 
@@ -101,7 +106,7 @@ def test_app(lang, base_url):
         print(f"  [GET /version]: {status}")
         assert status == 200
         data = json.loads(body)
-        assert data.get("language") in (lang, "nodejs")
+        assert data.get("language") in (lang, "nodejs", "golang")
     except Exception as e:
         print(f"  [GET /version]: FAILED - {e}")
         return False

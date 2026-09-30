@@ -33,6 +33,7 @@ APP_URL       = os.getenv("PYTHON_APP_URL", "http://localhost:5000")
 JAVA_APP_URL  = os.getenv("JAVA_APP_URL", "http://localhost:8080")
 RUST_APP_URL  = os.getenv("RUST_APP_URL", "http://localhost:8083")
 NODE_APP_URL  = os.getenv("NODE_APP_URL", "http://localhost:8084")
+GO_APP_URL    = os.getenv("GO_APP_URL", "http://localhost:8086")
 OTEL_HTTP_URL = os.getenv("OTEL_HTTP_URL", "http://localhost:4318")
 TEMPO_URL     = os.getenv("TEMPO_URL", "http://localhost:3200")
 LOKI_URL      = os.getenv("LOKI_URL", "http://localhost:3100")
@@ -91,6 +92,11 @@ requires_rust = pytest.mark.skipif(
 requires_node = pytest.mark.skipif(
     not _http_ok(f"{NODE_APP_URL}/"),
     reason="Node app not running"
+)
+
+requires_go = pytest.mark.skipif(
+    not _http_ok(f"{GO_APP_URL}/"),
+    reason="Go app not running"
 )
 
 requires_valkey = pytest.mark.skipif(
@@ -733,7 +739,49 @@ class TestNodeApp:
 
 
 # ===========================================================================
-# 14. valkey & redis-exporter
+# 14. observability-go-app
+#     Core function: Go (net/http) equivalent microservice with full
+#     OTel tracing, metrics, and PostgreSQL audit logging.
+# ===========================================================================
+
+@requires_go
+class TestGoApp:
+    def test_home_returns_200(self):
+        resp = requests.get(f"{GO_APP_URL}/", timeout=5)
+        assert resp.status_code == 200
+
+    def test_version_returns_golang(self):
+        resp = requests.get(f"{GO_APP_URL}/version", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["language"] in ["golang", "go"]
+        assert data["version"] == "1.0.1"
+
+    def test_selftest_passes(self):
+        resp = requests.get(f"{GO_APP_URL}/selftest", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+
+    def test_compute_fibonacci(self):
+        resp = requests.get(f"{GO_APP_URL}/compute/10", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["result"] == 55
+
+    def test_eval_expression(self):
+        resp = requests.post(f"{GO_APP_URL}/eval", json={"expr": "2 + 3 * 4"}, timeout=5)
+        assert resp.status_code == 200
+        assert resp.json()["result"] == 14.0
+
+    def test_auditlog_get(self):
+        resp = requests.get(f"{GO_APP_URL}/auditlog", timeout=5)
+        assert resp.status_code in [200, 201]
+        assert resp.json()["status"] == "ok"
+
+
+# ===========================================================================
+# 15. valkey & redis-exporter
 #     Core function: In-memory store for canary metrics, scraped by Prometheus.
 # ===========================================================================
 
@@ -760,7 +808,7 @@ class TestValkeyAndRedisExporter:
 
 
 # ===========================================================================
-# 15. canary dashboard
+# 16. canary dashboard
 #     Core function: Live self-monitoring HTTP dashboard for synthetic traffic.
 # ===========================================================================
 
@@ -783,6 +831,7 @@ class TestCanaryDashboard:
         assert "java" in data["apps"]
         assert "rust" in data["apps"]
         assert "node" in data["apps"]
+        assert "go" in data["apps"]
 
     def test_health_endpoint(self):
         resp = requests.get(f"{CANARY_URL}/health", timeout=5)
