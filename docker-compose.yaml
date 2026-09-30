@@ -316,6 +316,37 @@ services:
     networks:
       - observability-network
 
+  observability-dotnet-app:
+    build:
+      context: ./dotnet-app
+      dockerfile: Dockerfile
+    container_name: observability-dotnet-app
+    restart: unless-stopped
+    ports:
+      - "8087:8080"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=observability
+      - POSTGRES_USER=observability
+      - POSTGRES_PASSWORD=observability
+      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability
+      - OTEL_RESOURCE_ATTRIBUTES=language=csharp,service.name=observability-dotnet-app
+      - ASPNETCORE_HTTP_PORTS=8080
+      - ASPNETCORE_ENVIRONMENT=Production
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health/liveness"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      - otel-collector
+      - postgres
+    networks:
+      - observability-network
+
   # Synthetic canary — isolated container that exercises every endpoint
   # at a calibrated rate (24 TPS → ~50% saturation of one core).
   # Runs independently so canary failures never affect the app process.
@@ -331,6 +362,7 @@ services:
       - RUST_APP_BASE_URL=http://observability-rust-app:8081
       - NODE_APP_BASE_URL=http://observability-node-app:8080
       - GO_APP_BASE_URL=http://observability-go-app:8080
+      - DOTNET_APP_BASE_URL=http://observability-dotnet-app:8080
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - MIMIR_URL=http://mimir:9009
       - CANARY_TPS=6
@@ -343,6 +375,7 @@ services:
       - observability-rust-app
       - observability-node-app
       - observability-go-app
+      - observability-dotnet-app
       - otel-collector
       - mimir
     networks:

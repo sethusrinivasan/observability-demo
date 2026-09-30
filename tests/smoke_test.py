@@ -43,8 +43,9 @@ def get_base_urls():
     rs = os.getenv("RUST_URL")
     nd = os.getenv("NODE_URL")
     go = os.getenv("GO_URL")
-    if py and jv and rs and nd and go:
-        return {"python": py, "java": jv, "rust": rs, "node": nd, "go": go}
+    dn = os.getenv("DOTNET_URL")
+    if py and jv and rs and nd and go and dn:
+        return {"python": py, "java": jv, "rust": rs, "node": nd, "go": go, "dotnet": dn}
 
     # 2. CLI flags
     if "--k8s" in sys.argv:
@@ -54,6 +55,7 @@ def get_base_urls():
             "rust": "http://localhost:30006",
             "node": "http://localhost:30007",
             "go": "http://localhost:30008",
+            "dotnet": "http://localhost:30009",
         }
     if "--docker" in sys.argv:
         return {
@@ -62,6 +64,7 @@ def get_base_urls():
             "rust": "http://localhost:8083",
             "node": "http://localhost:8084",
             "go": "http://localhost:8086",
+            "dotnet": "http://localhost:8087",
         }
 
     # 3. Auto-detect: check if localhost:5000 is reachable
@@ -74,6 +77,7 @@ def get_base_urls():
                 "rust": "http://localhost:8083",
                 "node": "http://localhost:8084",
                 "go": "http://localhost:8086",
+                "dotnet": "http://localhost:8087",
             }
     except Exception:
         pass
@@ -85,6 +89,7 @@ def get_base_urls():
         "rust": "http://localhost:30006",
         "node": "http://localhost:30007",
         "go": "http://localhost:30008",
+        "dotnet": "http://localhost:30009",
     }
 
 
@@ -106,7 +111,7 @@ def test_app(lang, base_url):
         print(f"  [GET /version]: {status}")
         assert status == 200
         data = json.loads(body)
-        assert data.get("language") in (lang, "nodejs", "golang")
+        assert data.get("language") in (lang, "nodejs", "golang", "csharp", "dotnet")
     except Exception as e:
         print(f"  [GET /version]: FAILED - {e}")
         return False

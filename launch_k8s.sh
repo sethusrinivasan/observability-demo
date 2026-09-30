@@ -45,6 +45,7 @@ Services (after --run):
   Rust App     http://localhost:8081
   Node App     http://localhost:8084
   Go App       http://localhost:8086
+  Dotnet App   http://localhost:8087
   Grafana      http://localhost:3000  (admin / admin)
   Prometheus   http://localhost:9090
   Tempo        http://localhost:3200
@@ -168,6 +169,9 @@ nodes:
   - containerPort: 30008
     hostPort: 8086
     protocol: TCP
+  - containerPort: 30009
+    hostPort: 8087
+    protocol: TCP
 KINDCONF
     echo "  ✓ Cluster created"
 fi
@@ -183,6 +187,7 @@ docker build -t observability-java-app:latest ./java-app
 docker build -t observability-rust-app:latest ./rust-app
 docker build -t observability-node-app:latest ./node-app
 docker build -t observability-go-app:latest ./go-app
+docker build -t observability-dotnet-app:latest ./dotnet-app
 echo "  ✓ All images built"
 
 # ---------------------------------------------------------------------------
@@ -196,6 +201,7 @@ kind load docker-image observability-java-app:latest    --name "$CLUSTER_NAME"
 kind load docker-image observability-rust-app:latest    --name "$CLUSTER_NAME"
 kind load docker-image observability-node-app:latest    --name "$CLUSTER_NAME"
 kind load docker-image observability-go-app:latest      --name "$CLUSTER_NAME"
+kind load docker-image observability-dotnet-app:latest  --name "$CLUSTER_NAME"
 echo "  ✓ Images loaded"
 
 # ---------------------------------------------------------------------------
@@ -263,6 +269,7 @@ wait_for_deployment observability-java-app   120
 wait_for_deployment observability-rust-app   120
 wait_for_deployment observability-node-app   120
 wait_for_deployment observability-go-app     120
+wait_for_deployment observability-dotnet-app 120
 
 # ---------------------------------------------------------------------------
 # Step 8: Summary
@@ -277,6 +284,7 @@ echo "  Java App     http://localhost:8080"
 echo "  Rust App     http://localhost:8081"
 echo "  Node App     http://localhost:8084"
 echo "  Go App       http://localhost:8086"
+echo "  Dotnet App   http://localhost:8087"
 echo "  Grafana      http://localhost:3000  (admin / admin)"
 echo "  Prometheus   http://localhost:9090"
 echo "  Tempo        http://localhost:3200"

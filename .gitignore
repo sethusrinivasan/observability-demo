@@ -9,6 +9,8 @@ venv/
 *.egg-info/
 dist/
 build/
+bin/
+obj/
 
 # Runtime / temp files
 *.out
