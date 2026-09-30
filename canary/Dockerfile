@@ -7,4 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY canary.py .
 
+EXPOSE 8085
+
 CMD ["python", "canary.py"]

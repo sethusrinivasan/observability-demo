@@ -91,6 +91,11 @@ spec:
           value: "valkey"
         - name: CANARY_TPS
           value: "6"
+        - name: CANARY_PORT
+          value: "8085"
+        ports:
+        - containerPort: 8085
+          name: http-dashboard
         resources:
           requests:
             cpu: "20m"

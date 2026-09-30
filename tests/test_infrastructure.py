@@ -41,6 +41,7 @@ GRAFANA_URL   = os.getenv("GRAFANA_URL", "http://localhost:3000")
 GRAFANA_AUTH  = (os.getenv("GRAFANA_USER", "admin"), os.getenv("GRAFANA_PASSWORD", "admin"))
 REDIS_EXPORTER_URL = os.getenv("REDIS_EXPORTER_URL", "http://localhost:9121")
 VALKEY_PORT   = int(os.getenv("VALKEY_PORT", "6379"))
+CANARY_URL    = os.getenv("CANARY_URL", "http://localhost:8085")
 REDPANDA_KAFKA= ("localhost", 9092)
 
 PG_CONN = dict(
@@ -89,6 +90,11 @@ requires_rust = pytest.mark.skipif(
 requires_valkey = pytest.mark.skipif(
     not _tcp_ok("localhost", VALKEY_PORT),
     reason="Valkey not running"
+)
+
+requires_canary = pytest.mark.skipif(
+    not _http_ok(f"{CANARY_URL}/health"),
+    reason="Canary dashboard not running"
 )
 
 
@@ -703,3 +709,77 @@ class TestValkeyAndRedisExporter:
         data = resp.json()["data"]["result"]
         assert len(data) > 0
         assert data[0]["value"][1] == "1"
+
+
+# ===========================================================================
+# 14. canary dashboard
+#     Core function: Live self-monitoring HTTP dashboard for synthetic traffic.
+# ===========================================================================
+
+@requires_canary
+class TestCanaryDashboard:
+    def test_dashboard_html_returns_200(self):
+        resp = requests.get(f"{CANARY_URL}/", timeout=5)
+        assert resp.status_code == 200
+        assert "Canary Load Generator" in resp.text
+        assert 'http-equiv="refresh"' in resp.text
+
+    def test_stats_json_endpoint(self):
+        resp = requests.get(f"{CANARY_URL}/stats", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] in ["Running", "Initializing"]
+        assert "total_requests" in data
+        assert "apps" in data
+        assert "python" in data["apps"]
+        assert "java" in data["apps"]
+        assert "rust" in data["apps"]
+
+    def test_health_endpoint(self):
+        resp = requests.get(f"{CANARY_URL}/health", timeout=5)
+        assert resp.status_code == 200
+        assert "OK" in resp.text
+
+    def test_trends_endpoint(self):
+        for r in ["5m", "30m", "1h", "6h", "1d", "30d"]:
+            resp = requests.get(f"{CANARY_URL}/api/trends?range={r}", timeout=5)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "metrics" in data
+            assert "throughput" in data["metrics"]
+            assert "errors" in data["metrics"]
+            assert "availability" in data["metrics"]
+            assert "latency_ms" in data["metrics"]
+
+    def test_fault_injection_lifecycle(self):
+        # Start fault
+        resp = requests.post(f"{CANARY_URL}/api/fault/start", json={
+            "tag": "TEST-CI-DRILL",
+            "fault_type": "error_spike",
+            "target": "java",
+            "duration_sec": 10
+        }, timeout=5)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "started"
+
+        # Check active fault list
+        resp_f = requests.get(f"{CANARY_URL}/api/faults", timeout=5)
+        assert resp_f.status_code == 200
+        assert resp_f.json()["active_fault"]["tag"] == "TEST-CI-DRILL"
+
+        # Stop fault
+        resp_s = requests.post(f"{CANARY_URL}/api/fault/stop", timeout=5)
+        assert resp_s.status_code == 200
+        assert resp_s.json()["status"] == "stopped"
+
+    def test_tps_override_lifecycle(self):
+        # Apply TPS override
+        resp = requests.post(f"{CANARY_URL}/api/tps", json={"tps": 18, "duration_sec": 10}, timeout=5)
+        assert resp.status_code == 200
+        assert resp.json()["effective_tps"] == 18.0
+
+        # Reset TPS
+        resp_r = requests.post(f"{CANARY_URL}/api/tps/reset", timeout=5)
+        assert resp_r.status_code == 200
+        assert resp_r.json()["status"] == "reset"
+

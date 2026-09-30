@@ -257,17 +257,24 @@ services:
     build: ./canary
     container_name: canary
     restart: unless-stopped
+    ports:
+      - "8085:8085"
     environment:
       - APP_BASE_URL=http://observability-python-app:5000
       - JAVA_APP_BASE_URL=http://observability-java-app:8080
       - RUST_APP_BASE_URL=http://observability-rust-app:8081
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - MIMIR_URL=http://mimir:9009
       - CANARY_TPS=6
+      - CANARY_PORT=8085
+    volumes:
+      - ./canary/canary.py:/app/canary.py
     depends_on:
       - observability-python-app
       - observability-java-app
       - observability-rust-app
       - otel-collector
+      - mimir
     networks:
       - observability-network
 

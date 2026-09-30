@@ -61,6 +61,14 @@ class AppSelfTest {
         assertEquals(14.0, controller.evaluate("2+3*4"));
         assertEquals(1024.0, controller.evaluate("2^10"));
     }
+
+    @Test
+    void testDivisionByZero() {
+        AppController controller = new AppController();
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () -> {
+            controller.evaluate("5/0");
+        });
+    }
 }
 
 @SpringBootApplication
@@ -425,6 +433,9 @@ class AppController {
                 nextChar();
                 double x = parseExpression();
                 if (pos < str.length()) throw new RuntimeException("Unexpected: " + (char)ch);
+                if (Double.isInfinite(x) || Double.isNaN(x)) {
+                    throw new IllegalArgumentException("Arithmetic error: non-finite result");
+                }
                 return x;
             }
 
@@ -441,7 +452,13 @@ class AppController {
                 double x = parseFactor();
                 for (;;) {
                     if      (eat('*')) x *= parseFactor(); // multiplication
-                    else if (eat('/')) x /= parseFactor(); // division
+                    else if (eat('/')) {
+                        double divisor = parseFactor();
+                        if (divisor == 0.0) {
+                            throw new IllegalArgumentException("Division by zero");
+                        }
+                        x /= divisor; // division
+                    }
                     else return x;
                 }
             }
