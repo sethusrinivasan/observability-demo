@@ -402,6 +402,49 @@ class AppController {
         }
     }
 
+    @RequestMapping(value = {"/crash", "/chaos/crash"}, method = {RequestMethod.GET, RequestMethod.POST})
+    public ResponseEntity<?> chaosCrash(
+            @RequestParam(value = "type", required = false) String crashType,
+            @RequestBody(required = false) Map<String, Object> body) {
+        String type = crashType;
+        if ((type == null || type.isBlank()) && body != null && body.containsKey("type")) {
+            type = String.valueOf(body.get("type"));
+        }
+        if (type == null || type.isBlank()) {
+            type = "process";
+        }
+        type = type.toLowerCase().trim();
+        logger.warn("CHAOS CRASH REQUEST RECEIVED: type={}", type);
+
+        if ("thread".equals(type)) {
+            new Thread(() -> {
+                throw new RuntimeException("Chaos thread crash: Fatal unhandled exception on worker thread " + Thread.currentThread().getName());
+            }, "chaos-crashed-thread").start();
+
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(withContext(Map.of(
+                            "status", "crashed",
+                            "type", "thread",
+                            "message", "Worker thread crashed with fatal exception"
+                    )));
+        }
+
+        // Process crash
+        new Thread(() -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {}
+            logger.error("FATAL: Chaos process crash executing Runtime.getRuntime().halt(1)");
+            Runtime.getRuntime().halt(1);
+        }, "chaos-process-killer").start();
+
+        return ResponseEntity.ok(withContext(Map.of(
+                "status", "crashing",
+                "type", "process",
+                "message", "Process crash initiated; JVM halting"
+        )));
+    }
+
     private String getHomeHtml() {
         return "<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Observability Lab (Java)</title></head><body><h1>Hello from Observability Lab (Java)!</h1><p><strong>App:</strong> observability-java-app | <strong>Version:</strong> 1.0.1 | <strong>Language:</strong> java | <strong>Framework:</strong> Spring Boot</p><p>Discover the compute endpoint with a number:</p><ul><li><a href='/compute/5'>Compute 5</a></li><li><a href='/compute/10'>Compute 10</a></li><li><a href='/compute/20'>Compute 20</a></li></ul><p>Spring Boot Actuator (this app only):</p><ul><li><a href='/actuator/health'>Health</a></li><li><a href='/actuator/health/liveness'>Liveness</a></li><li><a href='/actuator/health/readiness'>Readiness</a></li><li><a href='/actuator/info'>Info</a></li></ul></body></html>";
     }

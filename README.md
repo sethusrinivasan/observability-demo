@@ -45,6 +45,7 @@ Consolidated distributed tracing (Tempo), metrics (Mimir/Prometheus), logs (Loki
   * **Historical Trend Graphs**: Availability (%), Error Rate (err/s), Response Latency (ms), and Throughput (TPS) queried directly from Mimir.
   * **6 Time Horizons**: `Past 5 Min`, `Past 30 Min`, `Past Hour`, `Past 6 Hours`, `Past Day`, and `Past Month`.
   * **Fault Injection Testing (Chaos Drills)**: Induce `Error Spikes`, `High Latency (+1000ms)`, `Service Outage (Drops)`, or `Intermittent Errors` with custom event tagging.
+  * **Chaos Crash Triggering (Thread / Process Crash)**: Directly issue requests from the dashboard to target test environments to trigger process crashes (fatal termination & container restart) or worker thread crashes with tagged events.
   * **Language-Specific Event Color Coding**: Fault events are visually tagged and overlaid on trend charts using distinct language color palettes (🟠 Java, 🔵 Python, 🟣 Rust, 🟢 Node, 🩵 Go, 💜 .NET, 🔴 All).
   * **Dynamic Load Controller**: Bump up Canary TPS from baseline (6 TPS) to higher rates (e.g., 12, 24, 48 TPS) with automatic expiration and reset controls.
   * **Dual View Architecture**: Toggle between `Both Views`, `Trends Only`, and `Current Raw Numbers`.
@@ -133,6 +134,7 @@ Every microservice implements identical API contracts:
 | `/auditlog` | `GET`, `POST` | Insert/query persistent audit log record | `curl -X POST http://localhost:8080/auditlog -d "source=cli"` |
 | `/auditlog/stats` | `GET` | Aggregated audit log row statistics | `curl http://localhost:8083/auditlog/stats` |
 | `/eval?expr=...` | `GET`, `POST` | Custom zero-eval arithmetic expression parser | `curl "http://localhost:5000/eval?expr=2%2B3*4"` |
+| `/crash` | `GET`, `POST` | Chaos testing: triggers process or thread crash (`?type=process` or `?type=thread`) | `curl -X POST "http://localhost:8080/crash?type=thread"` |
 
 *Note: For the `/eval` endpoint, operators like `+` must be URL-encoded (`%2B`).*
 

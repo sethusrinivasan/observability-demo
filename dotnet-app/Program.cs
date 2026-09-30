@@ -537,6 +537,65 @@ app.MapGet("/eval", handleEval);
 app.MapPost("/eval", handleEval);
 
 // ---------------------------------------------------------------------------
+// Chaos Crash Endpoints (Process / Thread Crash)
+// ---------------------------------------------------------------------------
+var handleCrash = async (HttpContext context) =>
+{
+    var type = context.Request.Query["type"].ToString();
+    if (string.IsNullOrWhiteSpace(type) && context.Request.HasJsonContentType())
+    {
+        try
+        {
+            var body = await context.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+            if (body != null && body.TryGetValue("type", out var t)) type = t;
+        }
+        catch { }
+    }
+    if (string.IsNullOrWhiteSpace(type)) type = "process";
+    type = type.ToLowerInvariant().Trim();
+
+    var pid = Environment.ProcessId;
+    Console.WriteLine($"[CHAOS] Crash request received: type={type}, pid={pid}");
+
+    if (type == "thread")
+    {
+        new Thread(() =>
+        {
+            Console.WriteLine($"[CHAOS] Worker thread crashed on pid {pid}");
+        }) { IsBackground = true }.Start();
+
+        return Results.Json(WithContext(new Dictionary<string, object?>
+        {
+            ["status"] = "crashed",
+            ["type"] = "thread",
+            ["pid"] = pid,
+            ["message"] = "Worker thread crashed"
+        }), statusCode: 500);
+    }
+
+    // Process crash
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(50);
+        Console.Error.WriteLine($"[FATAL] Chaos process crash executing Environment.FailFast on PID {pid}");
+        Environment.FailFast($"Chaos process crash requested on PID {pid}");
+    });
+
+    return Results.Ok(WithContext(new Dictionary<string, object?>
+    {
+        ["status"] = "crashing",
+        ["type"] = "process",
+        ["pid"] = pid,
+        ["message"] = $"Process crash initiated on PID {pid}; .NET runtime terminating"
+    }));
+};
+
+app.MapGet("/crash", handleCrash);
+app.MapPost("/crash", handleCrash);
+app.MapGet("/chaos/crash", handleCrash);
+app.MapPost("/chaos/crash", handleCrash);
+
+// ---------------------------------------------------------------------------
 // Actuator Probes
 // ---------------------------------------------------------------------------
 app.MapGet("/actuator/health", () => Results.Ok(new { status = "UP" }));

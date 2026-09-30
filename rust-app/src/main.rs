@@ -39,6 +39,11 @@ struct EvalBody {
     expr: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct CrashQuery {
+    r#type: Option<String>,
+}
+
 // ── cgroup helpers ────────────────────────────────────────────────────────────
 
 fn read_cgroup_u64(v2: &str, v1: &str) -> f64 {
@@ -250,6 +255,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/auditlog", get(audit_log).post(audit_log))
         .route("/auditlog/stats", get(audit_log_stats))
         .route("/eval", get(eval_get).post(eval_post))
+        .route("/crash", get(crash_get).post(crash_post))
+        .route("/chaos/crash", get(crash_get).post(crash_post))
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8081));
@@ -392,6 +399,60 @@ async fn handle_eval(state: AppState, expr: Option<String>) -> impl IntoResponse
             (StatusCode::BAD_REQUEST, Json(attach_context(serde_json::json!({"error": e})))).into_response()
         }
     }
+}
+
+async fn crash_get(Query(query): Query<CrashQuery>) -> Response {
+    handle_crash(query.r#type)
+}
+
+async fn crash_post(
+    Query(query): Query<CrashQuery>,
+    body: axum::body::Bytes,
+) -> Response {
+    let mut crash_type = query.r#type;
+    if crash_type.is_none() && !body.is_empty() {
+        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&body) {
+            if let Some(t) = val.get("type").and_then(|v| v.as_str()) {
+                crash_type = Some(t.to_string());
+            }
+        }
+    }
+    handle_crash(crash_type)
+}
+
+fn handle_crash(crash_type_opt: Option<String>) -> Response {
+    let crash_type = crash_type_opt.unwrap_or_else(|| "process".to_string()).to_lowercase();
+    tracing::warn!("CHAOS CRASH REQUEST RECEIVED: type={}", crash_type);
+
+    if crash_type == "thread" {
+        std::thread::spawn(|| {
+            panic!("Chaos thread crash: Fatal worker thread panic");
+        });
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(attach_context(serde_json::json!({
+                "status": "crashed",
+                "type": "thread",
+                "message": "Worker thread crashed with panic"
+            }))),
+        ).into_response();
+    }
+
+    // Process crash
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        tracing::error!("FATAL: Chaos process crash executing std::process::exit(1)");
+        std::process::exit(1);
+    });
+
+    (
+        StatusCode::OK,
+        Json(attach_context(serde_json::json!({
+            "status": "crashing",
+            "type": "process",
+            "message": "Process crash initiated; Rust binary exiting"
+        }))),
+    ).into_response()
 }
 
 // ── fibonacci ─────────────────────────────────────────────────────────────────

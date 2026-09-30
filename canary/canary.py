@@ -726,15 +726,30 @@ def render_dashboard_html() -> str:
     .kpi-value {{ font-size: 1.35rem; font-weight: 800; margin: 2px 0; line-height: 1.1; }}
     .kpi-subtext {{ font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 
-    /* Compact Side-by-Side Control Panels (Fault Injection + TPS Override) */
+    /* Compact 3-Column Control Panels (Fault Injection + Crash Trigger + TPS Override) */
     .controls-grid {{
       display: grid;
-      grid-template-columns: 1.4fr 1fr;
+      grid-template-columns: 1.15fr 1.15fr 1fr;
       gap: 10px;
       margin-bottom: 14px;
     }}
-    @media (max-width: 1050px) {{
+    @media (max-width: 1280px) {{
       .controls-grid {{ grid-template-columns: 1fr; }}
+    }}
+    .toast-notice {{
+      position: fixed;
+      top: 15px;
+      right: 20px;
+      background: #111a29;
+      border: 1px solid var(--accent);
+      color: #f1f5f9;
+      padding: 9px 16px;
+      border-radius: 6px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+      font-size: 0.8rem;
+      font-weight: 600;
+      z-index: 9999;
+      display: none;
     }}
     .ctrl-box {{
       background: #111a29;
@@ -972,6 +987,7 @@ def render_dashboard_html() -> str:
 </head>
 <body>
   <div id="chart-tooltip"></div>
+  <div id="toast-notice" class="toast-notice"></div>
   <div class="container">
     <header>
       <div class="title-group">
@@ -1050,6 +1066,8 @@ def render_dashboard_html() -> str:
               <option value="high_latency">⏱️ High Latency (+1000ms)</option>
               <option value="service_outage">🛑 Service Outage (Drops)</option>
               <option value="intermittent_errors">🎲 Intermittent (50% Err)</option>
+              <option value="process_crash">💥 Process Crash (Kill Process)</option>
+              <option value="thread_crash">🧵 Thread Crash (Worker Fault)</option>
             </select>
           </div>
           <div class="form-field">
@@ -1090,7 +1108,53 @@ def render_dashboard_html() -> str:
         </div>
       </div>
 
-      <!-- 2. Dynamic TPS Load Controller -->
+      <!-- 2. Target Crash Trigger Station -->
+      <div class="ctrl-box">
+        <div class="ctrl-box-title">
+          <span>💥 Target Crash Injection (Process / Thread)</span>
+          <span style="font-size:0.7rem; color:var(--muted); font-weight:normal;">Issues crash to target process</span>
+        </div>
+        <form id="crash-form" class="form-inline-grid" style="grid-template-columns: 1fr 1fr 1fr 95px;" onsubmit="submitCrashTrigger(event)">
+          <div class="form-field">
+            <label>Target Environment</label>
+            <select id="crash-target-select" class="ctrl-input">
+              <option value="java">🟠 Java (Spring Boot)</option>
+              <option value="python">🔵 Python (Flask)</option>
+              <option value="rust">🟣 Rust (Axum)</option>
+              <option value="node">🟢 Node.js (Express)</option>
+              <option value="go">🩵 Go (net/http)</option>
+              <option value="dotnet">💜 .NET (C#)</option>
+              <option value="all">🔴 All Environments</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>Crash Scope</label>
+            <select id="crash-type-select" class="ctrl-input">
+              <option value="process">💥 Process Crash (Kill)</option>
+              <option value="thread">🧵 Thread Crash (Worker)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>Event Tag Name</label>
+            <input type="text" id="crash-tag-input" class="ctrl-input" placeholder="e.g. CRASH-JAVA-PROC" />
+          </div>
+          <div>
+            <button type="submit" class="btn btn-danger" style="width:100%; background:#b91c1c;">💥 Crash</button>
+          </div>
+        </form>
+        <div class="chips-row">
+          <span style="font-size:0.68rem; color:var(--muted); font-weight:700;">QUICK CRASH:</span>
+          <button class="chip-btn chip-java" onclick="quickCrash('java', 'process', 'CRASH-JAVA-PROC')">🟠 Java Proc</button>
+          <button class="chip-btn chip-java" onclick="quickCrash('java', 'thread', 'CRASH-JAVA-THREAD')">🟠 Java Thread</button>
+          <button class="chip-btn chip-python" onclick="quickCrash('python', 'process', 'CRASH-PY-PROC')">🔵 Py Proc</button>
+          <button class="chip-btn chip-rust" onclick="quickCrash('rust', 'process', 'CRASH-RUST-PROC')">🟣 Rust Proc</button>
+          <button class="chip-btn chip-node" onclick="quickCrash('node', 'process', 'CRASH-NODE-PROC')">🟢 Node Proc</button>
+          <button class="chip-btn chip-go" onclick="quickCrash('go', 'process', 'CRASH-GO-PROC')">🩵 Go Proc</button>
+          <button class="chip-btn chip-dotnet" onclick="quickCrash('dotnet', 'process', 'CRASH-DOTNET-PROC')">💜 .NET Proc</button>
+        </div>
+      </div>
+
+      <!-- 3. Dynamic TPS Load Controller -->
       <div class="ctrl-box">
         <div class="ctrl-box-title">
           <span>🚀 Load Rate Controller (TPS Override)</span>
@@ -1583,6 +1647,47 @@ def render_dashboard_html() -> str:
       }}
     }}
 
+    // Toast Notification
+    function showToast(msg, isError) {{
+      const toast = document.getElementById('toast-notice');
+      if (!toast) return;
+      toast.innerText = msg;
+      toast.style.borderColor = isError ? '#ef4444' : '#10b981';
+      toast.style.display = 'block';
+      setTimeout(() => {{ toast.style.display = 'none'; }}, 4000);
+    }}
+
+    // Target Crash Handlers
+    async function submitCrashTrigger(e) {{
+      e.preventDefault();
+      const target = document.getElementById('crash-target-select').value;
+      const type = document.getElementById('crash-type-select').value;
+      let tag = document.getElementById('crash-tag-input').value.trim();
+      if (!tag) tag = `CRASH-${{target.toUpperCase()}}-${{type.toUpperCase()}}`;
+
+      try {{
+        const res = await fetch('/api/crash', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ target, type, tag }})
+        }});
+        const data = await res.json();
+        showToast(`💥 Crash issued to ${{target.toUpperCase()}} (${{type.toUpperCase()}} crash)!`);
+        document.getElementById('crash-tag-input').value = '';
+        fetchStats();
+        fetchTrendsAndRefresh();
+      }} catch (err) {{
+        showToast("Error triggering crash: " + err, true);
+      }}
+    }}
+
+    function quickCrash(target, type, tag) {{
+      document.getElementById('crash-target-select').value = target;
+      document.getElementById('crash-type-select').value = type;
+      document.getElementById('crash-tag-input').value = tag;
+      document.getElementById('crash-form').dispatchEvent(new Event('submit'));
+    }}
+
     // TPS Override Handlers
     async function applyTpsOverride(e) {{
       e.preventDefault();
@@ -1919,6 +2024,68 @@ def render_dashboard_html() -> str:
 """
 
 # ---------------------------------------------------------------------------
+# Chaos Crash Invocation (Thread / Process Crash)
+# ---------------------------------------------------------------------------
+def trigger_target_crash(target: str, crash_type: str = "process", tag: str = None) -> dict:
+    app_urls = {
+        "python": APP_BASE_URL,
+        "java": JAVA_APP_BASE_URL,
+        "rust": RUST_APP_BASE_URL,
+        "node": NODE_APP_BASE_URL,
+        "go": GO_APP_BASE_URL,
+        "dotnet": DOTNET_APP_BASE_URL,
+    }
+    tgt_clean = (target or "java").lower().strip()
+    crash_type_clean = "thread" if (crash_type or "").lower().strip() == "thread" else "process"
+    targets = [tgt_clean] if tgt_clean in app_urls else list(app_urls.keys())
+
+    clean_tag = tag.strip() if tag and tag.strip() else f"CRASH-{tgt_clean.upper()}-{crash_type_clean.upper()}"
+
+    logger.warning("Triggering %s crash on target environment %s (tag: %s)",
+                   crash_type_clean, tgt_clean, clean_tag)
+
+    results = []
+    for tgt in targets:
+        base = app_urls[tgt]
+        url = f"{base}/crash?type={crash_type_clean}"
+        try:
+            resp = requests.post(url, json={"type": crash_type_clean, "tag": clean_tag}, timeout=2.0)
+            status_code = resp.status_code
+            try:
+                resp_data = resp.json()
+            except Exception:
+                resp_data = resp.text
+            results.append({
+                "target": tgt,
+                "url": url,
+                "status_code": status_code,
+                "response": resp_data
+            })
+        except Exception as exc:
+            # Process crash may abort TCP connection immediately
+            results.append({
+                "target": tgt,
+                "url": url,
+                "status": "connection_terminated",
+                "message": f"Connection reset / process terminated: {exc}"
+            })
+
+    fault_manager.start_fault(
+        tag=clean_tag,
+        fault_type=f"{crash_type_clean}_crash",
+        target=tgt_clean if tgt_clean in app_urls else "all",
+        duration_sec=30
+    )
+
+    return {
+        "status": "success",
+        "tag": clean_tag,
+        "crash_type": crash_type_clean,
+        "target": tgt_clean,
+        "results": results
+    }
+
+# ---------------------------------------------------------------------------
 # HTTP Server (Standard Library)
 # ---------------------------------------------------------------------------
 def start_dashboard_server(port: int) -> HTTPServer:
@@ -1943,6 +2110,18 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+
+            elif path == "/api/crash":
+                target = query.get("target", ["java"])[0]
+                crash_type = query.get("type", ["process"])[0]
+                tag = query.get("tag", [""])[0]
+                res = trigger_target_crash(target, crash_type, tag)
+                resp = json.dumps(res).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
 
             elif path == "/api/trends":
                 range_str = query.get("range", ["5m"])[0]
@@ -2017,6 +2196,18 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 duration = int(body.get("duration_sec", 60))
                 res = state.set_tps_override(tps, duration)
                 resp = json.dumps({"status": "applied", **res}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+            elif path == "/api/crash":
+                target = body.get("target", "java")
+                crash_type = body.get("type", "process")
+                tag = body.get("tag", "")
+                res = trigger_target_crash(target, crash_type, tag)
+                resp = json.dumps(res).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
@@ -2139,6 +2330,10 @@ def run() -> None:
                             except Exception:
                                 status = "error"
                             fault_manager.record_affected(is_error=(status == "error"))
+
+                    elif f_type in ("process_crash", "thread_crash"):
+                        status = "error"
+                        fault_manager.record_affected(is_error=True)
                 else:
                     try:
                         if method == "POST":

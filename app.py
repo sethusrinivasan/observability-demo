@@ -4,6 +4,8 @@ import resource
 import requests
 import time
 import os
+import signal
+import threading
 import json
 from datetime import datetime, timezone
 import psycopg2
@@ -669,6 +671,52 @@ def eval_expression():
         except ValueError as exc:
             logger.warning("Eval error for '%s': %s", expr, exc)
             return jsonify({"error": str(exc)}), 400
+
+
+@app.route('/crash', methods=['GET', 'POST'])
+@app.route('/chaos/crash', methods=['GET', 'POST'])
+def chaos_crash():
+    crash_type = request.args.get('type')
+    if not crash_type and request.is_json:
+        crash_type = (request.get_json(silent=True) or {}).get('type')
+    if not crash_type:
+        crash_type = request.form.get('type', 'process')
+    crash_type = (crash_type or 'process').lower().strip()
+
+    pid = os.getpid()
+    logger.warning("CHAOS CRASH REQUEST RECEIVED: type=%s, pid=%s", crash_type, pid)
+
+    if crash_type == 'thread':
+        def thread_crash():
+            time.sleep(0.01)
+            raise RuntimeError(f"Chaos thread crash on PID {pid}")
+        t = threading.Thread(target=thread_crash, name="chaos-crashed-thread")
+        t.start()
+        return jsonify({
+            "status": "crashed",
+            "type": "thread",
+            "pid": pid,
+            "message": "Serving worker thread crashed with unhandled exception"
+        }), 500
+
+    # Process crash
+    def kill_process():
+        time.sleep(0.05)
+        try:
+            ppid = os.getppid()
+            if ppid > 1:
+                os.kill(ppid, signal.SIGKILL)
+        except Exception:
+            pass
+        os.kill(pid, signal.SIGKILL)
+
+    threading.Thread(target=kill_process, daemon=True).start()
+    return jsonify({
+        "status": "crashing",
+        "type": "process",
+        "pid": pid,
+        "message": f"Process crash initiated on PID {pid}"
+    }), 200
 
 
 def fibonacci(n):

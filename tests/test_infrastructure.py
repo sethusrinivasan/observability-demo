@@ -154,6 +154,13 @@ class TestObservabilityDemo:
         assert data["total_rows"] > 0
         assert "percentiles" in data
 
+    def test_crash_thread_endpoint(self):
+        resp = requests.post(f"{APP_URL}/crash?type=thread", timeout=5)
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["status"] == "crashed"
+        assert data["type"] == "thread"
+
 
 # ===========================================================================
 # 2. otel-collector
@@ -659,6 +666,13 @@ class TestJavaApp:
         resp = requests.get(f"{JAVA_APP_URL}/actuator/info", timeout=5)
         assert resp.status_code == 200
 
+    def test_crash_thread_endpoint(self):
+        resp = requests.post(f"{JAVA_APP_URL}/crash?type=thread", timeout=5)
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["status"] == "crashed"
+        assert data["type"] == "thread"
+
 
 # ===========================================================================
 # 12. observability-rust-app
@@ -700,6 +714,13 @@ class TestRustApp:
         resp = requests.get(f"{RUST_APP_URL}/auditlog", timeout=5)
         assert resp.status_code in [200, 201]
         assert resp.json()["status"] == "ok"
+
+    def test_crash_thread_endpoint(self):
+        resp = requests.post(f"{RUST_APP_URL}/crash?type=thread", timeout=5)
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["status"] == "crashed"
+        assert data["type"] == "thread"
 
 
 # ===========================================================================
@@ -743,6 +764,13 @@ class TestNodeApp:
         assert resp.status_code in [200, 201]
         assert resp.json()["status"] == "ok"
 
+    def test_crash_thread_endpoint(self):
+        resp = requests.post(f"{NODE_APP_URL}/crash?type=thread", timeout=5)
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["status"] == "crashed"
+        assert data["type"] == "thread"
+
 
 # ===========================================================================
 # 14. observability-go-app
@@ -785,6 +813,13 @@ class TestGoApp:
         assert resp.status_code in [200, 201]
         assert resp.json()["status"] == "ok"
 
+    def test_crash_thread_endpoint(self):
+        resp = requests.post(f"{GO_APP_URL}/crash?type=thread", timeout=5)
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["status"] == "crashed"
+        assert data["type"] == "thread"
+
 
 # ===========================================================================
 # 15. observability-dotnet-app
@@ -826,6 +861,13 @@ class TestDotnetApp:
         resp = requests.get(f"{DOTNET_APP_URL}/auditlog", timeout=5)
         assert resp.status_code in [200, 201]
         assert resp.json()["status"] == "ok"
+
+    def test_crash_thread_endpoint(self):
+        resp = requests.post(f"{DOTNET_APP_URL}/crash?type=thread", timeout=5)
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["status"] == "crashed"
+        assert data["type"] == "thread"
 
 
 # ===========================================================================
@@ -929,4 +971,20 @@ class TestCanaryDashboard:
         resp_r = requests.post(f"{CANARY_URL}/api/tps/reset", timeout=5)
         assert resp_r.status_code == 200
         assert resp_r.json()["status"] == "reset"
+
+    def test_crash_trigger_api(self):
+        resp = requests.post(f"{CANARY_URL}/api/crash", json={
+            "target": "python",
+            "type": "thread",
+            "tag": "TEST-CI-CRASH-THREAD"
+        }, timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "success"
+        assert data["crash_type"] == "thread"
+        assert data["target"] == "python"
+        assert len(data["results"]) >= 1
+
+        # Stop fault drill
+        requests.post(f"{CANARY_URL}/api/fault/stop", timeout=5)
 

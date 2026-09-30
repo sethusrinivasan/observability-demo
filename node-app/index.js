@@ -386,6 +386,51 @@ function handleEval(req, res) {
 app.get("/eval", handleEval);
 app.post("/eval", handleEval);
 
+// 7b. Chaos Crash endpoint (Process / Thread crash)
+function handleCrash(req, res) {
+  let crashType = req.query.type;
+  if (!crashType && req.body && req.body.type) {
+    crashType = req.body.type;
+  }
+  crashType = (crashType || "process").toLowerCase().trim();
+
+  console.warn(`[CHAOS] Crash request received: type=${crashType}, pid=${process.pid}`);
+
+  if (crashType === "thread") {
+    setTimeout(() => {
+      console.error(`[CHAOS] Worker thread error simulated on PID ${process.pid}`);
+    }, 10);
+
+    return res.status(500).json(
+      withContext({
+        status: "crashed",
+        type: "thread",
+        pid: process.pid,
+        message: "Worker thread crashed with unhandled exception",
+      })
+    );
+  }
+
+  // Process crash
+  res.status(200).json(
+    withContext({
+      status: "crashing",
+      type: "process",
+      pid: process.pid,
+      message: `Process crash initiated on PID ${process.pid}; Node.js exiting`,
+    })
+  );
+
+  setTimeout(() => {
+    console.error(`[FATAL] Chaos process crash executing process.exit(1) on PID ${process.pid}`);
+    process.exit(1);
+  }, 50);
+}
+app.get("/crash", handleCrash);
+app.post("/crash", handleCrash);
+app.get("/chaos/crash", handleCrash);
+app.post("/chaos/crash", handleCrash);
+
 // 8. Actuator & Health Probes (Parity with Java Spring Boot)
 app.get("/actuator/health", (req, res) => {
   res.json({ status: "UP" });

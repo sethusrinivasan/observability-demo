@@ -524,6 +524,51 @@ func handlePlainHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("OK"))
 }
 
+func handleCrash(w http.ResponseWriter, r *http.Request) {
+	crashType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
+	if crashType == "" && r.Method == http.MethodPost {
+		var body struct {
+			Type string `json:"type"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		crashType = strings.ToLower(strings.TrimSpace(body.Type))
+	}
+	if crashType == "" {
+		crashType = "process"
+	}
+
+	pid := os.Getpid()
+	log.Printf("[CHAOS] Crash request received: type=%s, pid=%d\n", crashType, pid)
+
+	if crashType == "thread" {
+		go func() {
+			log.Printf("[CHAOS] Worker goroutine/thread crashed on pid %d\n", pid)
+		}()
+
+		writeJSON(w, http.StatusInternalServerError, withContextMap(map[string]interface{}{
+			"status":  "crashed",
+			"type":    "thread",
+			"pid":     pid,
+			"message": "Worker thread/goroutine crashed with unhandled error",
+		}))
+		return
+	}
+
+	// Process crash
+	writeJSON(w, http.StatusOK, withContextMap(map[string]interface{}{
+		"status":  "crashing",
+		"type":    "process",
+		"pid":     pid,
+		"message": fmt.Sprintf("Process crash initiated on PID %d; Go binary exiting", pid),
+	}))
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		log.Printf("[FATAL] Chaos process crash executing os.Exit(1) on PID %d\n", pid)
+		os.Exit(1)
+	}()
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -557,6 +602,8 @@ func main() {
 	mux.HandleFunc("/auditlog", handleAuditLog)
 	mux.HandleFunc("/auditlog/stats", handleAuditLogStats)
 	mux.HandleFunc("/eval", handleEval)
+	mux.HandleFunc("/crash", handleCrash)
+	mux.HandleFunc("/chaos/crash", handleCrash)
 
 	// Actuator Probes
 	mux.HandleFunc("/actuator/health", handleHealth)

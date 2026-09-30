@@ -172,6 +172,18 @@ def test_app(lang, base_url):
         print(f"  [GET /auditlog]: FAILED - {e}")
         return False
 
+    # 8. Test /crash?type=thread
+    try:
+        status, body = _get(f"{base_url}/crash?type=thread", timeout=5)
+        print(f"  [GET /crash?type=thread]: {status}")
+        assert status == 500, f"Expected 500, got {status}"
+        data = json.loads(body)
+        assert data.get("status") == "crashed"
+        assert data.get("type") == "thread"
+    except Exception as e:
+        print(f"  [GET /crash?type=thread]: FAILED - {e}")
+        return False
+
     print(f"  {lang.upper()} app: OK\n")
     return True
 
