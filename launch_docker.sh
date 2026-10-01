@@ -69,7 +69,7 @@ done
 sleep 3
 
 # Force-remove all containers by name (handles both compose and manually started)
-for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app \
+for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app observability-c-app \
             canary otel-collector tempo redpanda mimir loki \
             grafana grafana-renderer postgres postgres-exporter prometheus valkey redis-exporter; do
     docker rm -f "$name" 2>/dev/null || true
@@ -93,7 +93,7 @@ fi
 
 # Remove any leftover named containers that compose missed (e.g. manually
 # started containers or those whose PIDs were killed above)
-for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app \
+for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app observability-c-app \
             canary otel-collector tempo redpanda mimir loki \
             grafana grafana-renderer postgres postgres-exporter prometheus valkey redis-exporter; do
     docker rm -f "$name" 2>/dev/null || true
@@ -171,6 +171,7 @@ wait_for "http://localhost:8083/"       "Rust"       40 3
 wait_for "http://localhost:8084/actuator/health/liveness" "Node" 40 3
 wait_for "http://localhost:8086/actuator/health/liveness" "Go"   40 3
 wait_for "http://localhost:8087/actuator/health/liveness" ".NET" 40 3
+wait_for "http://localhost:8088/actuator/health/liveness" "C" 40 3
 
 # Grafana runs DB migrations on first boot — takes longer
 echo -n "  Waiting for Grafana"
@@ -208,6 +209,7 @@ echo "  Rust:       http://localhost:8083"
 echo "  Node:       http://localhost:8084"
 echo "  Go:         http://localhost:8086"
 echo "  .NET:       http://localhost:8087"
+echo "  C:          http://localhost:8088"
 echo "  Grafana:    http://localhost:3000  (admin / admin)"
 echo "  Prometheus: http://localhost:9090"
 echo "  Tempo:      http://localhost:3200"

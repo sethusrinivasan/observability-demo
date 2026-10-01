@@ -44,8 +44,9 @@ def get_base_urls():
     nd = os.getenv("NODE_URL")
     go = os.getenv("GO_URL")
     dn = os.getenv("DOTNET_URL")
-    if py and jv and rs and nd and go and dn:
-        return {"python": py, "java": jv, "rust": rs, "node": nd, "go": go, "dotnet": dn}
+    c  = os.getenv("C_URL")
+    if py and jv and rs and nd and go and dn and c:
+        return {"python": py, "java": jv, "rust": rs, "node": nd, "go": go, "dotnet": dn, "c": c}
 
     # 2. CLI flags
     if "--k8s" in sys.argv:
@@ -56,6 +57,7 @@ def get_base_urls():
             "node": "http://localhost:30007",
             "go": "http://localhost:30008",
             "dotnet": "http://localhost:30009",
+            "c": "http://localhost:30010",
         }
     if "--docker" in sys.argv:
         return {
@@ -65,6 +67,7 @@ def get_base_urls():
             "node": "http://localhost:8084",
             "go": "http://localhost:8086",
             "dotnet": "http://localhost:8087",
+            "c": "http://localhost:8088",
         }
 
     # 3. Auto-detect: check if localhost:5000 is reachable
@@ -78,6 +81,7 @@ def get_base_urls():
                 "node": "http://localhost:8084",
                 "go": "http://localhost:8086",
                 "dotnet": "http://localhost:8087",
+                "c": "http://localhost:8088",
             }
     except Exception:
         pass
@@ -90,6 +94,7 @@ def get_base_urls():
         "node": "http://localhost:30007",
         "go": "http://localhost:30008",
         "dotnet": "http://localhost:30009",
+        "c": "http://localhost:30010",
     }
 
 
@@ -186,6 +191,9 @@ def test_app(lang, base_url):
 
     print(f"  {lang.upper()} app: OK\n")
     return True
+
+
+test_app.__test__ = False
 
 
 def main():

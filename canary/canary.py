@@ -36,6 +36,7 @@ RUST_APP_BASE_URL    = os.getenv("RUST_APP_BASE_URL",   "http://observability-ru
 NODE_APP_BASE_URL    = os.getenv("NODE_APP_BASE_URL",   "http://observability-node-app:8080")
 GO_APP_BASE_URL      = os.getenv("GO_APP_BASE_URL",     "http://observability-go-app:8080")
 DOTNET_APP_BASE_URL  = os.getenv("DOTNET_APP_BASE_URL", "http://observability-dotnet-app:8080")
+C_APP_BASE_URL       = os.getenv("C_APP_BASE_URL",      "http://observability-c-app:8080")
 OTLP_ENDPOINT        = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
 MIMIR_URL            = os.getenv("MIMIR_URL",           "http://mimir:9009")
 VALKEY_HOST          = os.getenv("VALKEY_HOST",         "valkey")
@@ -125,7 +126,7 @@ class FaultManager:
 
             clean_tag = tag.strip() if tag and tag.strip() else f"DRILL-{int(now)}"
             target_clean = target.lower().strip()
-            if target_clean not in ("all", "python", "java", "rust", "node", "go", "dotnet"):
+            if target_clean not in ("all", "python", "java", "rust", "node", "go", "dotnet", "c"):
                 target_clean = "all"
 
             fault = {
@@ -256,6 +257,7 @@ class CanaryState:
             "node":   {"url": NODE_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
             "go":     {"url": GO_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
             "dotnet": {"url": DOTNET_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
+            "c":      {"url": C_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
         }
         self.endpoints = {}
         self.recent_requests = deque(maxlen=30)
@@ -345,7 +347,8 @@ class CanaryState:
                              "rust":   {"t": 0, "s": 0, "e": 0, "ds": 0.0},
                              "node":   {"t": 0, "s": 0, "e": 0, "ds": 0.0},
                              "go":     {"t": 0, "s": 0, "e": 0, "ds": 0.0},
-                             "dotnet": {"t": 0, "s": 0, "e": 0, "ds": 0.0}}
+                             "dotnet": {"t": 0, "s": 0, "e": 0, "ds": 0.0},
+                             "c":      {"t": 0, "s": 0, "e": 0, "ds": 0.0}}
                 }
             b = self.ts_buckets[bucket_ts]
             b["total"] += 1
@@ -471,7 +474,7 @@ class CanaryState:
                 if b_ts < start_ts:
                     continue
                 b = self.ts_buckets[b_ts]
-                if service in ("python", "java", "rust", "node", "go", "dotnet"):
+                if service in ("python", "java", "rust", "node", "go", "dotnet", "c"):
                     ba = b["apps"].get(service, {"t": 0, "s": 0, "e": 0, "ds": 0.0})
                     tot = ba["t"]
                     succ = ba["s"]
@@ -523,7 +526,7 @@ def query_trend_metrics(range_str: str = "5m", service: str = "all") -> dict:
     rate_win = cfg["rate_win"]
     start = now - seconds
 
-    service_filter = f'language="{service}",' if service in ("python", "java", "rust", "node", "go", "dotnet") else ""
+    service_filter = f'language="{service}",' if service in ("python", "java", "rust", "node", "go", "dotnet", "c") else ""
 
     queries = {
         "throughput": f'sum(rate(app_synthetic_requests_total{{{service_filter}}}[{rate_win}])) or vector(0)',
@@ -611,6 +614,7 @@ def render_dashboard_html() -> str:
       --lang-node: #22c55e;     /* Node: Emerald */
       --lang-go: #06b6d4;       /* Go: Cyan */
       --lang-dotnet: #8b5cf6;   /* .NET: Violet */
+      --lang-c: #64748b;        /* C: Steel Slate */
       --lang-all: #ef4444;      /* All: Red */
     }}
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -831,6 +835,7 @@ def render_dashboard_html() -> str:
     .chip-btn.chip-node:hover {{ border-color: var(--lang-node); color: var(--lang-node); }}
     .chip-btn.chip-go:hover {{ border-color: var(--lang-go); color: var(--lang-go); }}
     .chip-btn.chip-dotnet:hover {{ border-color: var(--lang-dotnet); color: var(--lang-dotnet); }}
+    .chip-btn.chip-c:hover {{ border-color: var(--lang-c); color: var(--lang-c); }}
 
     /* Section Subheaders */
     .section-bar {{
@@ -949,6 +954,7 @@ def render_dashboard_html() -> str:
     .badge-node {{ background: #064e3b; color: #86efac; }}
     .badge-go   {{ background: #083344; color: #67e8f9; }}
     .badge-dotnet {{ background: #2e1065; color: #c4b5fd; }}
+    .badge-c      {{ background: #1e293b; color: #94a3b8; }}
 
     /* Language-specific Fault Badges */
     .badge-fault-java   {{ background: #7c2d12; color: #fed7aa; border: 1px solid #f97316; }}
@@ -957,6 +963,7 @@ def render_dashboard_html() -> str:
     .badge-fault-node   {{ background: #064e3b; color: #bbf7d0; border: 1px solid #22c55e; }}
     .badge-fault-go     {{ background: #083344; color: #a5f3fc; border: 1px solid #06b6d4; }}
     .badge-fault-dotnet {{ background: #2e1065; color: #ddd6fe; border: 1px solid #8b5cf6; }}
+    .badge-fault-c      {{ background: #1e293b; color: #cbd5e1; border: 1px solid #64748b; }}
     .badge-fault-all    {{ background: #7f1d1d; color: #fecaca; border: 1px solid #ef4444; }}
 
     code {{
@@ -1073,13 +1080,14 @@ def render_dashboard_html() -> str:
           <div class="form-field">
             <label>Target Language</label>
             <select id="fault-target-select" class="ctrl-input">
-              <option value="all">🔴 All (Python/Java/Rust/Node/Go/.NET)</option>
+              <option value="all">🔴 All (Python/Java/Rust/Node/Go/.NET/C)</option>
               <option value="java">🟠 Java (Spring Boot)</option>
               <option value="python">🔵 Python (Flask)</option>
               <option value="rust">🟣 Rust (Axum)</option>
               <option value="node">🟢 Node.js (Express)</option>
               <option value="go">🩵 Go (net/http)</option>
               <option value="dotnet">💜 .NET (C#)</option>
+              <option value="c">⚙️ C (POSIX)</option>
             </select>
           </div>
           <div class="form-field">
@@ -1104,6 +1112,7 @@ def render_dashboard_html() -> str:
           <button class="chip-btn chip-node" onclick="quickDrill('NODE-ERR-SPIKE', 'error_spike', 'node', 60)">🟢 Node Errors (60s)</button>
           <button class="chip-btn chip-go" onclick="quickDrill('GO-ERR-SPIKE', 'error_spike', 'go', 60)">🩵 Go Errors (60s)</button>
           <button class="chip-btn chip-dotnet" onclick="quickDrill('DOTNET-ERR-SPIKE', 'error_spike', 'dotnet', 60)">💜 .NET Errors (60s)</button>
+          <button class="chip-btn chip-c" onclick="quickDrill('C-ERR-SPIKE', 'error_spike', 'c', 60)">⚙️ C Errors (60s)</button>
           <button class="chip-btn" onclick="quickDrill('ALL-OUTAGE-DRILL', 'service_outage', 'all', 30)">🔴 Full Outage (30s)</button>
         </div>
       </div>
@@ -1124,6 +1133,7 @@ def render_dashboard_html() -> str:
               <option value="node">🟢 Node.js (Express)</option>
               <option value="go">🩵 Go (net/http)</option>
               <option value="dotnet">💜 .NET (C#)</option>
+              <option value="c">⚙️ C (POSIX)</option>
               <option value="all">🔴 All Environments</option>
             </select>
           </div>
@@ -1151,6 +1161,8 @@ def render_dashboard_html() -> str:
           <button class="chip-btn chip-node" onclick="quickCrash('node', 'process', 'CRASH-NODE-PROC')">🟢 Node Proc</button>
           <button class="chip-btn chip-go" onclick="quickCrash('go', 'process', 'CRASH-GO-PROC')">🩵 Go Proc</button>
           <button class="chip-btn chip-dotnet" onclick="quickCrash('dotnet', 'process', 'CRASH-DOTNET-PROC')">💜 .NET Proc</button>
+          <button class="chip-btn chip-c" onclick="quickCrash('c', 'process', 'CRASH-C-PROC')">⚙️ C Proc</button>
+          <button class="chip-btn chip-c" onclick="quickCrash('c', 'thread', 'CRASH-C-THREAD')">⚙️ C Thread</button>
         </div>
       </div>
 
@@ -1219,6 +1231,7 @@ def render_dashboard_html() -> str:
             <button class="filter-btn" onclick="setServiceFilter('node', this)">Node</button>
             <button class="filter-btn" onclick="setServiceFilter('go', this)">Go</button>
             <button class="filter-btn" onclick="setServiceFilter('dotnet', this)">.NET</button>
+            <button class="filter-btn" onclick="setServiceFilter('c', this)">C</button>
           </div>
         </div>
       </div>
@@ -1389,6 +1402,7 @@ def render_dashboard_html() -> str:
       'node':   {{ stroke: '#22c55e', fill: 'rgba(34, 197, 94, 0.22)', badge: '#16a34a', border: '#22c55e', text: '#fff' }},
       'go':     {{ stroke: '#06b6d4', fill: 'rgba(6, 182, 212, 0.22)', badge: '#0891b2', border: '#06b6d4', text: '#fff' }},
       'dotnet': {{ stroke: '#8b5cf6', fill: 'rgba(139, 92, 246, 0.22)', badge: '#7c3aed', border: '#8b5cf6', text: '#fff' }},
+      'c':      {{ stroke: '#64748b', fill: 'rgba(100, 116, 139, 0.22)', badge: '#475569', border: '#64748b', text: '#fff' }},
       'all':    {{ stroke: '#ef4444', fill: 'rgba(239, 68, 68, 0.22)', badge: '#dc2626', border: '#ef4444', text: '#fff' }}
     }};
 
@@ -2034,6 +2048,7 @@ def trigger_target_crash(target: str, crash_type: str = "process", tag: str = No
         "node": NODE_APP_BASE_URL,
         "go": GO_APP_BASE_URL,
         "dotnet": DOTNET_APP_BASE_URL,
+        "c": C_APP_BASE_URL,
     }
     tgt_clean = (target or "java").lower().strip()
     crash_type_clean = "thread" if (crash_type or "").lower().strip() == "thread" else "process"
@@ -2245,7 +2260,8 @@ def wait_for_apps(session: requests.Session) -> None:
                             ("Rust", "rust", RUST_APP_BASE_URL),
                             ("Node", "node", NODE_APP_BASE_URL),
                             ("Go", "go", GO_APP_BASE_URL),
-                            ("Dotnet", "dotnet", DOTNET_APP_BASE_URL)]:
+                            ("Dotnet", "dotnet", DOTNET_APP_BASE_URL),
+                            ("C", "c", C_APP_BASE_URL)]:
         base = f"{url}/"
         while True:
             try:
@@ -2277,7 +2293,7 @@ def run() -> None:
     next_tick = time.time()
 
     while True:
-        for app_info in [("python", APP_BASE_URL), ("java", JAVA_APP_BASE_URL), ("rust", RUST_APP_BASE_URL), ("node", NODE_APP_BASE_URL), ("go", GO_APP_BASE_URL), ("dotnet", DOTNET_APP_BASE_URL)]:
+        for app_info in [("python", APP_BASE_URL), ("java", JAVA_APP_BASE_URL), ("rust", RUST_APP_BASE_URL), ("node", NODE_APP_BASE_URL), ("go", GO_APP_BASE_URL), ("dotnet", DOTNET_APP_BASE_URL), ("c", C_APP_BASE_URL)]:
             app_lang, base_url = app_info
             for target in TARGETS:
                 path         = target["path"]

@@ -43,6 +43,8 @@ if kubectl get nodes &> /dev/null; then
     GO_PF=$!
     kubectl port-forward deployment/observability-dotnet-app 30009:8080 > /dev/null 2>&1 &
     DOTNET_PF=$!
+    kubectl port-forward deployment/observability-c-app 30010:8080 > /dev/null 2>&1 &
+    C_PF=$!
 
     echo "Waiting for port-forwards to stabilize..."
     sleep 5
@@ -50,7 +52,7 @@ if kubectl get nodes &> /dev/null; then
     python3 tests/smoke_test.py --k8s
     STATUS=$?
 
-    kill $PYTHON_PF $JAVA_PF $RUST_PF $NODE_PF $GO_PF $DOTNET_PF || true
+    kill $PYTHON_PF $JAVA_PF $RUST_PF $NODE_PF $GO_PF $DOTNET_PF $C_PF || true
     pkill -f "port-forward" || true
 else
     echo "Testing against local Docker Compose endpoints..."
