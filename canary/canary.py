@@ -252,17 +252,20 @@ class DockerManager:
         if action_clean == "stop":
             code, data = self._request("POST", f"/containers/{cid}/stop?t=3")
             state.set_app_active(lang.lower(), False)
+            state.mark_unreachable(lang.lower())
             logger.info("Power Control: Stopped container %s (%s). Canary workload suspended.", container_name, cid)
             return {"status": "success", "action": "stop", "language": lang, "docker_code": code}
         elif action_clean == "start":
             code, data = self._request("POST", f"/containers/{cid}/start")
             state.set_app_active(lang.lower(), True)
-            logger.info("Power Control: Started container %s (%s). Canary workload resumed.", container_name, cid)
+            state.mark_unreachable(lang.lower())
+            logger.info("Power Control: Started container %s (%s). Canary workload queued for warmup.", container_name, cid)
             return {"status": "success", "action": "start", "language": lang, "docker_code": code}
         elif action_clean == "restart":
             code, data = self._request("POST", f"/containers/{cid}/restart?t=3")
             state.set_app_active(lang.lower(), True)
-            logger.info("Power Control: Restarted container %s (%s). Canary workload active.", container_name, cid)
+            state.mark_unreachable(lang.lower())
+            logger.info("Power Control: Restarted container %s (%s). Canary workload queued for warmup.", container_name, cid)
             return {"status": "success", "action": "restart", "language": lang, "docker_code": code}
         else:
             return {"status": "error", "message": f"Unsupported action: {action}"}
@@ -868,6 +871,7 @@ class CanaryState:
         self.durations_window = deque(maxlen=1000)
         self.last_target = ""
         self.ts_buckets = {}
+        self.last_external_host = ""
 
     def is_app_active(self, lang: str) -> bool:
         with self._lock:
@@ -875,7 +879,10 @@ class CanaryState:
 
     def set_app_active(self, lang: str, active: bool) -> None:
         with self._lock:
-            self.active_apps[lang.lower()] = bool(active)
+            l = lang.lower()
+            self.active_apps[l] = bool(active)
+            if not active and l in self.apps:
+                self.apps[l]["reachable"] = False
 
     def get_effective_tps(self) -> float:
         with self._lock:
@@ -912,8 +919,19 @@ class CanaryState:
 
     def mark_reachable(self, lang: str) -> None:
         with self._lock:
-            if lang in self.apps:
-                self.apps[lang]["reachable"] = True
+            l = lang.lower()
+            if l in self.apps:
+                self.apps[l]["reachable"] = True
+
+    def mark_unreachable(self, lang: str) -> None:
+        with self._lock:
+            l = lang.lower()
+            if l in self.apps:
+                self.apps[l]["reachable"] = False
+
+    def is_reachable(self, lang: str) -> bool:
+        with self._lock:
+            return self.apps.get(lang.lower(), {}).get("reachable", False)
 
     def set_running(self) -> None:
         with self._lock:
@@ -952,18 +970,21 @@ class CanaryState:
             if bucket_ts not in self.ts_buckets:
                 self.ts_buckets[bucket_ts] = {
                     "total": 0, "success": 0, "error": 0, "dur_sum": 0.0, "dur_cnt": 0,
-                    "apps": {"python": {"t": 0, "s": 0, "e": 0, "ds": 0.0},
-                             "java":   {"t": 0, "s": 0, "e": 0, "ds": 0.0},
-                             "rust":   {"t": 0, "s": 0, "e": 0, "ds": 0.0},
-                             "node":   {"t": 0, "s": 0, "e": 0, "ds": 0.0},
-                             "go":     {"t": 0, "s": 0, "e": 0, "ds": 0.0},
-                             "dotnet": {"t": 0, "s": 0, "e": 0, "ds": 0.0},
-                             "c":      {"t": 0, "s": 0, "e": 0, "ds": 0.0}}
+                    "durs": [],
+                    "apps": {"python": {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []},
+                             "java":   {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []},
+                             "rust":   {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []},
+                             "node":   {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []},
+                             "go":     {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []},
+                             "dotnet": {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []},
+                             "c":      {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []}}
                 }
             b = self.ts_buckets[bucket_ts]
             b["total"] += 1
             b["dur_sum"] += duration
             b["dur_cnt"] += 1
+            dur_ms = round(duration * 1000.0, 2)
+            b.setdefault("durs", []).append(dur_ms)
             if is_success:
                 b["success"] += 1
             else:
@@ -973,6 +994,7 @@ class CanaryState:
                 ba = b["apps"][lang]
                 ba["t"] += 1
                 ba["ds"] += duration
+                ba.setdefault("durs", []).append(dur_ms)
                 if is_success:
                     ba["s"] += 1
                 else:
@@ -1080,41 +1102,125 @@ class CanaryState:
             pts_errors = []
             pts_availability = []
             pts_latency = []
+            pts_p50 = []
+            pts_p90 = []
+            pts_p95 = []
+            pts_p99 = []
+            pts_p100 = []
 
-            for b_ts in sorted(self.ts_buckets.keys()):
-                if b_ts < start_ts:
+            start_bucket = int(start_ts // 5) * 5
+            end_bucket = int(now // 5) * 5
+
+            for b_ts in range(start_bucket, end_bucket + 1, 5):
+                b = self.ts_buckets.get(b_ts)
+                if not b:
+                    pts_throughput.append({"t": b_ts, "v": 0.0})
+                    pts_errors.append({"t": b_ts, "v": 0.0})
+                    pts_availability.append({"t": b_ts, "v": 100.0})
+                    pts_latency.append({"t": b_ts, "v": 0.0})
+                    pts_p50.append({"t": b_ts, "v": 0.0})
+                    pts_p90.append({"t": b_ts, "v": 0.0})
+                    pts_p95.append({"t": b_ts, "v": 0.0})
+                    pts_p99.append({"t": b_ts, "v": 0.0})
+                    pts_p100.append({"t": b_ts, "v": 0.0})
                     continue
-                b = self.ts_buckets[b_ts]
+
                 if service in ("python", "java", "rust", "node", "go", "dotnet", "c"):
-                    ba = b["apps"].get(service, {"t": 0, "s": 0, "e": 0, "ds": 0.0})
+                    ba = b["apps"].get(service, {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []})
                     tot = ba["t"]
                     succ = ba["s"]
                     err = ba["e"]
                     dur_s = ba["ds"]
+                    durs = ba.get("durs", [])
                 else:
                     tot = b["total"]
                     succ = b["success"]
                     err = b["error"]
                     dur_s = b["dur_sum"]
+                    durs = b.get("durs", [])
 
                 tps = round(tot / 5.0, 2)
                 err_rate = round(err / 5.0, 2)
                 avail = round((succ / tot * 100.0), 2) if tot > 0 else 100.0
                 avg_l = round((dur_s / tot * 1000.0), 1) if tot > 0 else 0.0
 
+                if durs:
+                    s_durs = sorted(durs)
+                    n_d = len(s_durs)
+                    p50_v = round(s_durs[int(n_d * 0.50)], 1)
+                    p90_v = round(s_durs[min(n_d - 1, int(n_d * 0.90))], 1)
+                    p95_v = round(s_durs[min(n_d - 1, int(n_d * 0.95))], 1)
+                    p99_v = round(s_durs[min(n_d - 1, int(n_d * 0.99))], 1)
+                    p100_v = round(s_durs[-1], 1)
+                else:
+                    p50_v = p90_v = p95_v = p99_v = p100_v = avg_l
+
                 pts_throughput.append({"t": b_ts, "v": tps})
                 pts_errors.append({"t": b_ts, "v": err_rate})
                 pts_availability.append({"t": b_ts, "v": avail})
                 pts_latency.append({"t": b_ts, "v": avg_l})
+                pts_p50.append({"t": b_ts, "v": p50_v})
+                pts_p90.append({"t": b_ts, "v": p90_v})
+                pts_p95.append({"t": b_ts, "v": p95_v})
+                pts_p99.append({"t": b_ts, "v": p99_v})
+                pts_p100.append({"t": b_ts, "v": p100_v})
 
             return {
                 "throughput": pts_throughput,
                 "errors": pts_errors,
                 "availability": pts_availability,
-                "latency_ms": pts_latency
+                "latency_ms": pts_latency,
+                "latency_p50": pts_p50,
+                "latency_p90": pts_p90,
+                "latency_p95": pts_p95,
+                "latency_p99": pts_p99,
+                "latency_p100": pts_p100
             }
 
 state = CanaryState()
+
+def start_docker_sync_thread() -> None:
+    def sync_loop():
+        while True:
+            try:
+                statuses = docker_manager.get_containers_status()
+                for lang, info in statuses.items():
+                    is_run = info.get("is_running", False)
+                    if not is_run:
+                        if state.is_app_active(lang):
+                            state.set_app_active(lang, False)
+                            state.mark_unreachable(lang)
+                    else:
+                        if not state.is_app_active(lang):
+                            state.set_app_active(lang, True)
+            except Exception as e:
+                logger.debug("Docker sync background error: %s", e)
+            time.sleep(2.0)
+    t = threading.Thread(target=sync_loop, daemon=True)
+    t.start()
+
+def get_detected_host_ip() -> str:
+    """Detects the host machine's reachable LAN IP address for remote/mobile client access."""
+    env_ip = os.getenv("CANARY_HOST_IP") or os.getenv("HOST_IP")
+    if env_ip and env_ip.strip():
+        return env_ip.strip()
+    if state.last_external_host:
+        return state.last_external_host
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                return ip
+    except Exception:
+        pass
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    return "localhost"
 
 # ---------------------------------------------------------------------------
 # Mimir Historical Trend Querier with In-Memory Merging
@@ -1143,7 +1249,12 @@ def query_trend_metrics(range_str: str = "5m", service: str = "all") -> dict:
         "throughput": f'sum(rate(app_synthetic_requests_total{{{service_filter}}}[{rate_win}])) or vector(0)',
         "errors": f'sum(rate(app_synthetic_requests_total{{{service_filter}status="error"}}[{rate_win}])) or vector(0)',
         "availability": f'clamp_max(clamp_min((sum(rate(app_synthetic_requests_total{{{service_filter}status="success"}}[{rate_win}])) / sum(rate(app_synthetic_requests_total{{{service_filter}}}[{rate_win}]))) * 100, 0), 100) or vector(100)',
-        "latency_ms": f'(sum(rate(app_synthetic_request_duration_sum{{{service_filter}}}[{rate_win}])) / sum(rate(app_synthetic_request_duration_count{{{service_filter}}}[{rate_win}]))) * 1000 or vector(0)'
+        "latency_ms": f'(sum(rate(app_synthetic_request_duration_sum{{{service_filter}}}[{rate_win}])) / sum(rate(app_synthetic_request_duration_count{{{service_filter}}}[{rate_win}]))) * 1000 or vector(0)',
+        "latency_p50": f'histogram_quantile(0.50, sum(rate(app_synthetic_request_duration_bucket{{{service_filter}}}[{rate_win}])) by (le)) or vector(0)',
+        "latency_p90": f'histogram_quantile(0.90, sum(rate(app_synthetic_request_duration_bucket{{{service_filter}}}[{rate_win}])) by (le)) or vector(0)',
+        "latency_p95": f'histogram_quantile(0.95, sum(rate(app_synthetic_request_duration_bucket{{{service_filter}}}[{rate_win}])) by (le)) or vector(0)',
+        "latency_p99": f'histogram_quantile(0.99, sum(rate(app_synthetic_request_duration_bucket{{{service_filter}}}[{rate_win}])) by (le)) or vector(0)',
+        "latency_p100": f'histogram_quantile(1.0, sum(rate(app_synthetic_request_duration_bucket{{{service_filter}}}[{rate_win}])) by (le)) or vector(0)'
     }
 
     results = {}
@@ -1177,9 +1288,16 @@ def query_trend_metrics(range_str: str = "5m", service: str = "all") -> dict:
         logger.debug("Mimir query error: %s", exc)
         mimir_success = False
 
-    if not mimir_success or (seconds <= 3600 and (not results.get("throughput") or len(results["throughput"]) < 5)):
+    trend_keys = ("throughput", "errors", "availability", "latency_ms", "latency_p50", "latency_p90", "latency_p95", "latency_p99", "latency_p100")
+    if seconds <= 1800:
+        # High-resolution real-time responsiveness for 5m and 30m views
         mem_data = state.get_inmemory_trends(seconds, service)
-        for k in ("throughput", "errors", "availability", "latency_ms"):
+        for k in trend_keys:
+            if mem_data.get(k):
+                results[k] = mem_data[k]
+    elif not mimir_success or (seconds <= 3600 and (not results.get("throughput") or len(results["throughput"]) < 5)):
+        mem_data = state.get_inmemory_trends(seconds, service)
+        for k in trend_keys:
             if not results.get(k) or len(results[k]) < len(mem_data.get(k, [])):
                 results[k] = mem_data.get(k, [])
 
@@ -1569,6 +1687,39 @@ def render_dashboard_html() -> str:
     .filter-btn.active {{ background: #38bdf8; color: #041226; font-weight: 700; }}
     .filter-btn:hover:not(.active) {{ color: var(--text); background: rgba(255,255,255,0.05); }}
 
+    /* Latency Percentile Picker */
+    .percentile-picker {{
+      display: inline-flex;
+      background: #090e17;
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-left: 6px;
+      vertical-align: middle;
+    }}
+    .percentile-btn {{
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      padding: 1px 6px;
+      font-size: 0.67rem;
+      font-weight: 700;
+      cursor: pointer;
+      border-right: 1px solid var(--card-border);
+      transition: all 0.15s ease;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }}
+    .percentile-btn:last-child {{ border-right: none; }}
+    .percentile-btn.active {{
+      background: #38bdf8;
+      color: #041226;
+      font-weight: 800;
+    }}
+    .percentile-btn:hover:not(.active) {{
+      color: #fff;
+      background: rgba(56, 189, 248, 0.15);
+    }}
+
     /* Compact 2x2 Charts Grid */
     .charts-grid {{
       display: grid;
@@ -1724,17 +1875,40 @@ def render_dashboard_html() -> str:
       margin-bottom: 8px;
     }}
     .sql-grid-wrapper {{
-      max-height: 380px;
-      overflow: auto;
+      max-height: 420px;
+      overflow-x: auto;
+      overflow-y: auto;
       border: 1px solid var(--card-border);
       border-radius: 4px;
       background: #0b111e;
+      width: 100%;
+      position: relative;
+      scrollbar-width: thin;
+      scrollbar-color: #3b82f6 #0f172a;
+    }}
+    .sql-grid-wrapper::-webkit-scrollbar {{
+      height: 10px;
+      width: 10px;
+    }}
+    .sql-grid-wrapper::-webkit-scrollbar-track {{
+      background: #0b111e;
+      border-radius: 4px;
+    }}
+    .sql-grid-wrapper::-webkit-scrollbar-thumb {{
+      background: #2563eb;
+      border-radius: 4px;
+      border: 2px solid #0b111e;
+    }}
+    .sql-grid-wrapper::-webkit-scrollbar-thumb:hover {{
+      background: #60a5fa;
     }}
     .sql-grid-table {{
-      width: 100%;
+      min-width: 100%;
+      width: max-content;
       border-collapse: collapse;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 0.76rem;
+      table-layout: auto;
     }}
     .sql-grid-table th {{
       position: sticky;
@@ -1743,32 +1917,120 @@ def render_dashboard_html() -> str:
       color: #94a3b8;
       border-right: 1px solid #24344d;
       border-bottom: 2px solid #334e77;
-      padding: 6px 10px;
+      padding: 6px 12px;
       cursor: pointer;
       user-select: none;
       white-space: nowrap;
       font-size: 0.72rem;
+      z-index: 2;
     }}
     .sql-grid-table th:hover {{ background: #1c2e4c; color: var(--text); }}
+    .sql-grid-table th:first-child {{
+      position: sticky;
+      left: 0;
+      top: 0;
+      z-index: 3;
+      background: #152238;
+    }}
     .sql-grid-table td {{
-      padding: 5px 10px;
+      padding: 6px 12px;
       border-bottom: 1px solid #1e2c42;
       border-right: 1px solid #182436;
       white-space: nowrap;
-      max-width: 320px;
+      max-width: 380px;
+      min-width: 90px;
       overflow: hidden;
       text-overflow: ellipsis;
+      cursor: cell;
+      user-select: text;
+    }}
+    .sql-grid-table td:hover {{
+      background: #1c2e4c;
+      color: #fff;
     }}
     .sql-grid-table td.row-num {{
       background: #0e1726;
       color: #64748b;
       font-weight: 700;
       text-align: right;
-      width: 40px;
+      width: 42px;
+      min-width: 42px;
+      max-width: 42px;
       user-select: none;
+      cursor: default;
+      position: sticky;
+      left: 0;
+      z-index: 1;
     }}
     .sql-grid-table tr:hover td {{ background: #16243b; }}
+    .sql-grid-table tr:hover td.row-num {{ background: #121c2e; }}
     .sql-null {{ color: #64748b; font-style: italic; }}
+
+    /* Cell Value Inspector Modal */
+    .cell-modal-box {{
+      max-width: 780px !important;
+      width: 92% !important;
+      max-height: 86vh;
+      display: flex;
+      flex-direction: column;
+      text-align: left !important;
+      background: #111a29 !important;
+      border: 1px solid var(--accent) !important;
+      border-radius: 8px;
+      padding: 16px !important;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.95);
+    }}
+    .cell-modal-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--card-border);
+      margin-bottom: 10px;
+    }}
+    .cell-modal-title {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.92rem;
+    }}
+    .cell-modal-toolbar {{
+      display: flex;
+      gap: 6px;
+      margin-bottom: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }}
+    .cell-modal-content-wrapper {{
+      flex: 1;
+      max-height: 58vh;
+      overflow: auto;
+      background: #080d16;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 12px;
+    }}
+    .cell-modal-text {{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.8rem;
+      color: #7dd3fc;
+      white-space: pre;
+      line-height: 1.45;
+      margin: 0;
+      user-select: text;
+    }}
+    .cell-modal-text.wrapped {{
+      white-space: pre-wrap !important;
+      word-break: break-all;
+    }}
+    .cell-modal-footer {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid var(--card-border);
+    }}
 
     /* Dependencies Grid */
     .dep-cards-grid {{
@@ -1866,19 +2128,57 @@ def render_dashboard_html() -> str:
         Scan to connect Android, iOS, or Windows devices to the Canary Telemetry feed.
       </p>
       <div class="qr-container" id="qr-target">
-        <img id="qr-img" src="/api/qrcode?url=http%3A%2F%2Flocalhost%3A8085" alt="Canary QR Code" />
+        <img id="qr-img" src="/api/qrcode" alt="Canary QR Code" />
       </div>
       <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px; text-align: left;">
-        <label style="font-size: 0.7rem; font-weight: 700; color: var(--muted);">SERVER LAN HOST / IP:</label>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <label style="font-size: 0.7rem; font-weight: 700; color: var(--muted);">SERVER LAN HOST / IP:</label>
+          <span id="qr-ip-detected-badge" class="badge badge-secondary" style="font-size:0.65rem; display:none;">Auto-detected IP</span>
+        </div>
         <div style="display: flex; gap: 6px;">
-          <input type="text" id="qr-host-input" class="ctrl-input" style="flex: 1;" placeholder="e.g. 192.168.1.100 or localhost" oninput="updateQrUrl()" />
+          <input type="text" id="qr-host-input" class="ctrl-input" style="flex: 1;" placeholder="e.g. 192.168.1.100 or 10.0.0.x" oninput="updateQrUrl()" />
           <button class="btn btn-secondary" onclick="copyQrUrl()">📋 Copy</button>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:2px;">
+          <button type="button" class="btn btn-outline btn-sm" id="qr-preset-lan-btn" style="display:none; font-size:0.68rem; padding:2px 8px;" onclick="setQrHostPreset(this.dataset.ip)">Use Detected IP</button>
+          <button type="button" class="btn btn-outline btn-sm" id="qr-preset-current-btn" style="font-size:0.68rem; padding:2px 8px;" onclick="setQrHostPreset(window.location.hostname)">Use Current URL Host</button>
         </div>
         <div id="qr-full-url" style="font-family: monospace; font-size: 0.72rem; color: var(--accent); word-break: break-all;"></div>
       </div>
       <p style="font-size: 0.7rem; color: var(--muted); margin-top: 10px;">
         💡 Use the React Native app in <code style="color:var(--text);">mobile/</code> or open in mobile Safari / Chrome.
       </p>
+    </div>
+  </div>
+
+  <!-- Cell Value Inspector Modal (Full-screen readable popup for cell text/JSON) -->
+  <div id="cell-modal" class="modal-overlay" onclick="if(event.target===this) closeCellModal()">
+    <div class="modal-box cell-modal-box">
+      <div class="cell-modal-header">
+        <div class="cell-modal-title">
+          <span>🔍</span>
+          <span id="cell-modal-col-name" style="font-weight: 700; color: var(--accent);">Column</span>
+          <span id="cell-modal-row-badge" class="badge badge-secondary">Row #1</span>
+          <span id="cell-modal-len-badge" class="badge badge-secondary" style="font-family: monospace;">0 chars</span>
+        </div>
+        <button class="modal-close-btn" onclick="closeCellModal()">&times;</button>
+      </div>
+
+      <div class="cell-modal-toolbar">
+        <button class="btn btn-secondary btn-sm" onclick="copyCellValue()">📋 Copy Value</button>
+        <button class="btn btn-secondary btn-sm" id="cell-format-json-btn" onclick="formatCellJson()">✨ Format JSON</button>
+        <button class="btn btn-secondary btn-sm" onclick="wrapCellTextToggle()">↩️ Toggle Wrap</button>
+        <span style="font-size:0.7rem; color:var(--muted); margin-left:auto;">Double-click any cell to inspect</span>
+      </div>
+
+      <div class="cell-modal-content-wrapper">
+        <pre id="cell-modal-text" class="cell-modal-text wrapped"></pre>
+      </div>
+
+      <div class="cell-modal-footer">
+        <span style="font-size: 0.72rem; color: var(--muted);">💡 Press <kbd style="background:#1e293b; padding:1px 5px; border-radius:3px; border:1px solid #334155;">Esc</kbd> to close.</span>
+        <button class="btn btn-accent btn-sm" onclick="closeCellModal()">Close</button>
+      </div>
     </div>
   </div>
 
@@ -2177,8 +2477,17 @@ def render_dashboard_html() -> str:
         </div>
 
         <div class="chart-card">
-          <div class="chart-header">
-            <div class="chart-title"><span style="color:#38bdf8;">●</span> Latency Trend (Average ms)</div>
+          <div class="chart-header" style="flex-wrap: wrap; gap: 4px;">
+            <div style="display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+              <div class="chart-title"><span style="color:#38bdf8;">●</span> <span id="lat-chart-title">Latency Trend (P95 ms)</span></div>
+              <div class="percentile-picker" id="latency-percentile-picker">
+                <button type="button" class="percentile-btn" data-p="p50" onclick="setLatencyPercentile('p50', this)" title="50th Percentile (Median Latency)">P50</button>
+                <button type="button" class="percentile-btn" data-p="p90" onclick="setLatencyPercentile('p90', this)" title="90th Percentile Latency">P90</button>
+                <button type="button" class="percentile-btn active" data-p="p95" onclick="setLatencyPercentile('p95', this)" title="95th Percentile Latency (Default)">P95</button>
+                <button type="button" class="percentile-btn" data-p="p99" onclick="setLatencyPercentile('p99', this)" title="99th Percentile Latency">P99</button>
+                <button type="button" class="percentile-btn" data-p="p100" onclick="setLatencyPercentile('p100', this)" title="100th Percentile (Max Latency)">P100</button>
+              </div>
+            </div>
             <div class="chart-current" id="cur-lat" style="color:#38bdf8;">-- ms</div>
           </div>
           <div class="canvas-container"><canvas id="chart-latency"></canvas></div>
@@ -2330,7 +2639,6 @@ def render_dashboard_html() -> str:
       <div class="section-bar">
         <div class="section-title">
           <span>💾 PostgreSQL SQL Query Editor & Data Grid</span>
-          <span style="font-size:0.75rem; color:var(--muted); font-weight:normal;">(SSMS & pgAdmin style first-principles query runner)</span>
         </div>
         <div>
           <span class="badge badge-success">Target: postgres:5432 (observability)</span>
@@ -2383,6 +2691,7 @@ def render_dashboard_html() -> str:
     let currentRange = '5m';
     let currentService = 'all';
     let currentView = 'both';
+    let currentLatencyPercentile = 'p95';
     let latestTrendsData = null;
     let latestSqlResult = null;
     let controlsDrawerOpen = false;
@@ -2477,6 +2786,24 @@ def render_dashboard_html() -> str:
       elem.parentNode.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
       elem.classList.add('active');
       fetchTrendsAndRefresh();
+    }}
+
+    function setLatencyPercentile(p, elem) {{
+      currentLatencyPercentile = p.toLowerCase();
+      const picker = document.getElementById('latency-percentile-picker');
+      if (picker) {{
+        picker.querySelectorAll('.percentile-btn').forEach(btn => btn.classList.remove('active'));
+      }}
+      if (elem) elem.classList.add('active');
+      const titleEl = document.getElementById('lat-chart-title');
+      if (titleEl) {{
+        titleEl.innerText = `Latency Trend (${{p.toUpperCase()}} ms)`;
+      }}
+      if (latestTrendsData) {{
+        renderAllCharts(latestTrendsData);
+      }} else {{
+        fetchTrendsAndRefresh();
+      }}
     }}
 
     async function fetchStats() {{
@@ -2662,7 +2989,7 @@ def render_dashboard_html() -> str:
 
     async function fetchTrendsAndRefresh() {{
       try {{
-        const url = `/api/trends?range=${{encodeURIComponent(currentRange)}}&service=${{encodeURIComponent(currentService)}}`;
+        const url = `/api/trends?range=${{encodeURIComponent(currentRange)}}&service=${{encodeURIComponent(currentService)}}&percentile=${{encodeURIComponent(currentLatencyPercentile)}}`;
         const res = await fetch(url);
         if (!res.ok) return;
         const trendPayload = await res.json();
@@ -2892,12 +3219,13 @@ def render_dashboard_html() -> str:
       for (let r = 0; r < data.rows.length; r++) {{
         const row = data.rows[r];
         trHtml += `<tr><td class="row-num">${{r + 1}}</td>`;
-        for (const cell of row) {{
+        for (let c = 0; c < row.length; c++) {{
+          const cell = row[c];
           if (cell === null || cell === undefined) {{
-            trHtml += '<td class="sql-null">&lt;NULL&gt;</td>';
+            trHtml += `<td class="sql-null" ondblclick="openCellModal(${{r}}, ${{c}})" title="Double-click to inspect (&lt;NULL&gt;)">&lt;NULL&gt;</td>`;
           }} else {{
-            const safeCell = String(cell).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            trHtml += `<td title="${{safeCell}}">${{safeCell}}</td>`;
+            const safeCell = String(cell).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            trHtml += `<td ondblclick="openCellModal(${{r}}, ${{c}})" title="Double-click to inspect full content">${{safeCell}}</td>`;
           }}
         }}
         trHtml += '</tr>';
@@ -2973,9 +3301,46 @@ def render_dashboard_html() -> str:
       const modal = document.getElementById('qr-modal');
       modal.classList.add('open');
       const hostInput = document.getElementById('qr-host-input');
-      if (!hostInput.value) {{
-        hostInput.value = window.location.hostname || 'localhost';
-      }}
+      const currentHost = window.location.hostname || 'localhost';
+
+      // Auto-detect server LAN IP for cross-device mobile scanning
+      fetch('/api/network/host-ip')
+        .then(res => res.json())
+        .then(data => {{
+          const detectedIp = data.ip;
+          if (detectedIp && detectedIp !== 'localhost' && detectedIp !== '127.0.0.1') {{
+            const lanBtn = document.getElementById('qr-preset-lan-btn');
+            if (lanBtn) {{
+              lanBtn.dataset.ip = detectedIp;
+              lanBtn.innerText = `📡 Use LAN IP (${{detectedIp}})`;
+              lanBtn.style.display = 'inline-block';
+            }}
+            const badge = document.getElementById('qr-ip-detected-badge');
+            if (badge) badge.style.display = 'inline-block';
+
+            // If user opened on localhost/127.0.0.1, auto-populate with LAN IP so phone scan works!
+            if (!hostInput.value || hostInput.value === 'localhost' || hostInput.value === '127.0.0.1') {{
+              hostInput.value = detectedIp;
+              updateQrUrl();
+              return;
+            }}
+          }}
+          if (!hostInput.value) {{
+            hostInput.value = currentHost;
+          }}
+          updateQrUrl();
+        }})
+        .catch(() => {{
+          if (!hostInput.value) {{
+            hostInput.value = currentHost;
+          }}
+          updateQrUrl();
+        }});
+    }}
+
+    function setQrHostPreset(h) {{
+      if (!h) return;
+      document.getElementById('qr-host-input').value = h;
       updateQrUrl();
     }}
 
@@ -2984,9 +3349,31 @@ def render_dashboard_html() -> str:
     }}
 
     function updateQrUrl() {{
-      const host = document.getElementById('qr-host-input').value.trim() || 'localhost';
-      const port = window.location.port || '8085';
-      const fullUrl = `http://${{host}}:${{port}}`;
+      let val = document.getElementById('qr-host-input').value.trim();
+      let proto = window.location.protocol || 'http:';
+
+      if (!val) {{
+        val = window.location.hostname || 'localhost';
+      }}
+
+      // Strip any leading protocol
+      if (val.startsWith('http://')) {{
+        proto = 'http:';
+        val = val.substring(7);
+      }} else if (val.startsWith('https://')) {{
+        proto = 'https:';
+        val = val.substring(8);
+      }}
+
+      // Strip any port suffix (:8085, :80, :443, etc.) — port suffix is not needed!
+      if (val.includes(':')) {{
+        val = val.split(':')[0];
+      }}
+
+      // Strip any trailing slashes
+      val = val.replace(/[\\/]+$/, '');
+
+      const fullUrl = `${{proto}}//${{val}}`;
       document.getElementById('qr-full-url').innerText = fullUrl;
       const img = document.getElementById('qr-img');
       img.src = `/api/qrcode?url=${{encodeURIComponent(fullUrl)}}`;
@@ -2999,8 +3386,111 @@ def render_dashboard_html() -> str:
       }});
     }}
 
-    // Shortcut: Ctrl+Enter executes SQL Query
+    // Cell Value Inspector Modal Operations
+    let _activeCellRaw = '';
+    let _activeCellPretty = '';
+    let _activeCellIsJson = false;
+
+    function openCellModal(rowIdx, colIdx) {{
+      if (!latestSqlResult || !latestSqlResult.rows) return;
+      const row = latestSqlResult.rows[rowIdx];
+      if (!row) return;
+      const colName = (latestSqlResult.columns && latestSqlResult.columns[colIdx]) ? latestSqlResult.columns[colIdx] : `Col #${{colIdx + 1}}`;
+      const rawVal = row[colIdx];
+
+      document.getElementById('cell-modal-col-name').innerText = colName;
+      document.getElementById('cell-modal-row-badge').innerText = `Row #${{rowIdx + 1}}`;
+
+      const textEl = document.getElementById('cell-modal-text');
+      const formatBtn = document.getElementById('cell-format-json-btn');
+      const lenBadge = document.getElementById('cell-modal-len-badge');
+
+      if (rawVal === null || rawVal === undefined) {{
+        _activeCellRaw = '';
+        _activeCellPretty = '';
+        _activeCellIsJson = false;
+        lenBadge.innerText = 'NULL';
+        lenBadge.className = 'badge badge-secondary';
+        textEl.innerText = '<NULL>';
+        formatBtn.style.display = 'none';
+      }} else {{
+        let strVal = typeof rawVal === 'object' ? JSON.stringify(rawVal) : String(rawVal);
+        _activeCellRaw = strVal;
+        lenBadge.innerText = `${{strVal.length.toLocaleString()}} chars`;
+        lenBadge.className = 'badge badge-secondary';
+
+        // Check if string is valid JSON
+        _activeCellIsJson = false;
+        try {{
+          const parsed = typeof rawVal === 'object' ? rawVal : JSON.parse(strVal);
+          if (parsed && typeof parsed === 'object') {{
+            _activeCellIsJson = true;
+            _activeCellPretty = JSON.stringify(parsed, null, 2);
+          }}
+        }} catch (_) {{
+          _activeCellIsJson = false;
+        }}
+
+        if (_activeCellIsJson) {{
+          formatBtn.style.display = 'inline-block';
+          formatBtn.innerText = '📄 Raw View';
+          textEl.innerText = _activeCellPretty;
+        }} else {{
+          formatBtn.style.display = 'none';
+          textEl.innerText = _activeCellRaw;
+        }}
+      }}
+
+      document.getElementById('cell-modal').classList.add('open');
+    }}
+
+    function closeCellModal() {{
+      document.getElementById('cell-modal').classList.remove('open');
+    }}
+
+    function copyCellValue() {{
+      const text = document.getElementById('cell-modal-text').innerText;
+      if (!text || text === '<NULL>') {{
+        showToast("Cell is NULL or empty");
+        return;
+      }}
+      const valToCopy = (_activeCellRaw !== '') ? _activeCellRaw : text;
+      navigator.clipboard.writeText(valToCopy).then(() => {{
+        showToast("✅ Cell value copied to clipboard!");
+      }}).catch(() => {{
+        const ta = document.createElement('textarea');
+        ta.value = valToCopy;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        showToast("✅ Cell value copied to clipboard!");
+      }});
+    }}
+
+    function formatCellJson() {{
+      const textEl = document.getElementById('cell-modal-text');
+      const formatBtn = document.getElementById('cell-format-json-btn');
+      if (textEl.innerText === _activeCellPretty) {{
+        textEl.innerText = _activeCellRaw;
+        formatBtn.innerText = '✨ Format JSON';
+      }} else {{
+        textEl.innerText = _activeCellPretty;
+        formatBtn.innerText = '📄 Raw View';
+      }}
+    }}
+
+    function wrapCellTextToggle() {{
+      const textEl = document.getElementById('cell-modal-text');
+      textEl.classList.toggle('wrapped');
+    }}
+
+    // Shortcuts: Esc closes modals, Ctrl+Enter executes SQL Query
     document.addEventListener('keydown', (e) => {{
+      if (e.key === 'Escape') {{
+        closeCellModal();
+        closeQrModal();
+      }}
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
         if (currentView === 'sql') {{
           runSqlQuery();
@@ -3286,7 +3776,8 @@ def render_dashboard_html() -> str:
     const tooltipEl = document.getElementById('chart-tooltip');
     function showTooltip(pageX, pageY, pt, options, faultEvent) {{
       const timeStr = new Date(pt.t * 1000).toLocaleTimeString();
-      let html = `<div style="color:var(--muted); font-size:0.7rem;">${{timeStr}}</div>
+      const metricLabel = options.metricLabel ? ` &bull; ${{options.metricLabel}}` : '';
+      let html = `<div style="color:var(--muted); font-size:0.7rem;">${{timeStr}}${{metricLabel}}</div>
         <div style="font-weight:700; font-size:0.88rem; color:${{options.strokeColor}};">${{pt.v}} ${{options.unit || ''}}</div>`;
       if (faultEvent) {{
         const tgt = (faultEvent.target || 'all').toLowerCase();
@@ -3337,8 +3828,10 @@ def render_dashboard_html() -> str:
         formatY: (v) => v.toFixed(1)
       }});
 
-      // 3. Latency Chart
-      const latPts = m.latency_ms || [];
+      // 3. Latency Chart (Selected Percentile: p50, p90, p95, p99, p100)
+      const pKey = `latency_${{currentLatencyPercentile}}`;
+      const latPts = (m[pKey] && m[pKey].length) ? m[pKey] : (m.latency_ms || []);
+      const pLabel = currentLatencyPercentile.toUpperCase();
       if (latPts.length) {{
         document.getElementById('cur-lat').innerText = latPts[latPts.length - 1].v + ' ms';
       }}
@@ -3347,6 +3840,7 @@ def render_dashboard_html() -> str:
         strokeColor: '#38bdf8',
         fillColor: 'rgba(56, 189, 248, 0.2)',
         unit: 'ms',
+        metricLabel: `${{pLabel}} Latency`,
         formatY: (v) => v.toFixed(0) + 'ms'
       }});
 
@@ -3397,9 +3891,31 @@ def start_dashboard_server(port: int) -> HTTPServer:
             self.end_headers()
 
         def do_GET(self):
+            # Capture incoming external host if non-localhost
+            host_header = self.headers.get("Host", "")
+            if host_header:
+                host_clean = host_header.split(":")[0].strip()
+                if host_clean and host_clean not in ("localhost", "127.0.0.1", "0.0.0.0"):
+                    state.last_external_host = host_clean
+
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
+
+            if path == "/api/network/host-ip":
+                detected_ip = get_detected_host_ip()
+                data = json.dumps({
+                    "ip": detected_ip,
+                    "port": CANARY_PORT,
+                    "url": f"http://{detected_ip}:{CANARY_PORT}"
+                }).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
 
             if path == "/" or path == "/index.html":
                 body = render_dashboard_html().encode("utf-8")
@@ -3435,7 +3951,13 @@ def start_dashboard_server(port: int) -> HTTPServer:
             elif path == "/api/trends":
                 range_str = query.get("range", ["5m"])[0]
                 service = query.get("service", ["all"])[0]
+                percentile = query.get("percentile", ["p95"])[0].lower()
                 trend_data = query_trend_metrics(range_str, service)
+                if percentile in ("p50", "p90", "p95", "p99", "p100"):
+                    trend_data["selected_percentile"] = percentile
+                    p_key = f"latency_{percentile}"
+                    if p_key in trend_data.get("metrics", {}):
+                        trend_data["metrics"]["latency_ms"] = trend_data["metrics"][p_key]
                 data = json.dumps(trend_data).encode("utf-8")
                 self.send_response(200)
                 self._send_cors_headers()
@@ -3481,17 +4003,34 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 self.wfile.write(data)
 
             elif path == "/api/qrcode":
-                target_url = query.get("url", [f"http://localhost:{CANARY_PORT}"])[0]
+                default_host = get_detected_host_ip()
+                is_https = (self.headers.get("X-Forwarded-Proto") == "https" or "trycloudflare.com" in default_host)
+                proto = "https" if is_https else "http"
+                default_url = f"{proto}://{default_host}"
+                raw_target = query.get("url", [default_url])[0].strip()
+                if not raw_target:
+                    raw_target = default_url
+
+                # Strip any unwanted port suffix (:8085, :80, :443) — port suffix is not needed!
+                if "://" not in raw_target:
+                    target_proto = "https" if "trycloudflare.com" in raw_target else "http"
+                    raw_target = f"{target_proto}://{raw_target}"
+                parsed_u = urllib.parse.urlsplit(raw_target)
+                scheme = parsed_u.scheme or "http"
+                host = parsed_u.hostname or (parsed_u.netloc.split(":")[0] if parsed_u.netloc else default_host)
+                clean_target = urllib.parse.urlunsplit((scheme, host, parsed_u.path, parsed_u.query, parsed_u.fragment))
+
                 if qrcode:
                     factory = qrcode.image.svg.SvgPathImage
-                    img = qrcode.make(target_url, image_factory=factory, box_size=10)
+                    img = qrcode.make(clean_target, image_factory=factory, box_size=10)
                     svg_bytes = img.to_string()
                 else:
                     # Fallback clean SVG
-                    svg_bytes = f'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><rect width="200" height="200" fill="#ffffff"/><text x="100" y="100" font-family="sans-serif" font-size="12" text-anchor="middle" fill="#000000">{html.escape(target_url)}</text></svg>'.encode("utf-8")
+                    svg_bytes = f'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><rect width="200" height="200" fill="#ffffff"/><text x="100" y="100" font-family="sans-serif" font-size="12" text-anchor="middle" fill="#000000">{html.escape(clean_target)}</text></svg>'.encode("utf-8")
                 self.send_response(200)
                 self._send_cors_headers()
                 self.send_header("Content-Type", "image/svg+xml")
+                self.send_header("X-Encoded-Target", clean_target)
                 self.send_header("Content-Length", str(len(svg_bytes)))
                 self.end_headers()
                 self.wfile.write(svg_bytes)
@@ -3628,6 +4167,10 @@ def start_dashboard_server(port: int) -> HTTPServer:
 # Wait for Apps & Main Execution
 # ---------------------------------------------------------------------------
 def wait_for_apps(session: requests.Session) -> None:
+    """Non-blocking discovery probe at startup. Probes each container with a short timeout.
+    Does NOT block startup if any container is stopped or still warming up."""
+    logger.info("Performing startup probe of available microservices...")
+    statuses = docker_manager.get_containers_status()
     for name, lang, url in [("Python", "python", APP_BASE_URL),
                             ("Java", "java", JAVA_APP_BASE_URL),
                             ("Rust", "rust", RUST_APP_BASE_URL),
@@ -3635,17 +4178,28 @@ def wait_for_apps(session: requests.Session) -> None:
                             ("Go", "go", GO_APP_BASE_URL),
                             ("Dotnet", "dotnet", DOTNET_APP_BASE_URL),
                             ("C", "c", C_APP_BASE_URL)]:
-        base = f"{url}/"
-        while True:
-            try:
-                resp = session.get(base, timeout=3)
-                if resp.status_code < 500:
-                    logger.info("%s App is reachable at %s", name, url)
-                    state.mark_reachable(lang)
-                    break
-            except Exception as exc:
-                logger.warning("%s App not ready yet (%s), retrying in 3 s...", name, exc)
-            time.sleep(3)
+        c_info = statuses.get(lang, {})
+        is_running = c_info.get("is_running", True)
+        if not is_running:
+            state.set_app_active(lang, False)
+            state.mark_unreachable(lang)
+            logger.info("%s container is STOPPED in Docker. Canary workload will remain paused.", name)
+            continue
+
+        try:
+            resp = session.get(f"{url}/", timeout=1.0)
+            if resp.status_code < 500:
+                logger.info("%s App is reachable at %s", name, url)
+                state.mark_reachable(lang)
+                state.set_app_active(lang, True)
+            else:
+                logger.warning("%s App returned %d, will warm up in background.", name, resp.status_code)
+                state.mark_unreachable(lang)
+                state.set_app_active(lang, True)
+        except Exception as exc:
+            logger.warning("%s App not responding yet (%s), will warm up in background.", name, exc)
+            state.mark_unreachable(lang)
+            state.set_app_active(lang, True)
 
 def run() -> None:
     start_dashboard_server(CANARY_PORT)
@@ -3661,131 +4215,167 @@ def run() -> None:
 
     wait_for_apps(session)
     state.set_running()
+    start_docker_sync_thread()
     logger.info("Starting canary loop with dynamic TPS, power management, and color-coded fault injection")
 
     next_tick = time.time()
+    last_warmup_check = 0.0
+
+    app_list = [
+        ("python", APP_BASE_URL),
+        ("java", JAVA_APP_BASE_URL),
+        ("rust", RUST_APP_BASE_URL),
+        ("node", NODE_APP_BASE_URL),
+        ("go", GO_APP_BASE_URL),
+        ("dotnet", DOTNET_APP_BASE_URL),
+        ("c", C_APP_BASE_URL)
+    ]
+    app_idx = 0
+    target_idx = 0
 
     while True:
-        for app_info in [("python", APP_BASE_URL), ("java", JAVA_APP_BASE_URL), ("rust", RUST_APP_BASE_URL), ("node", NODE_APP_BASE_URL), ("go", GO_APP_BASE_URL), ("dotnet", DOTNET_APP_BASE_URL), ("c", C_APP_BASE_URL)]:
-            app_lang, base_url = app_info
+        now_loop = time.time()
 
-            # Workload awareness: Skip stopped / inactive containers to save resources and prevent false failures
-            if not state.is_app_active(app_lang):
-                continue
+        # 1. Warmup probe for active but unreachable containers (e.g. newly started JVM or Go container)
+        if now_loop - last_warmup_check >= 1.5:
+            last_warmup_check = now_loop
+            for app_lang, base_url in app_list:
+                if state.is_app_active(app_lang) and not state.is_reachable(app_lang):
+                    try:
+                        probe_resp = session.get(f"{base_url}/", timeout=1.0)
+                        if probe_resp.status_code < 500:
+                            state.mark_reachable(app_lang)
+                            logger.info("Container %s is READY at %s! Synthetic traffic resumed.", app_lang.upper(), base_url)
+                    except Exception:
+                        pass
 
-            for target in TARGETS:
-                # Re-verify container state before each target
-                if not state.is_app_active(app_lang):
-                    break
+        # 2. Gather active and ready containers
+        ready_apps = [
+            (lang, url) for lang, url in app_list
+            if state.is_app_active(lang) and state.is_reachable(lang)
+        ]
 
-                path         = target["path"]
-                method       = target["method"]
-                expected_4xx = target.get("expected_4xx", False)
-                url          = f"{base_url}{path}"
+        if not ready_apps:
+            # All containers stopped or still warming up — sleep cleanly without CPU spin
+            time.sleep(0.3)
+            next_tick = time.time()
+            continue
 
-                t_start = time.time()
-                status  = "error"
-                fault_tag = None
+        # 3. Interleaved round-robin across ready apps
+        app_lang, base_url = ready_apps[app_idx % len(ready_apps)]
+        app_idx += 1
 
-                # Check Fault Injection
-                inject_fault, active_fault = fault_manager.should_inject(app_lang)
+        target = TARGETS[target_idx % len(TARGETS)]
+        target_idx += 1
 
-                if inject_fault and active_fault:
-                    fault_tag = active_fault["tag"]
-                    f_type = active_fault["fault_type"]
+        path         = target["path"]
+        method       = target["method"]
+        expected_4xx = target.get("expected_4xx", False)
+        url          = f"{base_url}{path}"
 
-                    if f_type == "error_spike":
-                        try:
-                            resp = session.get(f"{base_url}/fault-injected-error-drill", timeout=3)
-                        except Exception:
-                            pass
-                        status = "error"
-                        fault_manager.record_affected(is_error=True)
+        t_start = time.time()
+        status  = "error"
+        fault_tag = None
 
-                    elif f_type == "service_outage":
-                        time.sleep(0.04)
-                        status = "error"
-                        fault_manager.record_affected(is_error=True)
+        # Check Fault Injection
+        inject_fault, active_fault = fault_manager.should_inject(app_lang)
 
-                    elif f_type == "high_latency":
-                        delay_s = active_fault.get("delay_ms", 1000) / 1000.0
-                        time.sleep(delay_s)
-                        try:
-                            resp = session.get(url, timeout=5)
-                            status = "success" if (expected_4xx and 400 <= resp.status_code < 500) or (not expected_4xx and resp.status_code < 400) else "error"
-                        except Exception:
-                            status = "error"
-                        fault_manager.record_affected(is_error=(status == "error"))
+        if inject_fault and active_fault:
+            fault_tag = active_fault["tag"]
+            f_type = active_fault["fault_type"]
 
-                    elif f_type == "intermittent_errors":
-                        if random.random() < 0.5:
-                            status = "error"
-                            fault_manager.record_affected(is_error=True)
-                        else:
-                            try:
-                                resp = session.get(url, timeout=5)
-                                status = "success" if resp.status_code < 400 else "error"
-                            except Exception:
-                                status = "error"
-                            fault_manager.record_affected(is_error=(status == "error"))
+            if f_type == "error_spike":
+                try:
+                    resp = session.get(f"{base_url}/fault-injected-error-drill", timeout=3)
+                except Exception:
+                    pass
+                status = "error"
+                fault_manager.record_affected(is_error=True)
 
-                    elif f_type in ("process_crash", "thread_crash"):
-                        status = "error"
-                        fault_manager.record_affected(is_error=True)
+            elif f_type == "service_outage":
+                time.sleep(0.04)
+                status = "error"
+                fault_manager.record_affected(is_error=True)
+
+            elif f_type == "high_latency":
+                delay_s = active_fault.get("delay_ms", 1000) / 1000.0
+                time.sleep(delay_s)
+                try:
+                    resp = session.get(url, timeout=5)
+                    status = "success" if (expected_4xx and 400 <= resp.status_code < 500) or (not expected_4xx and resp.status_code < 400) else "error"
+                except Exception:
+                    status = "error"
+                fault_manager.record_affected(is_error=(status == "error"))
+
+            elif f_type == "intermittent_errors":
+                if random.random() < 0.5:
+                    status = "error"
+                    fault_manager.record_affected(is_error=True)
                 else:
                     try:
-                        if method == "POST":
-                            if "json" in target:
-                                resp = session.post(url, json=target["json"], timeout=5)
-                            else:
-                                resp = session.post(url, data=target.get("data", {}), timeout=5)
-                        else:
-                            resp = session.get(url, timeout=5)
-
-                        if expected_4xx:
-                            status = "success" if 400 <= resp.status_code < 500 else "error"
-                        else:
-                            status = "success" if resp.status_code < 400 else "error"
-
-                    except Exception as exc:
-                        logger.debug("Request failed %s %s: %s", method, path, exc)
+                        resp = session.get(url, timeout=5)
+                        status = "success" if resp.status_code < 400 else "error"
+                    except Exception:
                         status = "error"
+                    fault_manager.record_affected(is_error=(status == "error"))
 
-                response_time = time.time() - t_start
-                base_path = path.split("?")[0]
-                labels = {
-                    "path": base_path,
-                    "method": method,
-                    "status": status,
-                    "client": "canary",
-                    "language": app_lang
-                }
+            elif f_type in ("process_crash", "thread_crash"):
+                status = "error"
+                fault_manager.record_affected(is_error=True)
+        else:
+            try:
+                if method == "POST":
+                    if "json" in target:
+                        resp = session.post(url, json=target["json"], timeout=5)
+                    else:
+                        resp = session.post(url, data=target.get("data", {}), timeout=5)
+                else:
+                    resp = session.get(url, timeout=5)
 
-                request_counter.add(1, labels)
-                request_duration.record(response_time, labels)
+                if expected_4xx:
+                    status = "success" if 400 <= resp.status_code < 500 else "error"
+                else:
+                    status = "success" if resp.status_code < 400 else "error"
 
-                state.record_request(app_lang, method, path, status, response_time, fault_tag=fault_tag)
+            except Exception as exc:
+                logger.debug("Request failed %s %s: %s", method, path, exc)
+                status = "error"
 
-                if vk:
-                    try:
-                        field = f"{app_lang}:{base_path}:{status}"
-                        vk.hincrby("canary:total_requests", field, 1)
+        response_time = time.time() - t_start
+        base_path = path.split("?")[0]
+        labels = {
+            "path": base_path,
+            "method": method,
+            "status": status,
+            "client": "canary",
+            "language": app_lang
+        }
 
-                        duration_field = f"{app_lang}:{base_path}"
-                        vk.hincrbyfloat("canary:duration_sum", duration_field, response_time)
-                        vk.hincrby("canary:duration_count", duration_field, 1)
-                    except Exception as vk_exc:
-                        logger.debug("Failed to report to Valkey: %s", vk_exc)
+        request_counter.add(1, labels)
+        request_duration.record(response_time, labels)
 
-                # Dynamic TPS inter-arrival
-                current_tps = state.get_effective_tps()
-                inter_arrival = 1.0 / max(0.5, current_tps)
-                next_tick += inter_arrival
-                now_t = time.time()
-                if next_tick < now_t - 1.0:
-                    next_tick = now_t
-                sleep_time = max(0.0, next_tick - now_t)
-                time.sleep(sleep_time)
+        state.record_request(app_lang, method, path, status, response_time, fault_tag=fault_tag)
+
+        if vk:
+            try:
+                field = f"{app_lang}:{base_path}:{status}"
+                vk.hincrby("canary:total_requests", field, 1)
+
+                duration_field = f"{app_lang}:{base_path}"
+                vk.hincrbyfloat("canary:duration_sum", duration_field, response_time)
+                vk.hincrby("canary:duration_count", duration_field, 1)
+            except Exception as vk_exc:
+                logger.debug("Failed to report to Valkey: %s", vk_exc)
+
+        # Dynamic TPS inter-arrival
+        current_tps = state.get_effective_tps()
+        inter_arrival = 1.0 / max(0.5, current_tps)
+        next_tick += inter_arrival
+        now_t = time.time()
+        if next_tick < now_t - 1.0:
+            next_tick = now_t
+        sleep_time = max(0.0, next_tick - now_t)
+        time.sleep(sleep_time)
 
 if __name__ == "__main__":
     run()

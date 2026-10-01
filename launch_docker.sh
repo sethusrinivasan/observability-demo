@@ -22,12 +22,14 @@ fi
 KEEP_DATA=false
 TEARDOWN_ONLY=false
 RUN=false
+ENABLE_TUNNEL=false
 
 for arg in "$@"; do
     case "$arg" in
         --run)           RUN=true ;;
         --keep-data)     KEEP_DATA=true ;;
         --teardown-only) TEARDOWN_ONLY=true ;;
+        --tunnel)        ENABLE_TUNNEL=true ;;
         --help|-h)       ;; # handled below
     esac
 done
@@ -43,12 +45,14 @@ Options:
   --run              Perform a full teardown then build and launch the stack
                      (wipes all volumes by default)
   --run --keep-data  Teardown and redeploy but preserve existing data volumes
+  --tunnel           Enable Cloudflare showcase tunnel (Zero-port-forwarding)
   --teardown-only    Stop and remove all containers/networks/volumes, then exit
   --help, -h         Show this help message and exit
 
 Examples:
   ./launch_docker.sh --run                 # fresh deploy (clears all data)
   ./launch_docker.sh --run --keep-data     # redeploy, keep Postgres/Mimir/Loki data
+  ./launch_docker.sh --run --tunnel        # deploy with live Cloudflare showcase tunnel
   ./launch_docker.sh --teardown-only       # clean shutdown with no redeploy
 EOF
     exit 0
@@ -71,7 +75,8 @@ sleep 3
 # Force-remove all containers by name (handles both compose and manually started)
 for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app observability-c-app \
             canary otel-collector tempo redpanda mimir loki \
-            grafana grafana-renderer postgres postgres-exporter prometheus valkey redis-exporter; do
+            grafana grafana-renderer postgres postgres-exporter prometheus valkey redis-exporter \
+            cloudflared cloudflared-showcase; do
     docker rm -f "$name" 2>/dev/null || true
 done
 
@@ -95,7 +100,8 @@ fi
 # started containers or those whose PIDs were killed above)
 for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app observability-c-app \
             canary otel-collector tempo redpanda mimir loki \
-            grafana grafana-renderer postgres postgres-exporter prometheus valkey redis-exporter; do
+            grafana grafana-renderer postgres postgres-exporter prometheus valkey redis-exporter \
+            cloudflared cloudflared-showcase; do
     docker rm -f "$name" 2>/dev/null || true
 done
 
@@ -114,7 +120,12 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Building and launching stack ==="
-docker compose up -d --build
+if [ "$ENABLE_TUNNEL" = true ] || [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
+    echo "  (Cloudflare showcase tunnel profile enabled)"
+    docker compose --profile tunnel up -d --build
+else
+    docker compose up -d --build
+fi
 
 # ---------------------------------------------------------------------------
 # Step 3b: Restore Docker iptables forwarding rules
@@ -215,5 +226,10 @@ echo "  Prometheus: http://localhost:9090"
 echo "  Tempo:      http://localhost:3200"
 echo "  Loki:       http://localhost:3100"
 echo "  Mimir:      http://localhost:9009"
+if [ "$ENABLE_TUNNEL" = true ] || [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
+    echo "  Showcase:   Cloudflare Tunnel active (see ./scripts/showcase_tunnel.sh --status)"
+else
+    echo "  Showcase:   Run ./scripts/showcase_tunnel.sh --quick for instant public HTTPS"
+fi
 echo ""
 echo "  Canary logs: docker logs -f canary"

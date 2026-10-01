@@ -20,6 +20,8 @@ obj/
 *~
 .scratch/
 scratch/
+.env
+.env.local
 
 # IDE
 .vscode/

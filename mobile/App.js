@@ -14,7 +14,7 @@ import {
   Platform,
 } from 'react-native';
 
-const DEFAULT_SERVER_URL = Platform.OS === 'android' ? 'http://10.0.2.2:8085' : 'http://localhost:8085';
+const DEFAULT_SERVER_URL = Platform.OS === 'android' ? 'http://10.0.2.2' : 'http://localhost';
 
 export default function App() {
   const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
@@ -543,16 +543,22 @@ export default function App() {
               onChangeText={setInputUrl}
               autoCapitalize="none"
               autoCorrect={false}
-              placeholder="http://192.168.1.100:8085"
+              placeholder="http://192.168.1.100"
               placeholderTextColor="#64748b"
             />
 
-            <View style={{ flexDirection: 'row', gap: 8, marginVertical: 8 }}>
-              <TouchableOpacity style={styles.presetBtn} onPress={() => setInputUrl('http://localhost:8085')}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 8 }}>
+              <TouchableOpacity style={styles.presetBtn} onPress={() => setInputUrl('http://192.168.86.35')}>
+                <Text style={styles.presetBtnText}>LAN (192.168.86.35)</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.presetBtn} onPress={() => setInputUrl('http://observability.local')}>
+                <Text style={styles.presetBtnText}>mDNS (.local)</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.presetBtn} onPress={() => setInputUrl('http://localhost')}>
                 <Text style={styles.presetBtnText}>localhost</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.presetBtn} onPress={() => setInputUrl('http://10.0.2.2:8085')}>
-                <Text style={styles.presetBtnText}>10.0.2.2 (Android)</Text>
+              <TouchableOpacity style={styles.presetBtn} onPress={() => setInputUrl('http://10.0.2.2')}>
+                <Text style={styles.presetBtnText}>10.0.2.2 (Emulator)</Text>
               </TouchableOpacity>
             </View>
 
@@ -563,7 +569,8 @@ export default function App() {
               <TouchableOpacity
                 style={styles.modalSaveBtn}
                 onPress={() => {
-                  setServerUrl(inputUrl);
+                  const cleaned = inputUrl.trim().replace(/\/+$/, '');
+                  setServerUrl(cleaned);
                   setSettingsVisible(false);
                 }}
               >
