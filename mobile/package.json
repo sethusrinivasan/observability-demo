@@ -1,0 +1,23 @@
+{
+  "name": "canary-observability-mobile",
+  "version": "1.0.0",
+  "description": "Cross-platform React Native Mobile Client for Canary Observability Dashboard (Android, iOS, Windows, Web)",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "windows": "react-native run-windows"
+  },
+  "dependencies": {
+    "expo": "~51.0.0",
+    "expo-status-bar": "~1.12.1",
+    "react": "18.2.0",
+    "react-native": "0.74.5"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.20.0"
+  },
+  "private": true
+}

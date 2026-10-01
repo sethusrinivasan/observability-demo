@@ -1,23 +1,37 @@
 """
 canary.py — Standalone synthetic canary for the observability-demo stack.
-Generates synthetic traffic across Python, Java, and Rust microservices,
+Generates synthetic traffic across Python, Java, Rust, Node, Go, .NET, and C microservices,
 exports OpenTelemetry telemetry, logs to Valkey, supports Fault Injection Testing
 with language-specific color-coded event tagging, dynamic TPS override controls,
-historical Mimir trend queries, and a compact, high-efficiency dashboard with
-both Trend Graphs and Current Raw Numbers views.
+container lifecycle/power management, dependency health telemetry, an SSMS/pgAdmin-style
+SQL query editor, and a compact, high-efficiency dashboard with collapsible controls.
 """
 
 from collections import deque
 import html
+import http.client
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import logging
 import math
 import os
 import random
+import socket
 import threading
 import time
 import urllib.parse
+
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    psycopg2 = None
+
+try:
+    import qrcode
+    import qrcode.image.svg
+except ImportError:
+    qrcode = None
 
 from opentelemetry import metrics
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
@@ -43,6 +57,18 @@ VALKEY_HOST          = os.getenv("VALKEY_HOST",         "valkey")
 CANARY_TPS           = float(os.getenv("CANARY_TPS",    "6"))
 CANARY_PORT          = int(os.getenv("CANARY_PORT",     "8085"))
 REFRESH_INTERVAL_SEC = int(os.getenv("CANARY_REFRESH_INTERVAL", "3"))
+
+POSTGRES_HOST        = os.getenv("POSTGRES_HOST",       "postgres")
+POSTGRES_PORT        = int(os.getenv("POSTGRES_PORT",   "5432"))
+POSTGRES_DB          = os.getenv("POSTGRES_DB",         "observability")
+POSTGRES_USER        = os.getenv("POSTGRES_USER",       "observability")
+POSTGRES_PASSWORD    = os.getenv("POSTGRES_PASSWORD",   "observability")
+DOCKER_SOCKET_PATH   = os.getenv("DOCKER_SOCKET_PATH",  "/var/run/docker.sock")
+TEMPO_URL            = os.getenv("TEMPO_URL",           "http://tempo:3200")
+LOKI_URL             = os.getenv("LOKI_URL",            "http://loki:3100")
+PROMETHEUS_URL       = os.getenv("PROMETHEUS_URL",      "http://prometheus:9090")
+GRAFANA_URL          = os.getenv("GRAFANA_URL",         "http://grafana:3000")
+REDPANDA_ADMIN_URL   = os.getenv("REDPANDA_ADMIN_URL",  "http://redpanda:9644")
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -108,7 +134,576 @@ TARGETS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Fault Injection Manager (Language-specific color coding & tagging)
+# Unix Domain Socket HTTP Connection for Docker Engine API
+# ---------------------------------------------------------------------------
+class UnixHTTPConnection(http.client.HTTPConnection):
+    """Connects to the Docker daemon over /var/run/docker.sock"""
+    def __init__(self, socket_path: str, timeout: float = 5.0):
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.socket_path)
+
+class DockerManager:
+    """Manages container lifecycle via Docker Engine API over /var/run/docker.sock"""
+    CONTAINER_MAP = {
+        "python": "observability-python-app",
+        "java":   "observability-java-app",
+        "rust":   "observability-rust-app",
+        "node":   "observability-node-app",
+        "go":     "observability-go-app",
+        "dotnet": "observability-dotnet-app",
+        "c":      "observability-c-app",
+    }
+
+    def __init__(self, socket_path: str = DOCKER_SOCKET_PATH):
+        self.socket_path = socket_path
+
+    def _request(self, method: str, path: str, body: bytes = b"") -> tuple[int, dict | list | str]:
+        if not os.path.exists(self.socket_path):
+            return 503, {"error": f"Docker socket {self.socket_path} not found"}
+        conn = None
+        try:
+            conn = UnixHTTPConnection(self.socket_path, timeout=5.0)
+            headers = {"Host": "localhost"}
+            if body:
+                headers["Content-Type"] = "application/json"
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            raw = resp.read()
+            data = {}
+            if raw:
+                try:
+                    data = json.loads(raw.decode("utf-8"))
+                except Exception:
+                    data = raw.decode("utf-8", errors="ignore")
+            return resp.status, data
+        except Exception as exc:
+            return 500, {"error": str(exc)}
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def get_containers_status(self) -> dict:
+        status_code, data = self._request("GET", "/containers/json?all=1")
+        if status_code != 200 or not isinstance(data, list):
+            # Fallback if docker socket not available
+            return {
+                lang: {
+                    "id": "unknown",
+                    "name": name,
+                    "state": "running" if state.is_app_active(lang) else "stopped",
+                    "status": "Running (Local State)" if state.is_app_active(lang) else "Stopped",
+                    "is_running": state.is_app_active(lang),
+                    "active_in_canary": state.is_app_active(lang),
+                }
+                for lang, name in self.CONTAINER_MAP.items()
+            }
+
+        found_containers = {}
+        for c in data:
+            for n in c.get("Names", []):
+                clean_n = n.lstrip("/")
+                found_containers[clean_n] = c
+
+        res = {}
+        for lang, container_name in self.CONTAINER_MAP.items():
+            c = found_containers.get(container_name)
+            if c:
+                st = c.get("State", "unknown")
+                is_run = (st == "running")
+                res[lang] = {
+                    "id": c.get("Id", "")[:12],
+                    "name": container_name,
+                    "state": st,
+                    "status": c.get("Status", ""),
+                    "is_running": is_run,
+                    "active_in_canary": state.is_app_active(lang)
+                }
+            else:
+                res[lang] = {
+                    "id": "not_found",
+                    "name": container_name,
+                    "state": "not_found",
+                    "status": "Container Not Found",
+                    "is_running": False,
+                    "active_in_canary": False
+                }
+        return res
+
+    def container_action(self, lang: str, action: str) -> dict:
+        container_name = self.CONTAINER_MAP.get(lang.lower())
+        if not container_name:
+            return {"status": "error", "message": f"Unknown language: {lang}"}
+
+        statuses = self.get_containers_status()
+        c_info = statuses.get(lang.lower())
+        if not c_info or c_info["id"] in ("unknown", "not_found"):
+            return {"status": "error", "message": f"Container for {lang} not found"}
+
+        cid = c_info["id"]
+        action_clean = action.lower().strip()
+        if action_clean == "stop":
+            code, data = self._request("POST", f"/containers/{cid}/stop?t=3")
+            state.set_app_active(lang.lower(), False)
+            logger.info("Power Control: Stopped container %s (%s). Canary workload suspended.", container_name, cid)
+            return {"status": "success", "action": "stop", "language": lang, "docker_code": code}
+        elif action_clean == "start":
+            code, data = self._request("POST", f"/containers/{cid}/start")
+            state.set_app_active(lang.lower(), True)
+            logger.info("Power Control: Started container %s (%s). Canary workload resumed.", container_name, cid)
+            return {"status": "success", "action": "start", "language": lang, "docker_code": code}
+        elif action_clean == "restart":
+            code, data = self._request("POST", f"/containers/{cid}/restart?t=3")
+            state.set_app_active(lang.lower(), True)
+            logger.info("Power Control: Restarted container %s (%s). Canary workload active.", container_name, cid)
+            return {"status": "success", "action": "restart", "language": lang, "docker_code": code}
+        else:
+            return {"status": "error", "message": f"Unsupported action: {action}"}
+
+docker_manager = DockerManager()
+
+# ---------------------------------------------------------------------------
+# Curated Saved SQL Queries for Postgres
+# ---------------------------------------------------------------------------
+SAVED_QUERIES = [
+    {
+        "id": "recent_audit_logs",
+        "name": "📜 Recent Audit Logs (All Languages)",
+        "description": "Fetches the 50 most recent synthetic audit log entries across all microservices.",
+        "sql": "SELECT id, created_at, endpoint, status_code, coalesce(details->>'language', 'python') AS language, coalesce(details->>'service', 'python-app') AS service FROM audit_logs ORDER BY id DESC LIMIT 50;"
+    },
+    {
+        "id": "lang_audit_counts",
+        "name": "📊 Audit Log Volume by Language",
+        "description": "Rolls up total audit entries and timestamps grouped by microservice language.",
+        "sql": "SELECT coalesce(details->>'language', 'python') AS language, count(*) AS total_entries, min(created_at) AS first_entry, max(created_at) AS latest_entry FROM audit_logs GROUP BY 1 ORDER BY total_entries DESC;"
+    },
+    {
+        "id": "action_breakdown",
+        "name": "⚡ Endpoint Hit & Duration Breakdown",
+        "description": "Analyzes the frequency of routes, status codes, and average response times.",
+        "sql": "SELECT endpoint, status_code, count(*) AS total_calls, round(avg(response_time_seconds)::numeric, 4) AS avg_duration_sec FROM audit_logs GROUP BY endpoint, status_code ORDER BY total_calls DESC;"
+    },
+    {
+        "id": "hourly_activity",
+        "name": "⏱️ Hourly Activity (Past 24 Hours)",
+        "description": "Aggregates total audit activity by 1-hour time windows.",
+        "sql": "SELECT date_trunc('hour', created_at) AS hour_window, count(*) AS total_records FROM audit_logs GROUP BY 1 ORDER BY hour_window DESC LIMIT 24;"
+    },
+    {
+        "id": "table_sizes",
+        "name": "💾 Postgres Table Sizes & Row Estimates",
+        "description": "Inspects relational table sizes, live tuples, and vacuum stats from pg_stat_user_tables.",
+        "sql": "SELECT relname AS table_name, n_live_tup AS estimated_rows, pg_size_pretty(pg_total_relation_size(relid)) AS total_size, last_vacuum, last_autovacuum FROM pg_stat_user_tables ORDER BY n_live_tup DESC;"
+    },
+    {
+        "id": "db_connections",
+        "name": "🔌 Active Database Connections",
+        "description": "Lists current client connections and queries from pg_stat_activity.",
+        "sql": "SELECT pid, datname, usename, client_addr, state, query_start, wait_event_type, wait_event, left(query, 60) AS query_preview FROM pg_stat_activity WHERE datname = 'observability' LIMIT 20;"
+    },
+    {
+        "id": "schema_tables",
+        "name": "🗄️ Information Schema Table Catalog",
+        "description": "Queries database catalog tables and types in the observability schema.",
+        "sql": "SELECT table_schema, table_name, table_type FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema') ORDER BY table_schema, table_name;"
+    }
+]
+
+def execute_sql_query(query_str: str, max_rows: int = 100) -> dict:
+    """Executes SQL query against PostgreSQL with safety timeout and formatting."""
+    if not psycopg2:
+        return {
+            "status": "error",
+            "error": "psycopg2 driver not installed in canary runtime",
+            "query": query_str
+        }
+
+    clean_q = query_str.strip()
+    if not clean_q:
+        return {"status": "error", "error": "Query cannot be empty", "query": query_str}
+
+    t0 = time.time()
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host=POSTGRES_HOST,
+            port=POSTGRES_PORT,
+            dbname=POSTGRES_DB,
+            user=POSTGRES_USER,
+            password=POSTGRES_PASSWORD,
+            connect_timeout=4,
+            options="-c statement_timeout=5000"
+        )
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(clean_q)
+
+        if cur.description:
+            columns = [desc[0] for desc in cur.description]
+            raw_rows = cur.fetchmany(max_rows)
+            formatted_rows = []
+            for row in raw_rows:
+                formatted_row = []
+                for val in row:
+                    if val is None:
+                        formatted_row.append(None)
+                    elif isinstance(val, (dict, list)):
+                        formatted_row.append(json.dumps(val))
+                    elif hasattr(val, "isoformat"):
+                        formatted_row.append(val.isoformat())
+                    else:
+                        formatted_row.append(str(val))
+                formatted_rows.append(formatted_row)
+
+            elapsed_ms = round((time.time() - t0) * 1000, 2)
+            return {
+                "status": "success",
+                "columns": columns,
+                "rows": formatted_rows,
+                "row_count": len(formatted_rows),
+                "execution_time_ms": elapsed_ms,
+                "truncated": len(raw_rows) >= max_rows,
+                "query": clean_q
+            }
+        else:
+            elapsed_ms = round((time.time() - t0) * 1000, 2)
+            rowcount = cur.rowcount
+            return {
+                "status": "success",
+                "columns": ["status", "rows_affected"],
+                "rows": [["Command Executed Successfully", str(rowcount)]],
+                "row_count": 1,
+                "execution_time_ms": elapsed_ms,
+                "query": clean_q
+            }
+    except Exception as exc:
+        elapsed_ms = round((time.time() - t0) * 1000, 2)
+        return {
+            "status": "error",
+            "error": str(exc),
+            "execution_time_ms": elapsed_ms,
+            "query": clean_q
+        }
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+# ---------------------------------------------------------------------------
+# Dependencies Health Prober (9 Stack Components)
+# ---------------------------------------------------------------------------
+def check_dependencies() -> dict:
+    """Probes all 9 stack dependencies and computes observed health, latency, usage, and error rate."""
+    deps = []
+
+    # 1. PostgreSQL
+    pg_ok = False
+    pg_lat = 0.0
+    pg_details = {}
+    t0 = time.time()
+    try:
+        if psycopg2:
+            conn = psycopg2.connect(
+                host=POSTGRES_HOST, port=POSTGRES_PORT, dbname=POSTGRES_DB,
+                user=POSTGRES_USER, password=POSTGRES_PASSWORD, connect_timeout=2
+            )
+            cur = conn.cursor()
+            cur.execute("SELECT pg_size_pretty(pg_database_size('observability')), count(*) FROM pg_stat_activity WHERE datname='observability';")
+            row = cur.fetchone()
+            cur.execute("SELECT count(*) FROM audit_logs;")
+            log_cnt = cur.fetchone()[0]
+            conn.close()
+            pg_lat = round((time.time() - t0) * 1000, 1)
+            pg_ok = True
+            pg_details = {
+                "db_size": row[0] if row else "unknown",
+                "active_connections": row[1] if row else 0,
+                "audit_logs_count": log_cnt
+            }
+        else:
+            s = socket.create_connection((POSTGRES_HOST, POSTGRES_PORT), timeout=1.5)
+            s.close()
+            pg_lat = round((time.time() - t0) * 1000, 1)
+            pg_ok = True
+            pg_details = {"port_check": "TCP 5432 open"}
+    except Exception as exc:
+        pg_lat = round((time.time() - t0) * 1000, 1)
+        pg_details = {"error": str(exc)}
+
+    deps.append({
+        "id": "postgres",
+        "name": "PostgreSQL",
+        "role": "Relational Data & Audit Store",
+        "endpoint": f"{POSTGRES_HOST}:{POSTGRES_PORT}",
+        "protocol": "PostgreSQL Wire Protocol",
+        "status": "UP" if pg_ok else "DOWN",
+        "available": pg_ok,
+        "availability_pct": 100.0 if pg_ok else 0.0,
+        "latency_ms": pg_lat,
+        "error_rate_pct": 0.0 if pg_ok else 100.0,
+        "capacity_usage": f"DB Size: {pg_details.get('db_size', 'N/A')} | Conns: {pg_details.get('active_connections', 0)} | Logs: {pg_details.get('audit_logs_count', 'N/A')}" if pg_ok else "Unreachable",
+        "details": pg_details
+    })
+
+    # 2. Valkey
+    vk_ok = False
+    vk_lat = 0.0
+    vk_details = {}
+    t0 = time.time()
+    try:
+        r = redis.Redis(host=VALKEY_HOST, port=6379, socket_timeout=1.5, decode_responses=True)
+        r.ping()
+        info = r.info()
+        vk_lat = round((time.time() - t0) * 1000, 1)
+        vk_ok = True
+        vk_details = {
+            "used_memory_human": info.get("used_memory_human", "N/A"),
+            "connected_clients": info.get("connected_clients", 0),
+            "total_commands": info.get("total_commands_processed", 0)
+        }
+    except Exception as exc:
+        vk_lat = round((time.time() - t0) * 1000, 1)
+        vk_details = {"error": str(exc)}
+
+    deps.append({
+        "id": "valkey",
+        "name": "Valkey",
+        "role": "In-Memory Telemetry & Cache",
+        "endpoint": f"{VALKEY_HOST}:6379",
+        "protocol": "RESP / Redis Protocol",
+        "status": "UP" if vk_ok else "DOWN",
+        "available": vk_ok,
+        "availability_pct": 100.0 if vk_ok else 0.0,
+        "latency_ms": vk_lat,
+        "error_rate_pct": 0.0 if vk_ok else 100.0,
+        "capacity_usage": f"Memory: {vk_details.get('used_memory_human', 'N/A')} | Clients: {vk_details.get('connected_clients', 0)} | Cmds: {vk_details.get('total_commands', 0)}" if vk_ok else "Unreachable",
+        "details": vk_details
+    })
+
+    # 3. OpenTelemetry Collector
+    otel_ok = False
+    otel_lat = 0.0
+    otel_details = {}
+    t0 = time.time()
+    try:
+        try:
+            resp = requests.get("http://otel-collector:13133/", timeout=1.5)
+            if resp.status_code == 200:
+                otel_ok = True
+                otel_details = {"health_endpoint": "HTTP 13133 OK"}
+        except Exception:
+            s = socket.create_connection(("otel-collector", 4317), timeout=1.5)
+            s.close()
+            otel_ok = True
+            otel_details = {"grpc_port": "4317 Open"}
+        otel_lat = round((time.time() - t0) * 1000, 1)
+    except Exception as exc:
+        otel_lat = round((time.time() - t0) * 1000, 1)
+        otel_details = {"error": str(exc)}
+
+    deps.append({
+        "id": "otel-collector",
+        "name": "OTel Collector",
+        "role": "Telemetry Pipeline (OTLP gRPC/HTTP)",
+        "endpoint": "otel-collector:4317 / 4318",
+        "protocol": "OTLP / gRPC / Protobuf",
+        "status": "UP" if otel_ok else "DOWN",
+        "available": otel_ok,
+        "availability_pct": 100.0 if otel_ok else 0.0,
+        "latency_ms": otel_lat,
+        "error_rate_pct": 0.0 if otel_ok else 100.0,
+        "capacity_usage": "Pipelines: Traces (Tempo), Metrics (Mimir), Logs (Loki)" if otel_ok else "Pipeline Inactive",
+        "details": otel_details
+    })
+
+    # 4. Tempo
+    tempo_ok = False
+    tempo_lat = 0.0
+    t0 = time.time()
+    try:
+        resp = requests.get(f"{TEMPO_URL}/ready", timeout=2.0)
+        tempo_lat = round((time.time() - t0) * 1000, 1)
+        tempo_ok = (resp.status_code == 200)
+    except Exception:
+        tempo_lat = round((time.time() - t0) * 1000, 1)
+
+    deps.append({
+        "id": "tempo",
+        "name": "Grafana Tempo",
+        "role": "Distributed Tracing Backend",
+        "endpoint": f"{TEMPO_URL}/ready",
+        "protocol": "HTTP / gRPC Trace Ingestion",
+        "status": "UP" if tempo_ok else "DOWN",
+        "available": tempo_ok,
+        "availability_pct": 100.0 if tempo_ok else 0.0,
+        "latency_ms": tempo_lat,
+        "error_rate_pct": 0.0 if tempo_ok else 100.0,
+        "capacity_usage": "Trace Storage: Local Block Store | WAL Active" if tempo_ok else "Unreachable",
+        "details": {"status_code": 200 if tempo_ok else 500}
+    })
+
+    # 5. Loki
+    loki_ok = False
+    loki_lat = 0.0
+    t0 = time.time()
+    try:
+        resp = requests.get(f"{LOKI_URL}/ready", timeout=2.0)
+        loki_lat = round((time.time() - t0) * 1000, 1)
+        loki_ok = (resp.status_code == 200)
+    except Exception:
+        loki_lat = round((time.time() - t0) * 1000, 1)
+
+    deps.append({
+        "id": "loki",
+        "name": "Grafana Loki",
+        "role": "High-Volume Log Aggregation",
+        "endpoint": f"{LOKI_URL}/ready",
+        "protocol": "HTTP / LogQL API",
+        "status": "UP" if loki_ok else "DOWN",
+        "available": loki_ok,
+        "availability_pct": 100.0 if loki_ok else 0.0,
+        "latency_ms": loki_lat,
+        "error_rate_pct": 0.0 if loki_ok else 100.0,
+        "capacity_usage": "Log Engine: TSDB Chunks | Ingestion Active" if loki_ok else "Unreachable",
+        "details": {"status_code": 200 if loki_ok else 500}
+    })
+
+    # 6. Mimir
+    mimir_ok = False
+    mimir_lat = 0.0
+    t0 = time.time()
+    try:
+        resp = requests.get(f"{MIMIR_URL}/ready", timeout=2.0)
+        mimir_lat = round((time.time() - t0) * 1000, 1)
+        mimir_ok = (resp.status_code == 200)
+    except Exception:
+        mimir_lat = round((time.time() - t0) * 1000, 1)
+
+    deps.append({
+        "id": "mimir",
+        "name": "Grafana Mimir",
+        "role": "Long-Term Prometheus Metrics Store",
+        "endpoint": f"{MIMIR_URL}/ready",
+        "protocol": "HTTP / PromQL Query Range",
+        "status": "UP" if mimir_ok else "DOWN",
+        "available": mimir_ok,
+        "availability_pct": 100.0 if mimir_ok else 0.0,
+        "latency_ms": mimir_lat,
+        "error_rate_pct": 0.0 if mimir_ok else 100.0,
+        "capacity_usage": "TSDB Compactor & Ingester Active" if mimir_ok else "Unreachable",
+        "details": {"status_code": 200 if mimir_ok else 500}
+    })
+
+    # 7. Prometheus
+    prom_ok = False
+    prom_lat = 0.0
+    t0 = time.time()
+    try:
+        resp = requests.get(f"{PROMETHEUS_URL}/-/ready", timeout=2.0)
+        prom_lat = round((time.time() - t0) * 1000, 1)
+        prom_ok = (resp.status_code == 200)
+    except Exception:
+        prom_lat = round((time.time() - t0) * 1000, 1)
+
+    deps.append({
+        "id": "prometheus",
+        "name": "Prometheus",
+        "role": "Scraper & Alert Manager",
+        "endpoint": f"{PROMETHEUS_URL}/-/ready",
+        "protocol": "HTTP / Scraping Engine",
+        "status": "UP" if prom_ok else "DOWN",
+        "available": prom_ok,
+        "availability_pct": 100.0 if prom_ok else 0.0,
+        "latency_ms": prom_lat,
+        "error_rate_pct": 0.0 if prom_ok else 100.0,
+        "capacity_usage": "Scrape Targets: 8+ Jobs (Apps, Exporters, Infra)" if prom_ok else "Unreachable",
+        "details": {"status_code": 200 if prom_ok else 500}
+    })
+
+    # 8. Grafana
+    graf_ok = False
+    graf_lat = 0.0
+    t0 = time.time()
+    try:
+        resp = requests.get(f"{GRAFANA_URL}/api/health", timeout=2.0)
+        graf_lat = round((time.time() - t0) * 1000, 1)
+        graf_ok = (resp.status_code == 200)
+    except Exception:
+        graf_lat = round((time.time() - t0) * 1000, 1)
+
+    deps.append({
+        "id": "grafana",
+        "name": "Grafana",
+        "role": "Unified Observability Dashboards",
+        "endpoint": f"{GRAFANA_URL}/api/health",
+        "protocol": "HTTP / REST API",
+        "status": "UP" if graf_ok else "DOWN",
+        "available": graf_ok,
+        "availability_pct": 100.0 if graf_ok else 0.0,
+        "latency_ms": graf_lat,
+        "error_rate_pct": 0.0 if graf_ok else 100.0,
+        "capacity_usage": "Datasources: Mimir, Tempo, Loki, Postgres" if graf_ok else "Unreachable",
+        "details": {"status_code": 200 if graf_ok else 500}
+    })
+
+    # 9. Redpanda
+    rp_ok = False
+    rp_lat = 0.0
+    t0 = time.time()
+    try:
+        resp = requests.get(f"{REDPANDA_ADMIN_URL}/v1/status/ready", timeout=2.0)
+        rp_lat = round((time.time() - t0) * 1000, 1)
+        rp_ok = (resp.status_code == 200)
+    except Exception:
+        try:
+            s = socket.create_connection(("redpanda", 9092), timeout=1.5)
+            s.close()
+            rp_lat = round((time.time() - t0) * 1000, 1)
+            rp_ok = True
+        except Exception:
+            rp_lat = round((time.time() - t0) * 1000, 1)
+
+    deps.append({
+        "id": "redpanda",
+        "name": "Redpanda",
+        "role": "Kafka-Compatible Event Streaming",
+        "endpoint": "redpanda:9092 / 9644",
+        "protocol": "Kafka Binary Protocol & Admin REST",
+        "status": "UP" if rp_ok else "DOWN",
+        "available": rp_ok,
+        "availability_pct": 100.0 if rp_ok else 0.0,
+        "latency_ms": rp_lat,
+        "error_rate_pct": 0.0 if rp_ok else 100.0,
+        "capacity_usage": "Raft Consensus | Event Bus Active" if rp_ok else "Unreachable",
+        "details": {"status": "ready" if rp_ok else "down"}
+    })
+
+    total_cnt = len(deps)
+    healthy_cnt = sum(1 for d in deps if d["available"])
+    avg_latency = round(sum(d["latency_ms"] for d in deps) / total_cnt, 1) if total_cnt > 0 else 0.0
+    overall_avail = round((healthy_cnt / total_cnt) * 100.0, 1) if total_cnt > 0 else 100.0
+
+    return {
+        "timestamp": time.time(),
+        "total_dependencies": total_cnt,
+        "healthy_count": healthy_cnt,
+        "overall_availability_pct": overall_avail,
+        "avg_latency_ms": avg_latency,
+        "dependencies": deps
+    }
+
+# ---------------------------------------------------------------------------
+# Fault Injection Manager
 # ---------------------------------------------------------------------------
 class FaultManager:
     """Manages active and historical Fault Injection Testing drills with event tags."""
@@ -132,8 +727,8 @@ class FaultManager:
             fault = {
                 "id": f"fault_{int(now)}_{random.randint(1000, 9999)}",
                 "tag": clean_tag,
-                "fault_type": fault_type,      # error_spike, high_latency, service_outage, intermittent_errors
-                "target": target_clean,         # all, python, java, rust
+                "fault_type": fault_type,
+                "target": target_clean,
                 "rate": max(1, min(100, int(rate))),
                 "delay_ms": max(100, int(delay_ms)),
                 "duration_sec": max(0, int(duration_sec)),
@@ -250,6 +845,15 @@ class CanaryState:
         self.total_requests = 0
         self.success_count = 0
         self.error_count = 0
+        self.active_apps = {
+            "python": True,
+            "java":   True,
+            "rust":   True,
+            "node":   True,
+            "go":     True,
+            "dotnet": True,
+            "c":      True,
+        }
         self.apps = {
             "python": {"url": APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
             "java":   {"url": JAVA_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
@@ -263,9 +867,15 @@ class CanaryState:
         self.recent_requests = deque(maxlen=30)
         self.durations_window = deque(maxlen=1000)
         self.last_target = ""
-
-        # 5-second bucket in-memory time series ring buffer (past 60 minutes)
         self.ts_buckets = {}
+
+    def is_app_active(self, lang: str) -> bool:
+        with self._lock:
+            return self.active_apps.get(lang.lower(), True)
+
+    def set_app_active(self, lang: str, active: bool) -> None:
+        with self._lock:
+            self.active_apps[lang.lower()] = bool(active)
 
     def get_effective_tps(self) -> float:
         with self._lock:
@@ -395,7 +1005,6 @@ class CanaryState:
             p99 = sorted_durs[min(n - 1, int(n * 0.99))] * 1000
             avg_lat = (sum(sorted_durs) / n * 1000) if n else 0.0
 
-            # Check override status
             eff_tps = self.base_tps
             is_override = False
             override_rem = None
@@ -421,6 +1030,7 @@ class CanaryState:
                 app_avail = (app_succ / app_total * 100.0) if app_total > 0 else 100.0
                 app_stats[k] = {
                     **v,
+                    "is_active_workload": self.active_apps.get(k, True),
                     "avg_latency_ms": round(app_avg_lat, 1),
                     "availability_pct": round(app_avail, 2)
                 }
@@ -454,6 +1064,7 @@ class CanaryState:
                 "latency_p95_ms": round(p95, 1),
                 "latency_p99_ms": round(p99, 1),
                 "avg_latency_ms": round(avg_lat, 1),
+                "active_apps": dict(self.active_apps),
                 "apps": app_stats,
                 "top_endpoints": endpoint_list[:10],
                 "recent_requests": list(self.recent_requests),
@@ -585,6 +1196,68 @@ def query_trend_metrics(range_str: str = "5m", service: str = "all") -> dict:
     }
 
 # ---------------------------------------------------------------------------
+# Chaos Crash Invocation (Thread / Process Crash)
+# ---------------------------------------------------------------------------
+def trigger_target_crash(target: str, crash_type: str = "process", tag: str = None) -> dict:
+    app_urls = {
+        "python": APP_BASE_URL,
+        "java": JAVA_APP_BASE_URL,
+        "rust": RUST_APP_BASE_URL,
+        "node": NODE_APP_BASE_URL,
+        "go": GO_APP_BASE_URL,
+        "dotnet": DOTNET_APP_BASE_URL,
+        "c": C_APP_BASE_URL,
+    }
+    tgt_clean = (target or "java").lower().strip()
+    crash_type_clean = "thread" if (crash_type or "").lower().strip() == "thread" else "process"
+    targets = [tgt_clean] if tgt_clean in app_urls else list(app_urls.keys())
+
+    clean_tag = tag.strip() if tag and tag.strip() else f"CRASH-{tgt_clean.upper()}-{crash_type_clean.upper()}"
+
+    logger.warning("Triggering %s crash on target environment %s (tag: %s)",
+                   crash_type_clean, tgt_clean, clean_tag)
+
+    results = []
+    for tgt in targets:
+        base = app_urls[tgt]
+        url = f"{base}/crash?type={crash_type_clean}"
+        try:
+            resp = requests.post(url, json={"type": crash_type_clean, "tag": clean_tag}, timeout=2.0)
+            status_code = resp.status_code
+            try:
+                resp_data = resp.json()
+            except Exception:
+                resp_data = resp.text
+            results.append({
+                "target": tgt,
+                "url": url,
+                "status_code": status_code,
+                "response": resp_data
+            })
+        except Exception as exc:
+            results.append({
+                "target": tgt,
+                "url": url,
+                "status": "connection_terminated",
+                "message": f"Connection reset / process terminated: {exc}"
+            })
+
+    fault_manager.start_fault(
+        tag=clean_tag,
+        fault_type=f"{crash_type_clean}_crash",
+        target=tgt_clean if tgt_clean in app_urls else "all",
+        duration_sec=30
+    )
+
+    return {
+        "status": "success",
+        "tag": clean_tag,
+        "crash_type": crash_type_clean,
+        "target": tgt_clean,
+        "results": results
+    }
+
+# ---------------------------------------------------------------------------
 # Compact, High-Efficiency HTML Dashboard Rendering
 # ---------------------------------------------------------------------------
 def render_dashboard_html() -> str:
@@ -657,7 +1330,7 @@ def render_dashboard_html() -> str:
       50% {{ transform: scale(1.4); opacity: 0.5; }}
       100% {{ transform: scale(0.9); opacity: 1; }}
     }}
-    .header-controls {{ display: flex; align-items: center; gap: 8px; }}
+    .header-controls {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
 
     /* View Switcher Tabs */
     .view-tabs {{
@@ -667,6 +1340,7 @@ def render_dashboard_html() -> str:
       border-radius: 6px;
       padding: 2px;
       gap: 2px;
+      flex-wrap: wrap;
     }}
     .view-tab-btn {{
       background: transparent;
@@ -730,14 +1404,38 @@ def render_dashboard_html() -> str:
     .kpi-value {{ font-size: 1.35rem; font-weight: 800; margin: 2px 0; line-height: 1.1; }}
     .kpi-subtext {{ font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 
-    /* Compact 3-Column Control Panels (Fault Injection + Crash Trigger + TPS Override) */
+    /* Collapsible Controls Drawer */
+    .collapsible-drawer {{
+      background: #0f172a;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      margin-bottom: 14px;
+      overflow: hidden;
+    }}
+    .drawer-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      background: #111a29;
+      cursor: pointer;
+      user-select: none;
+      border-bottom: 1px solid transparent;
+    }}
+    .drawer-header:hover {{ background: #162236; }}
+    .drawer-header.open {{ border-bottom: 1px solid var(--card-border); }}
+    .drawer-title-group {{ display: flex; align-items: center; gap: 8px; }}
+    .drawer-title {{ font-size: 0.85rem; font-weight: 700; display: flex; align-items: center; gap: 6px; }}
+    .drawer-badges {{ display: flex; gap: 6px; align-items: center; }}
+
+    /* Compact 4-Column Control Panels (Fault Injection + Crash Trigger + TPS + Container Power) */
     .controls-grid {{
       display: grid;
-      grid-template-columns: 1.15fr 1.15fr 1fr;
+      grid-template-columns: 1fr 1fr;
       gap: 10px;
-      margin-bottom: 14px;
+      padding: 12px;
     }}
-    @media (max-width: 1280px) {{
+    @media (max-width: 1024px) {{
       .controls-grid {{ grid-template-columns: 1fr; }}
     }}
     .toast-notice {{
@@ -814,6 +1512,7 @@ def render_dashboard_html() -> str:
     .btn-secondary:hover {{ background: #334668; }}
     .btn-outline {{ background: transparent; border: 1px solid var(--card-border); color: var(--muted); }}
     .btn-outline:hover {{ color: var(--text); border-color: var(--muted); }}
+    .btn-sm {{ height: 24px; padding: 2px 7px; font-size: 0.72rem; }}
 
     /* Quick Preset Chips */
     .chips-row {{ display: flex; gap: 5px; margin-top: 8px; align-items: center; flex-wrap: wrap; }}
@@ -948,6 +1647,7 @@ def render_dashboard_html() -> str:
     .badge-success {{ background: #064e3b; color: #34d399; }}
     .badge-error {{ background: #7f1d1d; color: #f87171; }}
     .badge-warning {{ background: #78350f; color: #fbbf24; }}
+    .badge-secondary {{ background: #1e293b; color: #94a3b8; }}
     .badge-python {{ background: #1e3a8a; color: #93c5fd; }}
     .badge-java {{ background: #7c2d12; color: #fdba74; }}
     .badge-rust {{ background: #701a75; color: #f0abfc; }}
@@ -975,8 +1675,167 @@ def render_dashboard_html() -> str:
     }}
 
     .scroll-table-container {{
-      max-height: 220px;
+      max-height: 240px;
       overflow-y: auto;
+    }}
+
+    /* SSMS / pgAdmin Tabular Data Grid */
+    .sql-editor-container {{
+      background: #0f172a;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }}
+    .sql-toolbar {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
+    .sql-textarea {{
+      width: 100%;
+      background: #090e17;
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+      color: #7dd3fc;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.84rem;
+      padding: 8px 10px;
+      line-height: 1.4;
+      resize: vertical;
+      min-height: 85px;
+      outline: none;
+      margin-bottom: 10px;
+    }}
+    .sql-textarea:focus {{ border-color: var(--accent); }}
+    .sql-meta-bar {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #111a29;
+      border: 1px solid var(--card-border);
+      padding: 5px 10px;
+      border-radius: 4px;
+      font-size: 0.74rem;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }}
+    .sql-grid-wrapper {{
+      max-height: 380px;
+      overflow: auto;
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+      background: #0b111e;
+    }}
+    .sql-grid-table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.76rem;
+    }}
+    .sql-grid-table th {{
+      position: sticky;
+      top: 0;
+      background: #152238;
+      color: #94a3b8;
+      border-right: 1px solid #24344d;
+      border-bottom: 2px solid #334e77;
+      padding: 6px 10px;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      font-size: 0.72rem;
+    }}
+    .sql-grid-table th:hover {{ background: #1c2e4c; color: var(--text); }}
+    .sql-grid-table td {{
+      padding: 5px 10px;
+      border-bottom: 1px solid #1e2c42;
+      border-right: 1px solid #182436;
+      white-space: nowrap;
+      max-width: 320px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }}
+    .sql-grid-table td.row-num {{
+      background: #0e1726;
+      color: #64748b;
+      font-weight: 700;
+      text-align: right;
+      width: 40px;
+      user-select: none;
+    }}
+    .sql-grid-table tr:hover td {{ background: #16243b; }}
+    .sql-null {{ color: #64748b; font-style: italic; }}
+
+    /* Dependencies Grid */
+    .dep-cards-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }}
+    .dep-card {{
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }}
+    .dep-card-header {{ display: flex; justify-content: space-between; align-items: center; }}
+    .dep-name {{ font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px; }}
+    .dep-role {{ font-size: 0.72rem; color: var(--muted); }}
+    .dep-meta-row {{ display: flex; justify-content: space-between; font-size: 0.74rem; }}
+
+    /* QR Code Modal */
+    .modal-overlay {{
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(3px);
+    }}
+    .modal-overlay.open {{ display: flex; }}
+    .modal-box {{
+      background: #111a29;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 20px;
+      max-width: 420px;
+      width: 90%;
+      text-align: center;
+      position: relative;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+    }}
+    .modal-close-btn {{
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 1.2rem;
+      cursor: pointer;
+    }}
+    .qr-container {{
+      background: white;
+      padding: 14px;
+      border-radius: 8px;
+      display: inline-block;
+      margin: 12px 0;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }}
+    .qr-container svg, .qr-container img {{
+      display: block;
+      width: 180px;
+      height: 180px;
     }}
 
     footer {{
@@ -987,6 +1846,8 @@ def render_dashboard_html() -> str:
       justify-content: space-between;
       color: var(--muted);
       font-size: 0.74rem;
+      flex-wrap: wrap;
+      gap: 6px;
     }}
     a {{ color: var(--accent); text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
@@ -995,6 +1856,32 @@ def render_dashboard_html() -> str:
 <body>
   <div id="chart-tooltip"></div>
   <div id="toast-notice" class="toast-notice"></div>
+
+  <!-- QR Code Modal -->
+  <div id="qr-modal" class="modal-overlay">
+    <div class="modal-box">
+      <button class="modal-close-btn" onclick="closeQrModal()">&times;</button>
+      <h3 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 4px;">📱 Mobile Dashboard & Connect</h3>
+      <p style="font-size: 0.75rem; color: var(--muted); margin-bottom: 8px;">
+        Scan to connect Android, iOS, or Windows devices to the Canary Telemetry feed.
+      </p>
+      <div class="qr-container" id="qr-target">
+        <img id="qr-img" src="/api/qrcode?url=http%3A%2F%2Flocalhost%3A8085" alt="Canary QR Code" />
+      </div>
+      <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px; text-align: left;">
+        <label style="font-size: 0.7rem; font-weight: 700; color: var(--muted);">SERVER LAN HOST / IP:</label>
+        <div style="display: flex; gap: 6px;">
+          <input type="text" id="qr-host-input" class="ctrl-input" style="flex: 1;" placeholder="e.g. 192.168.1.100 or localhost" oninput="updateQrUrl()" />
+          <button class="btn btn-secondary" onclick="copyQrUrl()">📋 Copy</button>
+        </div>
+        <div id="qr-full-url" style="font-family: monospace; font-size: 0.72rem; color: var(--accent); word-break: break-all;"></div>
+      </div>
+      <p style="font-size: 0.7rem; color: var(--muted); margin-top: 10px;">
+        💡 Use the React Native app in <code style="color:var(--text);">mobile/</code> or open in mobile Safari / Chrome.
+      </p>
+    </div>
+  </div>
+
   <div class="container">
     <header>
       <div class="title-group">
@@ -1006,7 +1893,10 @@ def render_dashboard_html() -> str:
           <button class="view-tab-btn active" onclick="switchView('both', this)">📊 Both Views</button>
           <button class="view-tab-btn" onclick="switchView('graphs', this)">📈 Trends</button>
           <button class="view-tab-btn" onclick="switchView('raw', this)">🔢 Raw Numbers</button>
+          <button class="view-tab-btn" onclick="switchView('dependencies', this)">🔌 Dependencies</button>
+          <button class="view-tab-btn" onclick="switchView('sql', this)">💾 SQL Editor</button>
         </div>
+        <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="openQrModal()" title="Mobile App & QR Code">📱 Connect / QR</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="fetchTrendsAndRefresh()" title="Refresh now">🔄</button>
       </div>
     </header>
@@ -1053,154 +1943,186 @@ def render_dashboard_html() -> str:
       </div>
     </div>
 
-    <!-- Compact Dual Controls: Fault Injection Testing & TPS Override -->
-    <div class="controls-grid" id="controls-section">
-      <!-- 1. Fault Injection Testing Station -->
-      <div class="ctrl-box">
-        <div class="ctrl-box-title">
-          <span>⚡ Fault Injection Testing (Color-Coded by Language)</span>
-          <span style="font-size:0.7rem; color:var(--muted); font-weight:normal;">Tags events on graph trends</span>
+    <!-- Expandable / Collapsible Controls Drawer (COLLAPSED BY DEFAULT FOR UNCLUTTERED VIEW) -->
+    <div class="collapsible-drawer" id="controls-drawer">
+      <div class="drawer-header" id="drawer-toggle-header" onclick="toggleControlsDrawer()">
+        <div class="drawer-title-group">
+          <span class="drawer-title">
+            <span id="drawer-icon">▶</span> ⚙️ Chaos & Load Generation Controls (Fault Injection, Crashes, TPS Override & Container Power)
+          </span>
         </div>
-        <form id="fault-form" class="form-inline-grid" onsubmit="startFaultInjection(event)">
-          <div class="form-field">
-            <label>Event Tag Name</label>
-            <input type="text" id="fault-tag-input" class="ctrl-input" placeholder="e.g. CHAOS-JAVA-ERR" required />
-          </div>
-          <div class="form-field">
-            <label>Fault Mode</label>
-            <select id="fault-type-select" class="ctrl-input">
-              <option value="error_spike">💥 Error Spike (5xx Storm)</option>
-              <option value="high_latency">⏱️ High Latency (+1000ms)</option>
-              <option value="service_outage">🛑 Service Outage (Drops)</option>
-              <option value="intermittent_errors">🎲 Intermittent (50% Err)</option>
-              <option value="process_crash">💥 Process Crash (Kill Process)</option>
-              <option value="thread_crash">🧵 Thread Crash (Worker Fault)</option>
-            </select>
-          </div>
-          <div class="form-field">
-            <label>Target Language</label>
-            <select id="fault-target-select" class="ctrl-input">
-              <option value="all">🔴 All (Python/Java/Rust/Node/Go/.NET/C)</option>
-              <option value="java">🟠 Java (Spring Boot)</option>
-              <option value="python">🔵 Python (Flask)</option>
-              <option value="rust">🟣 Rust (Axum)</option>
-              <option value="node">🟢 Node.js (Express)</option>
-              <option value="go">🩵 Go (net/http)</option>
-              <option value="dotnet">💜 .NET (C#)</option>
-              <option value="c">⚙️ C (POSIX)</option>
-            </select>
-          </div>
-          <div class="form-field">
-            <label>Duration</label>
-            <select id="fault-duration-select" class="ctrl-input">
-              <option value="30">30s</option>
-              <option value="60" selected>1 min</option>
-              <option value="120">2 min</option>
-              <option value="300">5 min</option>
-              <option value="0">Manual</option>
-            </select>
-          </div>
-          <div>
-            <button type="submit" class="btn btn-danger" style="width:100%;">⚡ Induce</button>
-          </div>
-        </form>
-        <div class="chips-row">
-          <span style="font-size:0.68rem; color:var(--muted); font-weight:700;">PRESETS:</span>
-          <button class="chip-btn chip-java" onclick="quickDrill('JAVA-ERR-SPIKE', 'error_spike', 'java', 60)">🟠 Java Errors (60s)</button>
-          <button class="chip-btn chip-python" onclick="quickDrill('PY-LATENCY-SURGE', 'high_latency', 'python', 60)">🔵 Py Latency (60s)</button>
-          <button class="chip-btn chip-rust" onclick="quickDrill('RUST-CHAOS-DRILL', 'intermittent_errors', 'rust', 60)">🟣 Rust Chaos (60s)</button>
-          <button class="chip-btn chip-node" onclick="quickDrill('NODE-ERR-SPIKE', 'error_spike', 'node', 60)">🟢 Node Errors (60s)</button>
-          <button class="chip-btn chip-go" onclick="quickDrill('GO-ERR-SPIKE', 'error_spike', 'go', 60)">🩵 Go Errors (60s)</button>
-          <button class="chip-btn chip-dotnet" onclick="quickDrill('DOTNET-ERR-SPIKE', 'error_spike', 'dotnet', 60)">💜 .NET Errors (60s)</button>
-          <button class="chip-btn chip-c" onclick="quickDrill('C-ERR-SPIKE', 'error_spike', 'c', 60)">⚙️ C Errors (60s)</button>
-          <button class="chip-btn" onclick="quickDrill('ALL-OUTAGE-DRILL', 'service_outage', 'all', 30)">🔴 Full Outage (30s)</button>
+        <div class="drawer-badges">
+          <span id="drawer-tps-chip" class="badge badge-success">6 TPS (Default)</span>
+          <span id="drawer-fault-chip" class="badge badge-secondary">No Active Fault</span>
+          <span id="drawer-power-chip" class="badge badge-secondary">7/7 Containers Active</span>
+          <button class="btn btn-outline btn-sm" id="drawer-toggle-btn" style="pointer-events: none;">▶ Expand</button>
         </div>
       </div>
 
-      <!-- 2. Target Crash Trigger Station -->
-      <div class="ctrl-box">
-        <div class="ctrl-box-title">
-          <span>💥 Target Crash Injection (Process / Thread)</span>
-          <span style="font-size:0.7rem; color:var(--muted); font-weight:normal;">Issues crash to target process</span>
-        </div>
-        <form id="crash-form" class="form-inline-grid" style="grid-template-columns: 1fr 1fr 1fr 95px;" onsubmit="submitCrashTrigger(event)">
-          <div class="form-field">
-            <label>Target Environment</label>
-            <select id="crash-target-select" class="ctrl-input">
-              <option value="java">🟠 Java (Spring Boot)</option>
-              <option value="python">🔵 Python (Flask)</option>
-              <option value="rust">🟣 Rust (Axum)</option>
-              <option value="node">🟢 Node.js (Express)</option>
-              <option value="go">🩵 Go (net/http)</option>
-              <option value="dotnet">💜 .NET (C#)</option>
-              <option value="c">⚙️ C (POSIX)</option>
-              <option value="all">🔴 All Environments</option>
-            </select>
+      <!-- Collapsible Body (Hidden by default) -->
+      <div id="drawer-content" style="display: none;">
+        <div class="controls-grid">
+          <!-- 1. Fault Injection Testing Station -->
+          <div class="ctrl-box">
+            <div class="ctrl-box-title">
+              <span>⚡ Fault Injection Testing (Color-Coded by Language)</span>
+              <span style="font-size:0.7rem; color:var(--muted); font-weight:normal;">Tags events on graph trends</span>
+            </div>
+            <form id="fault-form" class="form-inline-grid" onsubmit="startFaultInjection(event)">
+              <div class="form-field">
+                <label>Event Tag Name</label>
+                <input type="text" id="fault-tag-input" class="ctrl-input" placeholder="e.g. CHAOS-JAVA-ERR" required />
+              </div>
+              <div class="form-field">
+                <label>Fault Mode</label>
+                <select id="fault-type-select" class="ctrl-input">
+                  <option value="error_spike">💥 Error Spike (5xx Storm)</option>
+                  <option value="high_latency">⏱️ High Latency (+1000ms)</option>
+                  <option value="service_outage">🛑 Service Outage (Drops)</option>
+                  <option value="intermittent_errors">🎲 Intermittent (50% Err)</option>
+                  <option value="process_crash">💥 Process Crash (Kill Process)</option>
+                  <option value="thread_crash">🧵 Thread Crash (Worker Fault)</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label>Target Language</label>
+                <select id="fault-target-select" class="ctrl-input">
+                  <option value="all">🔴 All (Python/Java/Rust/Node/Go/.NET/C)</option>
+                  <option value="java">🟠 Java (Spring Boot)</option>
+                  <option value="python">🔵 Python (Flask)</option>
+                  <option value="rust">🟣 Rust (Axum)</option>
+                  <option value="node">🟢 Node.js (Express)</option>
+                  <option value="go">🩵 Go (net/http)</option>
+                  <option value="dotnet">💜 .NET (C#)</option>
+                  <option value="c">⚙️ C (POSIX)</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label>Duration</label>
+                <select id="fault-duration-select" class="ctrl-input">
+                  <option value="30">30s</option>
+                  <option value="60" selected>1 min</option>
+                  <option value="120">2 min</option>
+                  <option value="300">5 min</option>
+                  <option value="0">Manual</option>
+                </select>
+              </div>
+              <div>
+                <button type="submit" class="btn btn-danger" style="width:100%;">⚡ Induce</button>
+              </div>
+            </form>
+            <div class="chips-row">
+              <span style="font-size:0.68rem; color:var(--muted); font-weight:700;">PRESETS:</span>
+              <button class="chip-btn chip-java" onclick="quickDrill('JAVA-ERR-SPIKE', 'error_spike', 'java', 60)">🟠 Java Errors (60s)</button>
+              <button class="chip-btn chip-python" onclick="quickDrill('PY-LATENCY-SURGE', 'high_latency', 'python', 60)">🔵 Py Latency (60s)</button>
+              <button class="chip-btn chip-rust" onclick="quickDrill('RUST-CHAOS-DRILL', 'intermittent_errors', 'rust', 60)">🟣 Rust Chaos (60s)</button>
+              <button class="chip-btn chip-node" onclick="quickDrill('NODE-ERR-SPIKE', 'error_spike', 'node', 60)">🟢 Node Errors (60s)</button>
+              <button class="chip-btn chip-go" onclick="quickDrill('GO-ERR-SPIKE', 'error_spike', 'go', 60)">🩵 Go Errors (60s)</button>
+              <button class="chip-btn chip-dotnet" onclick="quickDrill('DOTNET-ERR-SPIKE', 'error_spike', 'dotnet', 60)">💜 .NET Errors (60s)</button>
+              <button class="chip-btn chip-c" onclick="quickDrill('C-ERR-SPIKE', 'error_spike', 'c', 60)">⚙️ C Errors (60s)</button>
+              <button class="chip-btn" onclick="quickDrill('ALL-OUTAGE-DRILL', 'service_outage', 'all', 30)">🔴 Full Outage (30s)</button>
+            </div>
           </div>
-          <div class="form-field">
-            <label>Crash Scope</label>
-            <select id="crash-type-select" class="ctrl-input">
-              <option value="process">💥 Process Crash (Kill)</option>
-              <option value="thread">🧵 Thread Crash (Worker)</option>
-            </select>
-          </div>
-          <div class="form-field">
-            <label>Event Tag Name</label>
-            <input type="text" id="crash-tag-input" class="ctrl-input" placeholder="e.g. CRASH-JAVA-PROC" />
-          </div>
-          <div>
-            <button type="submit" class="btn btn-danger" style="width:100%; background:#b91c1c;">💥 Crash</button>
-          </div>
-        </form>
-        <div class="chips-row">
-          <span style="font-size:0.68rem; color:var(--muted); font-weight:700;">QUICK CRASH:</span>
-          <button class="chip-btn chip-java" onclick="quickCrash('java', 'process', 'CRASH-JAVA-PROC')">🟠 Java Proc</button>
-          <button class="chip-btn chip-java" onclick="quickCrash('java', 'thread', 'CRASH-JAVA-THREAD')">🟠 Java Thread</button>
-          <button class="chip-btn chip-python" onclick="quickCrash('python', 'process', 'CRASH-PY-PROC')">🔵 Py Proc</button>
-          <button class="chip-btn chip-rust" onclick="quickCrash('rust', 'process', 'CRASH-RUST-PROC')">🟣 Rust Proc</button>
-          <button class="chip-btn chip-node" onclick="quickCrash('node', 'process', 'CRASH-NODE-PROC')">🟢 Node Proc</button>
-          <button class="chip-btn chip-go" onclick="quickCrash('go', 'process', 'CRASH-GO-PROC')">🩵 Go Proc</button>
-          <button class="chip-btn chip-dotnet" onclick="quickCrash('dotnet', 'process', 'CRASH-DOTNET-PROC')">💜 .NET Proc</button>
-          <button class="chip-btn chip-c" onclick="quickCrash('c', 'process', 'CRASH-C-PROC')">⚙️ C Proc</button>
-          <button class="chip-btn chip-c" onclick="quickCrash('c', 'thread', 'CRASH-C-THREAD')">⚙️ C Thread</button>
-        </div>
-      </div>
 
-      <!-- 3. Dynamic TPS Load Controller -->
-      <div class="ctrl-box">
-        <div class="ctrl-box-title">
-          <span>🚀 Load Rate Controller (TPS Override)</span>
-          <span id="tps-active-badge" class="badge badge-success">DEFAULT: 6 TPS</span>
-        </div>
-        <form id="tps-form" class="form-inline-grid" style="grid-template-columns: 1fr 1fr 100px 70px;" onsubmit="applyTpsOverride(event)">
-          <div class="form-field">
-            <label>Target TPS Rate</label>
-            <input type="number" id="tps-rate-input" class="ctrl-input" min="1" max="100" step="1" value="18" required />
+          <!-- 2. Target Crash Trigger Station -->
+          <div class="ctrl-box">
+            <div class="ctrl-box-title">
+              <span>💥 Target Crash Injection (Process / Thread)</span>
+              <span style="font-size:0.7rem; color:var(--muted); font-weight:normal;">Issues crash to target process</span>
+            </div>
+            <form id="crash-form" class="form-inline-grid" style="grid-template-columns: 1fr 1fr 1fr 95px;" onsubmit="submitCrashTrigger(event)">
+              <div class="form-field">
+                <label>Target Environment</label>
+                <select id="crash-target-select" class="ctrl-input">
+                  <option value="java">🟠 Java (Spring Boot)</option>
+                  <option value="python">🔵 Python (Flask)</option>
+                  <option value="rust">🟣 Rust (Axum)</option>
+                  <option value="node">🟢 Node.js (Express)</option>
+                  <option value="go">🩵 Go (net/http)</option>
+                  <option value="dotnet">💜 .NET (C#)</option>
+                  <option value="c">⚙️ C (POSIX)</option>
+                  <option value="all">🔴 All Environments</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label>Crash Scope</label>
+                <select id="crash-type-select" class="ctrl-input">
+                  <option value="process">💥 Process Crash (Kill)</option>
+                  <option value="thread">🧵 Thread Crash (Worker)</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label>Event Tag Name</label>
+                <input type="text" id="crash-tag-input" class="ctrl-input" placeholder="e.g. CRASH-JAVA-PROC" />
+              </div>
+              <div>
+                <button type="submit" class="btn btn-danger" style="width:100%; background:#b91c1c;">💥 Crash</button>
+              </div>
+            </form>
+            <div class="chips-row">
+              <span style="font-size:0.68rem; color:var(--muted); font-weight:700;">QUICK CRASH:</span>
+              <button class="chip-btn chip-java" onclick="quickCrash('java', 'process', 'CRASH-JAVA-PROC')">🟠 Java Proc</button>
+              <button class="chip-btn chip-java" onclick="quickCrash('java', 'thread', 'CRASH-JAVA-THREAD')">🟠 Java Thread</button>
+              <button class="chip-btn chip-python" onclick="quickCrash('python', 'process', 'CRASH-PY-PROC')">🔵 Py Proc</button>
+              <button class="chip-btn chip-rust" onclick="quickCrash('rust', 'process', 'CRASH-RUST-PROC')">🟣 Rust Proc</button>
+              <button class="chip-btn chip-node" onclick="quickCrash('node', 'process', 'CRASH-NODE-PROC')">🟢 Node Proc</button>
+              <button class="chip-btn chip-go" onclick="quickCrash('go', 'process', 'CRASH-GO-PROC')">🩵 Go Proc</button>
+              <button class="chip-btn chip-dotnet" onclick="quickCrash('dotnet', 'process', 'CRASH-DOTNET-PROC')">💜 .NET Proc</button>
+              <button class="chip-btn chip-c" onclick="quickCrash('c', 'process', 'CRASH-C-PROC')">⚙️ C Proc</button>
+            </div>
           </div>
-          <div class="form-field">
-            <label>Override Duration</label>
-            <select id="tps-duration-select" class="ctrl-input">
-              <option value="30">30s</option>
-              <option value="60" selected>1 min</option>
-              <option value="120">2 min</option>
-              <option value="300">5 min</option>
-              <option value="900">15 min</option>
-              <option value="0">Permanent</option>
-            </select>
+
+          <!-- 3. Dynamic TPS Load Controller -->
+          <div class="ctrl-box">
+            <div class="ctrl-box-title">
+              <span>🚀 Load Rate Controller (TPS Override)</span>
+              <span id="tps-active-badge" class="badge badge-success">DEFAULT: 6 TPS</span>
+            </div>
+            <form id="tps-form" class="form-inline-grid" style="grid-template-columns: 1fr 1fr 100px 70px;" onsubmit="applyTpsOverride(event)">
+              <div class="form-field">
+                <label>Target TPS Rate</label>
+                <input type="number" id="tps-rate-input" class="ctrl-input" min="1" max="100" step="1" value="18" required />
+              </div>
+              <div class="form-field">
+                <label>Override Duration</label>
+                <select id="tps-duration-select" class="ctrl-input">
+                  <option value="30">30s</option>
+                  <option value="60" selected>1 min</option>
+                  <option value="120">2 min</option>
+                  <option value="300">5 min</option>
+                  <option value="900">15 min</option>
+                  <option value="0">Permanent</option>
+                </select>
+              </div>
+              <div>
+                <button type="submit" class="btn btn-accent" style="width:100%;">🚀 Set TPS</button>
+              </div>
+              <div>
+                <button type="button" class="btn btn-secondary" style="width:100%;" onclick="resetTps()" title="Reset to base 6 TPS">Reset</button>
+              </div>
+            </form>
+            <div class="chips-row">
+              <span style="font-size:0.68rem; color:var(--muted); font-weight:700;">QUICK TPS:</span>
+              <button class="chip-btn" onclick="quickTps(6, 0)">6 TPS (Default)</button>
+              <button class="chip-btn" onclick="quickTps(12, 60)">12 TPS (2x, 60s)</button>
+              <button class="chip-btn" onclick="quickTps(24, 60)">24 TPS (4x, 60s)</button>
+              <button class="chip-btn" onclick="quickTps(48, 60)">48 TPS (8x, 60s)</button>
+            </div>
           </div>
-          <div>
-            <button type="submit" class="btn btn-accent" style="width:100%;">🚀 Set TPS</button>
+
+          <!-- 4. Container Power & Resource Manager -->
+          <div class="ctrl-box">
+            <div class="ctrl-box-title">
+              <span>🔌 Container Power & Resource Manager</span>
+              <span style="font-size:0.7rem; color:var(--muted);">Saves resources & adapts canary workload</span>
+            </div>
+            <div style="font-size:0.73rem; color:var(--muted); margin-bottom:8px;">
+              Shutting down containers suspends synthetic canary traffic to avoid false failure spikes.
+            </div>
+            <div id="container-power-list" style="display:flex; flex-direction:column; gap:6px;">
+              <div style="color:var(--muted); text-align:center; padding:10px;">Loading container states...</div>
+            </div>
           </div>
-          <div>
-            <button type="button" class="btn btn-secondary" style="width:100%;" onclick="resetTps()" title="Reset to base 6 TPS">Reset</button>
-          </div>
-        </form>
-        <div class="chips-row">
-          <span style="font-size:0.68rem; color:var(--muted); font-weight:700;">QUICK TPS:</span>
-          <button class="chip-btn" onclick="quickTps(6, 0)">6 TPS (Default)</button>
-          <button class="chip-btn" onclick="quickTps(12, 60)">12 TPS (2x, 60s)</button>
-          <button class="chip-btn" onclick="quickTps(24, 60)">24 TPS (4x, 60s)</button>
-          <button class="chip-btn" onclick="quickTps(48, 60)">48 TPS (8x, 60s)</button>
         </div>
       </div>
     </div>
@@ -1238,56 +2160,36 @@ def render_dashboard_html() -> str:
 
       <!-- 2x2 Charts Grid -->
       <div class="charts-grid">
-        <!-- 1. Availability Chart -->
         <div class="chart-card">
           <div class="chart-header">
-            <div class="chart-title">
-              <span style="color:#10b981;">●</span> Availability Trend (%)
-            </div>
+            <div class="chart-title"><span style="color:#10b981;">●</span> Availability Trend (%)</div>
             <div class="chart-current" id="cur-avail" style="color:#10b981;">--%</div>
           </div>
-          <div class="canvas-container">
-            <canvas id="chart-avail"></canvas>
-          </div>
+          <div class="canvas-container"><canvas id="chart-avail"></canvas></div>
         </div>
 
-        <!-- 2. Errors Chart -->
         <div class="chart-card">
           <div class="chart-header">
-            <div class="chart-title">
-              <span style="color:#ef4444;">●</span> Error Rate (Errors / sec)
-            </div>
+            <div class="chart-title"><span style="color:#ef4444;">●</span> Error Rate (Errors / sec)</div>
             <div class="chart-current" id="cur-errors" style="color:#ef4444;">-- err/s</div>
           </div>
-          <div class="canvas-container">
-            <canvas id="chart-errors"></canvas>
-          </div>
+          <div class="canvas-container"><canvas id="chart-errors"></canvas></div>
         </div>
 
-        <!-- 3. Latencies Chart -->
         <div class="chart-card">
           <div class="chart-header">
-            <div class="chart-title">
-              <span style="color:#38bdf8;">●</span> Latency Trend (Average ms)
-            </div>
+            <div class="chart-title"><span style="color:#38bdf8;">●</span> Latency Trend (Average ms)</div>
             <div class="chart-current" id="cur-lat" style="color:#38bdf8;">-- ms</div>
           </div>
-          <div class="canvas-container">
-            <canvas id="chart-latency"></canvas>
-          </div>
+          <div class="canvas-container"><canvas id="chart-latency"></canvas></div>
         </div>
 
-        <!-- 4. Throughput Chart -->
         <div class="chart-card">
           <div class="chart-header">
-            <div class="chart-title">
-              <span style="color:#a855f7;">●</span> Throughput Trend (TPS / sec)
-            </div>
+            <div class="chart-title"><span style="color:#a855f7;">●</span> Throughput Trend (TPS / sec)</div>
             <div class="chart-current" id="cur-tps" style="color:#a855f7;">-- req/s</div>
           </div>
-          <div class="canvas-container">
-            <canvas id="chart-tps"></canvas>
-          </div>
+          <div class="canvas-container"><canvas id="chart-tps"></canvas></div>
         </div>
       </div>
     </div>
@@ -1301,7 +2203,8 @@ def render_dashboard_html() -> str:
             <tr>
               <th>Service</th>
               <th>Endpoint URL</th>
-              <th>Health</th>
+              <th>Workload</th>
+              <th>Container</th>
               <th style="text-align:right;">Requests</th>
               <th style="text-align:right;">Success</th>
               <th style="text-align:right;">Errors</th>
@@ -1310,13 +2213,12 @@ def render_dashboard_html() -> str:
             </tr>
           </thead>
           <tbody id="apps-table-body">
-            <tr><td colspan="8" style="text-align:center; color:var(--muted);">Loading raw numbers...</td></tr>
+            <tr><td colspan="9" style="text-align:center; color:var(--muted);">Loading raw numbers...</td></tr>
           </tbody>
         </table>
       </div>
 
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
-        <!-- Endpoint breakdown -->
         <div>
           <div class="section-title" style="margin-bottom: 6px;">📊 Endpoint Hit & Error Breakdown</div>
           <div class="table-card scroll-table-container">
@@ -1337,7 +2239,6 @@ def render_dashboard_html() -> str:
           </div>
         </div>
 
-        <!-- Fault injection history -->
         <div>
           <div class="section-title" style="margin-bottom: 6px;">🏷️ Fault Injection Event Ledger</div>
           <div class="table-card scroll-table-container">
@@ -1382,9 +2283,99 @@ def render_dashboard_html() -> str:
       </div>
     </div>
 
+    <!-- Dependencies Health Section (Tabbed View) -->
+    <div id="dependencies-section" style="display: none;">
+      <div class="section-bar">
+        <div class="section-title">
+          <span>🔌 Stack Dependencies & Infrastructure Health</span>
+          <span style="font-size:0.75rem; color:var(--muted); font-weight:normal;">(PostgreSQL, Valkey, OTel Collector, Tempo, Loki, Mimir, Prometheus, Grafana, Redpanda)</span>
+        </div>
+        <div>
+          <button class="btn btn-outline btn-sm" onclick="fetchDependencies()">🔄 Re-probe Dependencies</button>
+        </div>
+      </div>
+
+      <!-- Dependencies Summary Bar -->
+      <div class="kpi-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 12px;">
+        <div class="kpi-card" style="border-top: 2px solid var(--success);">
+          <div class="kpi-title">Stack Availability</div>
+          <div class="kpi-value" id="dep-overall-avail" style="color: #10b981;">100%</div>
+          <div class="kpi-subtext" id="dep-overall-ratio">9 of 9 Dependencies Healthy</div>
+        </div>
+        <div class="kpi-card" style="border-top: 2px solid var(--accent);">
+          <div class="kpi-title">Average Probe Latency</div>
+          <div class="kpi-value" id="dep-avg-lat">-- ms</div>
+          <div class="kpi-subtext">Direct network round-trip</div>
+        </div>
+        <div class="kpi-card" style="border-top: 2px solid var(--danger);">
+          <div class="kpi-title">Observed Error Rate</div>
+          <div class="kpi-value" id="dep-error-rate" style="color: #10b981;">0.0%</div>
+          <div class="kpi-subtext">Infrastructure fault rate</div>
+        </div>
+        <div class="kpi-card" style="border-top: 2px solid var(--purple);">
+          <div class="kpi-title">Telemetry Pipelines</div>
+          <div class="kpi-value" style="color: #a855f7;">ACTIVE</div>
+          <div class="kpi-subtext">OTLP gRPC &bull; Metrics &bull; Traces &bull; Logs</div>
+        </div>
+      </div>
+
+      <!-- Dependency Cards Grid -->
+      <div class="dep-cards-grid" id="dep-cards-container">
+        <div style="color:var(--muted); text-align:center; grid-column: 1 / -1; padding:20px;">Probing stack dependencies...</div>
+      </div>
+    </div>
+
+    <!-- SQL Query Editor Section (Tabbed View: SSMS / pgAdmin Style) -->
+    <div id="sql-editor-section" style="display: none;">
+      <div class="section-bar">
+        <div class="section-title">
+          <span>💾 PostgreSQL SQL Query Editor & Data Grid</span>
+          <span style="font-size:0.75rem; color:var(--muted); font-weight:normal;">(SSMS & pgAdmin style first-principles query runner)</span>
+        </div>
+        <div>
+          <span class="badge badge-success">Target: postgres:5432 (observability)</span>
+        </div>
+      </div>
+
+      <div class="sql-editor-container">
+        <div class="sql-toolbar">
+          <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:280px;">
+            <label style="font-size:0.72rem; font-weight:700; color:var(--muted);">SAVED QUERIES:</label>
+            <select id="sql-saved-select" class="ctrl-input" style="flex:1;" onchange="onSelectSavedQuery(this.value)">
+              <option value="">-- Choose a curated saved query --</option>
+            </select>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <button class="btn btn-accent" onclick="runSqlQuery()">▶ Run Query (Ctrl+Enter)</button>
+            <button class="btn btn-secondary" onclick="clearSqlQuery()">🧹 Clear</button>
+            <button class="btn btn-outline" onclick="exportSqlResults('csv')">📥 Export CSV</button>
+            <button class="btn btn-outline" onclick="exportSqlResults('json')">📥 Export JSON</button>
+          </div>
+        </div>
+
+        <textarea id="sql-query-input" class="sql-textarea" rows="4" spellcheck="false" placeholder="Enter SQL query here... e.g. SELECT * FROM audit_logs ORDER BY id DESC LIMIT 50;"></textarea>
+
+        <div class="sql-meta-bar" id="sql-status-bar">
+          <span id="sql-status-text">Ready &bull; Press Ctrl+Enter or click Run Query</span>
+          <span id="sql-timing-text">-- ms</span>
+        </div>
+
+        <!-- First-Principles Data Grid -->
+        <div class="sql-grid-wrapper" id="sql-grid-wrapper">
+          <div id="sql-grid-empty" style="padding: 30px; text-align: center; color: var(--muted);">
+            No query results to display. Select a saved query above or run your own SQL.
+          </div>
+          <table class="sql-grid-table" id="sql-grid-table" style="display: none;">
+            <thead id="sql-grid-thead"></thead>
+            <tbody id="sql-grid-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <footer>
-      <div>Canary Load Generator &bull; Color-Coded Fault Injection &bull; Dynamic TPS Override &bull; <a href="/stats" target="_blank">JSON Snapshot</a> &bull; <a href="/api/trends?range=5m" target="_blank">Trends API</a></div>
-      <div>OTel Collector &rarr; Tempo, Loki, Mimir &bull; Valkey</div>
+      <div>Canary Load Generator &bull; Polyglot Telemetry &bull; Color-Coded Fault Injection &bull; Dynamic TPS Override &bull; Container Power Control &bull; SQL Data Grid</div>
+      <div><a href="/stats" target="_blank">JSON Snapshot</a> &bull; <a href="/api/trends?range=5m" target="_blank">Trends API</a> &bull; <a href="/api/dependencies" target="_blank">Dependencies API</a></div>
     </footer>
   </div>
 
@@ -1393,6 +2384,8 @@ def render_dashboard_html() -> str:
     let currentService = 'all';
     let currentView = 'both';
     let latestTrendsData = null;
+    let latestSqlResult = null;
+    let controlsDrawerOpen = false;
 
     // Language color definitions
     const LANG_COLORS = {{
@@ -1406,6 +2399,28 @@ def render_dashboard_html() -> str:
       'all':    {{ stroke: '#ef4444', fill: 'rgba(239, 68, 68, 0.22)', badge: '#dc2626', border: '#ef4444', text: '#fff' }}
     }};
 
+    // Collapsible Controls Drawer Logic (Collapsed by Default)
+    function toggleControlsDrawer() {{
+      controlsDrawerOpen = !controlsDrawerOpen;
+      const content = document.getElementById('drawer-content');
+      const header = document.getElementById('drawer-toggle-header');
+      const icon = document.getElementById('drawer-icon');
+      const btn = document.getElementById('drawer-toggle-btn');
+
+      if (controlsDrawerOpen) {{
+        content.style.display = 'block';
+        header.classList.add('open');
+        icon.innerText = '▼';
+        btn.innerText = '▼ Collapse';
+        fetchContainers();
+      }} else {{
+        content.style.display = 'none';
+        header.classList.remove('open');
+        icon.innerText = '▶';
+        btn.innerText = '▶ Expand';
+      }}
+    }}
+
     function switchView(mode, btn) {{
       currentView = mode;
       document.querySelectorAll('.view-tab-btn').forEach(b => b.classList.remove('active'));
@@ -1414,23 +2429,38 @@ def render_dashboard_html() -> str:
       const graphsSection = document.getElementById('graphs-section');
       const rawSection = document.getElementById('raw-numbers-section');
       const kpiSection = document.getElementById('kpi-section');
-      const ctrlSection = document.getElementById('controls-section');
+      const drawerSection = document.getElementById('controls-drawer');
+      const depSection = document.getElementById('dependencies-section');
+      const sqlSection = document.getElementById('sql-editor-section');
+
+      // Reset all display
+      graphsSection.style.display = 'none';
+      rawSection.style.display = 'none';
+      kpiSection.style.display = 'none';
+      drawerSection.style.display = 'none';
+      depSection.style.display = 'none';
+      sqlSection.style.display = 'none';
 
       if (mode === 'graphs') {{
         graphsSection.style.display = 'block';
-        rawSection.style.display = 'none';
         kpiSection.style.display = 'grid';
-        ctrlSection.style.display = 'grid';
+        drawerSection.style.display = 'block';
       }} else if (mode === 'raw') {{
-        graphsSection.style.display = 'none';
         rawSection.style.display = 'block';
         kpiSection.style.display = 'grid';
-        ctrlSection.style.display = 'grid';
+        drawerSection.style.display = 'block';
+      }} else if (mode === 'dependencies') {{
+        depSection.style.display = 'block';
+        fetchDependencies();
+      }} else if (mode === 'sql') {{
+        sqlSection.style.display = 'block';
+        loadSavedQueriesList();
       }} else {{
+        // 'both'
         graphsSection.style.display = 'block';
         rawSection.style.display = 'block';
         kpiSection.style.display = 'grid';
-        ctrlSection.style.display = 'grid';
+        drawerSection.style.display = 'block';
       }}
       if (latestTrendsData) renderAllCharts(latestTrendsData);
     }}
@@ -1483,17 +2513,23 @@ def render_dashboard_html() -> str:
       const isOverride = data.is_tps_override;
       document.getElementById('kpi-tps').innerText = `${{effTps}} TPS`;
       const tpsBadge = document.getElementById('tps-active-badge');
+      const drawerTpsChip = document.getElementById('drawer-tps-chip');
+
       if (isOverride) {{
         const remStr = data.tps_remaining_sec ? ` (${{data.tps_remaining_sec}}s left)` : ' (Perm)';
         document.getElementById('kpi-tps-status').innerText = `🔥 OVERRIDE${{remStr}} (Base: ${{data.base_tps}})`;
         document.getElementById('kpi-tps-status').style.color = '#f59e0b';
         tpsBadge.className = 'badge badge-warning';
         tpsBadge.innerText = `OVERRIDE: ${{effTps}} TPS${{remStr}}`;
+        drawerTpsChip.className = 'badge badge-warning';
+        drawerTpsChip.innerText = `🔥 ${{effTps}} TPS${{remStr}}`;
       }} else {{
         document.getElementById('kpi-tps-status').innerText = `Target: ${{data.base_tps}} TPS (Default)`;
         document.getElementById('kpi-tps-status').style.color = 'var(--muted)';
         tpsBadge.className = 'badge badge-success';
         tpsBadge.innerText = `DEFAULT: ${{data.base_tps}} TPS`;
+        drawerTpsChip.className = 'badge badge-success';
+        drawerTpsChip.innerText = `${{data.base_tps}} TPS (Default)`;
       }}
 
       // Active Fault Banner with Language-Specific Colors
@@ -1501,6 +2537,7 @@ def render_dashboard_html() -> str:
       const activeFault = fSnap.active_fault;
       const pulseEl = document.getElementById('live-pulse');
       const bannerEl = document.getElementById('active-fault-banner');
+      const drawerFaultChip = document.getElementById('drawer-fault-chip');
 
       if (activeFault) {{
         pulseEl.classList.add('fault-active');
@@ -1517,20 +2554,33 @@ def render_dashboard_html() -> str:
 
         document.getElementById('banner-details').innerText = `Target: ${{tgt.toUpperCase()}} | Mode: ${{activeFault.fault_type}} | Affected: ${{activeFault.affected_requests || 0}}`;
         document.getElementById('banner-timer').innerText = activeFault.remaining_sec ? `Timer: ${{activeFault.remaining_sec}}s` : 'Continuous';
+
+        drawerFaultChip.className = 'badge badge-error';
+        drawerFaultChip.innerText = `🚨 FAULT: ${{activeFault.tag}}`;
       }} else {{
         pulseEl.classList.remove('fault-active');
         bannerEl.classList.remove('show');
+        drawerFaultChip.className = 'badge badge-secondary';
+        drawerFaultChip.innerText = `No Active Fault`;
       }}
 
       // Apps table
       const tbody = document.getElementById('apps-table-body');
       let appRows = '';
+      let activeContainerCount = 0;
+      const activeAppsMap = data.active_apps || {{}};
+
       for (const [lang, app] of Object.entries(data.apps || {{}})) {{
+        const isWorkloadActive = (activeAppsMap[lang] !== false);
+        if (isWorkloadActive) activeContainerCount++;
         const reachBadge = app.reachable ? '<span class="badge badge-success">UP</span>' : '<span class="badge badge-warning">WAIT</span>';
+        const workloadBadge = isWorkloadActive ? '<span class="badge badge-success">ACTIVE</span>' : '<span class="badge badge-secondary">SUSPENDED</span>';
         const rateColor = (app.availability_pct >= 99.0) ? '#10b981' : ((app.availability_pct >= 95.0) ? '#f59e0b' : '#ef4444');
+
         appRows += `<tr>
           <td><span class="badge badge-${{lang}}">${{lang.toUpperCase()}}</span></td>
           <td><code>${{app.url}}</code></td>
+          <td>${{workloadBadge}}</td>
           <td>${{reachBadge}}</td>
           <td style="text-align:right;">${{Number(app.total).toLocaleString()}}</td>
           <td style="text-align:right; color:#10b981; font-weight:600;">${{Number(app.success).toLocaleString()}}</td>
@@ -1540,6 +2590,12 @@ def render_dashboard_html() -> str:
         </tr>`;
       }}
       tbody.innerHTML = appRows;
+
+      const drawerPowerChip = document.getElementById('drawer-power-chip');
+      if (drawerPowerChip) {{
+        drawerPowerChip.innerText = `${{activeContainerCount}}/7 Containers Active`;
+        drawerPowerChip.className = (activeContainerCount === 7) ? 'badge badge-secondary' : 'badge badge-warning';
+      }}
 
       // Endpoints table
       const epBody = document.getElementById('endpoints-table-body');
@@ -1556,7 +2612,7 @@ def render_dashboard_html() -> str:
       }}
       epBody.innerHTML = epRows || '<tr><td colspan="5" style="text-align:center;">No data</td></tr>';
 
-      // Fault history table with Language-Specific Color Badges
+      // Fault history table
       const fBody = document.getElementById('fault-history-table-body');
       let fRows = '';
       const historyList = [];
@@ -1581,7 +2637,7 @@ def render_dashboard_html() -> str:
       }}
       fBody.innerHTML = fRows || '<tr><td colspan="6" style="text-align:center; color:var(--muted);">No fault drills logged yet.</td></tr>';
 
-      // Recent requests with Language-Specific Fault Tagging
+      // Recent requests
       const recBody = document.getElementById('recent-table-body');
       let recRows = '';
       for (const r of (data.recent_requests || []).slice().reverse()) {{
@@ -1616,6 +2672,341 @@ def render_dashboard_html() -> str:
         console.error("Error fetching trends:", e);
       }}
     }}
+
+    // Container Power Manager Operations
+    async function fetchContainers() {{
+      try {{
+        const res = await fetch('/api/containers');
+        if (!res.ok) return;
+        const data = await res.json();
+        renderContainerPowerList(data);
+      }} catch (err) {{
+        console.error("Error fetching containers:", err);
+      }}
+    }}
+
+    function renderContainerPowerList(containers) {{
+      const containerEl = document.getElementById('container-power-list');
+      if (!containerEl) return;
+      let html = '';
+      for (const [lang, info] of Object.entries(containers)) {{
+        const isRun = info.is_running;
+        const stPill = isRun ? '<span class="badge badge-success">RUNNING</span>' : '<span class="badge badge-secondary">STOPPED</span>';
+        const workPill = info.active_in_canary ? '<span style="color:#10b981; font-weight:700;">● Active</span>' : '<span style="color:#94a3b8;">○ Skipped</span>';
+        const actBtn = isRun
+          ? `<button class="btn btn-danger btn-sm" onclick="containerAction('${{lang}}', 'stop')">🛑 Stop</button>`
+          : `<button class="btn btn-accent btn-sm" onclick="containerAction('${{lang}}', 'start')">▶ Start</button>`;
+        const restartBtn = `<button class="btn btn-secondary btn-sm" onclick="containerAction('${{lang}}', 'restart')">🔄</button>`;
+
+        html += `<div style="display:flex; justify-content:space-between; align-items:center; background:#182234; padding:6px 10px; border-radius:4px; border:1px solid var(--card-border);">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span class="badge badge-${{lang}}">${{lang.toUpperCase()}}</span>
+            <span style="font-size:0.75rem; font-family:monospace; color:var(--text);">${{info.name}}</span>
+            ${{stPill}}
+            <span style="font-size:0.7rem; color:var(--muted);">Workload: ${{workPill}}</span>
+          </div>
+          <div style="display:flex; gap:5px;">
+            ${{actBtn}}
+            ${{restartBtn}}
+          </div>
+        </div>`;
+      }}
+      containerEl.innerHTML = html;
+    }}
+
+    async function containerAction(lang, action) {{
+      try {{
+        showToast(`Executing ${{action.toUpperCase()}} on ${{lang.toUpperCase()}} container...`);
+        const res = await fetch('/api/containers/action', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ language: lang, action: action }})
+        }});
+        const data = await res.json();
+        if (res.ok) {{
+          showToast(`✅ Container ${{lang.toUpperCase()}} ${{action}}ed successfully!`);
+          setTimeout(fetchContainers, 800);
+          fetchStats();
+        }} else {{
+          showToast(`❌ Error: ${{data.message || 'Operation failed'}}`, true);
+        }}
+      }} catch (err) {{
+        showToast(`❌ Network error: ${{err}}`, true);
+      }}
+    }}
+
+    // Dependencies Health Telemetry View
+    async function fetchDependencies() {{
+      const container = document.getElementById('dep-cards-container');
+      if (!container) return;
+      try {{
+        const res = await fetch('/api/dependencies');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        document.getElementById('dep-overall-avail').innerText = `${{data.overall_availability_pct}}%`;
+        document.getElementById('dep-overall-ratio').innerText = `${{data.healthy_count}} of ${{data.total_dependencies}} Dependencies Healthy`;
+        document.getElementById('dep-avg-lat').innerText = `${{data.avg_latency_ms}} ms`;
+        const errRate = (100.0 - data.overall_availability_pct).toFixed(1);
+        const errEl = document.getElementById('dep-error-rate');
+        errEl.innerText = `${{errRate}}%`;
+        errEl.style.color = (data.overall_availability_pct === 100) ? '#10b981' : '#ef4444';
+
+        let cardsHtml = '';
+        for (const dep of data.dependencies) {{
+          const isUp = dep.available;
+          const statusBadge = isUp ? '<span class="badge badge-success">HEALTHY / UP</span>' : '<span class="badge badge-error">UNAVAILABLE</span>';
+          const latColor = (dep.latency_ms < 10) ? '#10b981' : ((dep.latency_ms < 50) ? '#38bdf8' : '#f59e0b');
+
+          cardsHtml += `<div class="dep-card" style="border-left: 3px solid ${{isUp ? '#10b981' : '#ef4444'}};">
+            <div class="dep-card-header">
+              <div>
+                <div class="dep-name">${{dep.name}}</div>
+                <div class="dep-role">${{dep.role}}</div>
+              </div>
+              <div>${{statusBadge}}</div>
+            </div>
+            <div class="dep-meta-row">
+              <span style="color:var(--muted);">Endpoint / Protocol:</span>
+              <code>${{dep.endpoint}}</code>
+            </div>
+            <div class="dep-meta-row">
+              <span style="color:var(--muted);">Observed Latency:</span>
+              <span style="font-weight:700; color:${{latColor}};">${{dep.latency_ms}} ms</span>
+            </div>
+            <div class="dep-meta-row">
+              <span style="color:var(--muted);">Capacity & Usage:</span>
+              <span style="font-size:0.72rem; color:var(--text);">${{dep.capacity_usage}}</span>
+            </div>
+          </div>`;
+        }}
+        container.innerHTML = cardsHtml;
+      }} catch (err) {{
+        container.innerHTML = `<div style="color:#ef4444; padding:20px; grid-column:1/-1;">Error probing dependencies: ${{err}}</div>`;
+      }}
+    }}
+
+    // SSMS & pgAdmin Style SQL Editor & First-Principles Data Grid
+    async function loadSavedQueriesList() {{
+      try {{
+        const res = await fetch('/api/sql/saved-queries');
+        if (!res.ok) return;
+        const list = await res.json();
+        const sel = document.getElementById('sql-saved-select');
+        sel.innerHTML = '<option value="">-- Choose a curated saved query --</option>';
+        for (const q of list) {{
+          sel.innerHTML += `<option value="${{q.id}}">${{q.name}}</option>`;
+        }}
+        window._savedQueriesMap = {{}};
+        for (const q of list) {{
+          window._savedQueriesMap[q.id] = q.sql;
+        }}
+        // Default populate if empty
+        const textarea = document.getElementById('sql-query-input');
+        if (!textarea.value.trim() && list.length > 0) {{
+          textarea.value = list[0].sql;
+          sel.value = list[0].id;
+        }}
+      }} catch (err) {{
+        console.error("Error loading saved queries:", err);
+      }}
+    }}
+
+    function onSelectSavedQuery(qid) {{
+      if (window._savedQueriesMap && window._savedQueriesMap[qid]) {{
+        document.getElementById('sql-query-input').value = window._savedQueriesMap[qid];
+      }}
+    }}
+
+    function clearSqlQuery() {{
+      document.getElementById('sql-query-input').value = '';
+      document.getElementById('sql-saved-select').value = '';
+      document.getElementById('sql-grid-empty').style.display = 'block';
+      document.getElementById('sql-grid-table').style.display = 'none';
+      document.getElementById('sql-status-text').innerText = 'Ready &bull; Cleared';
+      document.getElementById('sql-timing-text').innerText = '-- ms';
+    }}
+
+    async function runSqlQuery() {{
+      const query = document.getElementById('sql-query-input').value.trim();
+      if (!query) {{
+        showToast("Please enter a SQL query", true);
+        return;
+      }}
+      const statusText = document.getElementById('sql-status-text');
+      const timingText = document.getElementById('sql-timing-text');
+      statusText.innerHTML = 'Executing query on PostgreSQL...';
+
+      try {{
+        const res = await fetch('/api/sql/query', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ query: query }})
+        }});
+        const data = await res.json();
+        latestSqlResult = data;
+
+        if (data.status === 'success') {{
+          statusText.innerHTML = `✅ Query Succeeded &bull; ${{data.row_count}} row(s) returned`;
+          timingText.innerText = `${{data.execution_time_ms}} ms`;
+          renderSqlGrid(data);
+        }} else {{
+          statusText.innerHTML = `❌ Error: <span style="color:#ef4444;">${{data.error}}</span>`;
+          timingText.innerText = `${{data.execution_time_ms || 0}} ms`;
+          document.getElementById('sql-grid-empty').innerHTML = `<div style="color:#ef4444; font-family:monospace; padding:20px;">SQL Error: ${{data.error}}</div>`;
+          document.getElementById('sql-grid-empty').style.display = 'block';
+          document.getElementById('sql-grid-table').style.display = 'none';
+        }}
+      }} catch (err) {{
+        statusText.innerHTML = `❌ Network Error: ${{err}}`;
+      }}
+    }}
+
+    function renderSqlGrid(data) {{
+      const emptyEl = document.getElementById('sql-grid-empty');
+      const tableEl = document.getElementById('sql-grid-table');
+      const thead = document.getElementById('sql-grid-thead');
+      const tbody = document.getElementById('sql-grid-tbody');
+
+      if (!data.columns || data.columns.length === 0 || !data.rows || data.rows.length === 0) {{
+        emptyEl.innerHTML = 'Query returned 0 rows.';
+        emptyEl.style.display = 'block';
+        tableEl.style.display = 'none';
+        return;
+      }}
+
+      emptyEl.style.display = 'none';
+      tableEl.style.display = 'table';
+
+      // Header with Row Number # and column names with sort handler
+      let thHtml = '<tr><th style="width:40px;">#</th>';
+      for (let i = 0; i < data.columns.length; i++) {{
+        const col = data.columns[i];
+        thHtml += `<th onclick="sortSqlGridColumn(${{i}})">${{col}} <span id="col-sort-${{i}}" style="color:var(--muted); font-size:0.65rem;">⇅</span></th>`;
+      }}
+      thHtml += '</tr>';
+      thead.innerHTML = thHtml;
+
+      // Rows
+      let trHtml = '';
+      for (let r = 0; r < data.rows.length; r++) {{
+        const row = data.rows[r];
+        trHtml += `<tr><td class="row-num">${{r + 1}}</td>`;
+        for (const cell of row) {{
+          if (cell === null || cell === undefined) {{
+            trHtml += '<td class="sql-null">&lt;NULL&gt;</td>';
+          }} else {{
+            const safeCell = String(cell).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            trHtml += `<td title="${{safeCell}}">${{safeCell}}</td>`;
+          }}
+        }}
+        trHtml += '</tr>';
+      }}
+      tbody.innerHTML = trHtml;
+    }}
+
+    let _sortDir = {{}};
+    function sortSqlGridColumn(colIndex) {{
+      if (!latestSqlResult || !latestSqlResult.rows) return;
+      _sortDir[colIndex] = !_sortDir[colIndex];
+      const asc = _sortDir[colIndex];
+
+      latestSqlResult.rows.sort((a, b) => {{
+        const valA = a[colIndex];
+        const valB = b[colIndex];
+        if (valA === valB) return 0;
+        if (valA === null) return asc ? -1 : 1;
+        if (valB === null) return asc ? 1 : -1;
+        const numA = Number(valA);
+        const numB = Number(valB);
+        if (!isNaN(numA) && !isNaN(numB)) {{
+          return asc ? (numA - numB) : (numB - numA);
+        }}
+        return asc ? String(valA).localeCompare(String(valB)) : String(valB).localeCompare(String(valA));
+      }});
+
+      renderSqlGrid(latestSqlResult);
+      const arrow = asc ? '▲' : '▼';
+      const iconEl = document.getElementById(`col-sort-${{colIndex}}`);
+      if (iconEl) iconEl.innerText = arrow;
+    }}
+
+    function exportSqlResults(format) {{
+      if (!latestSqlResult || !latestSqlResult.rows || latestSqlResult.rows.length === 0) {{
+        showToast("No query results to export", true);
+        return;
+      }}
+      if (format === 'json') {{
+        const jsonRows = latestSqlResult.rows.map(row => {{
+          const obj = {{}};
+          latestSqlResult.columns.forEach((col, idx) => {{
+            obj[col] = row[idx];
+          }});
+          return obj;
+        }});
+        const blob = new Blob([JSON.stringify(jsonRows, null, 2)], {{ type: 'application/json' }});
+        downloadBlob(blob, `query_results_${{Date.now()}}.json`);
+      }} else {{
+        // CSV export
+        const header = latestSqlResult.columns.map(c => `"${{c.replace(/"/g, '""')}}"`).join(',');
+        const lines = latestSqlResult.rows.map(row => {{
+          return row.map(val => (val === null ? '' : `"${{String(val).replace(/"/g, '""')}}"`)).join(',');
+        }});
+        const csvContent = [header, ...lines].join('\\n');
+        const blob = new Blob([csvContent], {{ type: 'text/csv' }});
+        downloadBlob(blob, `query_results_${{Date.now()}}.csv`);
+      }}
+    }}
+
+    function downloadBlob(blob, filename) {{
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      showToast(`Exported ${{filename}} successfully!`);
+    }}
+
+    // QR Code Modal Operations
+    function openQrModal() {{
+      const modal = document.getElementById('qr-modal');
+      modal.classList.add('open');
+      const hostInput = document.getElementById('qr-host-input');
+      if (!hostInput.value) {{
+        hostInput.value = window.location.hostname || 'localhost';
+      }}
+      updateQrUrl();
+    }}
+
+    function closeQrModal() {{
+      document.getElementById('qr-modal').classList.remove('open');
+    }}
+
+    function updateQrUrl() {{
+      const host = document.getElementById('qr-host-input').value.trim() || 'localhost';
+      const port = window.location.port || '8085';
+      const fullUrl = `http://${{host}}:${{port}}`;
+      document.getElementById('qr-full-url').innerText = fullUrl;
+      const img = document.getElementById('qr-img');
+      img.src = `/api/qrcode?url=${{encodeURIComponent(fullUrl)}}`;
+    }}
+
+    function copyQrUrl() {{
+      const text = document.getElementById('qr-full-url').innerText;
+      navigator.clipboard.writeText(text).then(() => {{
+        showToast("✅ Copied URL to clipboard!");
+      }});
+    }}
+
+    // Shortcut: Ctrl+Enter executes SQL Query
+    document.addEventListener('keydown', (e) => {{
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
+        if (currentView === 'sql') {{
+          runSqlQuery();
+        }}
+      }}
+    }});
 
     // Fault Injection Handlers
     async function startFaultInjection(e) {{
@@ -1661,7 +3052,6 @@ def render_dashboard_html() -> str:
       }}
     }}
 
-    // Toast Notification
     function showToast(msg, isError) {{
       const toast = document.getElementById('toast-notice');
       if (!toast) return;
@@ -1733,47 +3123,45 @@ def render_dashboard_html() -> str:
       try {{
         const res = await fetch('/api/tps/reset', {{ method: 'POST' }});
         if (res.ok) {{
-          document.getElementById('tps-rate-input').value = 6;
           fetchStats();
           fetchTrendsAndRefresh();
         }}
       }} catch (err) {{
-        console.error(err);
+        alert("Error resetting TPS: " + err);
       }}
     }}
 
-    // -------------------------------------------------------------------------
-    // High-Performance Interactive Canvas Chart Engine (Language Color-Coded)
-    // -------------------------------------------------------------------------
+    // High-Efficiency Canvas Chart Engine
     function drawLineChart(canvasId, series, faultEvents, options) {{
       const canvas = document.getElementById(canvasId);
       if (!canvas) return;
-      const rect = canvas.parentElement.getBoundingClientRect();
+      const ctx = canvas.getContext('2d');
       const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
       const w = rect.width;
       const h = rect.height;
 
       canvas.width = w * dpr;
       canvas.height = h * dpr;
-      const ctx = canvas.getContext('2d');
+      ctx.resetTransform();
       ctx.scale(dpr, dpr);
 
       ctx.clearRect(0, 0, w, h);
 
-      const padLeft = 38;
-      const padRight = 12;
-      const padTop = 14;
-      const padBottom = 20;
-      const plotW = w - padLeft - padRight;
-      const plotH = h - padTop - padBottom;
-
-      if (!series || series.length < 2) {{
+      if (!series || series.length === 0) {{
         ctx.fillStyle = '#64748b';
         ctx.font = '11px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('Collecting trend telemetry...', w / 2, h / 2);
+        ctx.fillText('No telemetry data available for this range', w / 2, h / 2);
         return;
       }}
+
+      const padLeft = 42;
+      const padRight = 12;
+      const padTop = 12;
+      const padBottom = 22;
+      const plotW = w - padLeft - padRight;
+      const plotH = h - padTop - padBottom;
 
       const tMin = series[0].t;
       const tMax = series[series.length - 1].t;
@@ -1781,102 +3169,58 @@ def render_dashboard_html() -> str:
 
       let vMin = (options.yMin !== undefined) ? options.yMin : Math.min(...series.map(p => p.v));
       let vMax = (options.yMax !== undefined) ? options.yMax : Math.max(...series.map(p => p.v));
-      if (vMin === vMax) {{ vMin = 0; vMax = vMax ? vMax * 1.2 : 1; }}
-      if (options.yMin === undefined && vMin > 0) vMin = 0;
-      const vSpan = Math.max(0.0001, vMax - vMin);
+      if (vMin === vMax) {{ vMin -= 1; vMax += 1; }}
+      const vSpan = vMax - vMin;
 
-      const getX = (t) => padLeft + ((t - tMin) / tSpan) * plotW;
-      const getY = (v) => padTop + plotH - ((v - vMin) / vSpan) * plotH;
+      function getX(t) {{ return padLeft + ((t - tMin) / tSpan) * plotW; }}
+      function getY(v) {{ return padTop + plotH - ((v - vMin) / vSpan) * plotH; }}
 
-      // Draw Fault Event Regions with Language-Specific Color Coding
+      // Grid lines
+      ctx.strokeStyle = '#1e293b';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#64748b';
+      ctx.font = '9px sans-serif';
+      ctx.textAlign = 'right';
+
+      const yTicks = 4;
+      for (let i = 0; i <= yTicks; i++) {{
+        const val = vMin + (vSpan / yTicks) * i;
+        const y = getY(val);
+        ctx.beginPath();
+        ctx.moveTo(padLeft, y);
+        ctx.lineTo(w - padRight, y);
+        ctx.stroke();
+        const lbl = options.formatY ? options.formatY(val) : val.toFixed(1);
+        ctx.fillText(lbl, padLeft - 6, y + 3);
+      }}
+
+      // Fault Event Shading Bands
       if (faultEvents && faultEvents.length > 0) {{
         for (const f of faultEvents) {{
           const fStart = Math.max(tMin, f.start_time);
           const fEnd = Math.min(tMax, f.end_time || (Date.now() / 1000));
           if (fEnd >= tMin && fStart <= tMax) {{
             const x1 = getX(fStart);
-            const x2 = Math.max(x1 + 3, getX(fEnd));
-
+            const x2 = getX(fEnd);
             const tgt = (f.target || 'all').toLowerCase();
             const col = LANG_COLORS[tgt] || LANG_COLORS['all'];
 
-            // Shaded fault region
             ctx.fillStyle = col.fill;
-            ctx.fillRect(x1, padTop, x2 - x1, plotH);
+            ctx.fillRect(x1, padTop, Math.max(3, x2 - x1), plotH);
 
-            // Dashed marker boundary lines
             ctx.strokeStyle = col.stroke;
             ctx.lineWidth = 1.5;
-            ctx.setLineDash([3, 3]);
             ctx.beginPath();
             ctx.moveTo(x1, padTop);
             ctx.lineTo(x1, padTop + plotH);
-            ctx.moveTo(x2, padTop);
-            ctx.lineTo(x2, padTop + plotH);
             ctx.stroke();
-            ctx.setLineDash([]);
 
-            // Colored Event Tag Pill
-            const tagText = `${{tgt.toUpperCase()}}: ${{f.tag || 'DRILL'}}`;
-            ctx.font = 'bold 8.5px sans-serif';
-            const tagW = ctx.measureText(tagText).width + 8;
-            const drawX = Math.min(w - tagW - 2, Math.max(padLeft, x1));
-            ctx.fillStyle = col.badge;
-            ctx.fillRect(drawX, padTop + 2, tagW, 13);
             ctx.fillStyle = col.text;
+            ctx.font = 'bold 8px monospace';
             ctx.textAlign = 'left';
-            ctx.fillText(tagText, drawX + 4, padTop + 11);
+            ctx.fillText(`🏷️ ${{f.tag}}`, x1 + 3, padTop + 10);
           }}
         }}
-      }}
-
-      // Horizontal grid lines
-      ctx.strokeStyle = '#1a2638';
-      ctx.lineWidth = 1;
-      const yTicks = 3;
-      ctx.fillStyle = '#64748b';
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'right';
-
-      for (let i = 0; i <= yTicks; i++) {{
-        const yVal = vMin + (vSpan * i) / yTicks;
-        const yPos = getY(yVal);
-        ctx.beginPath();
-        ctx.moveTo(padLeft, yPos);
-        ctx.lineTo(w - padRight, yPos);
-        ctx.stroke();
-        ctx.fillText(options.formatY ? options.formatY(yVal) : yVal.toFixed(1), padLeft - 4, yPos + 3);
-      }}
-
-      // Target threshold line (e.g. 99% availability)
-      if (options.threshold && options.threshold >= vMin && options.threshold <= vMax) {{
-        const thY = getY(options.threshold);
-        ctx.strokeStyle = 'rgba(245, 158, 11, 0.45)';
-        ctx.setLineDash([3, 2]);
-        ctx.beginPath();
-        ctx.moveTo(padLeft, thY);
-        ctx.lineTo(w - padRight, thY);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }}
-
-      // Time X axis labels
-      ctx.fillStyle = '#64748b';
-      ctx.textAlign = 'center';
-      const xTicks = Math.min(6, Math.floor(plotW / 75));
-      for (let i = 0; i <= xTicks; i++) {{
-        const tVal = tMin + (tSpan * i) / xTicks;
-        const xPos = getX(tVal);
-        const dt = new Date(tVal * 1000);
-        let timeLabel = '';
-        if (tSpan <= 1800) {{
-          timeLabel = dt.toTimeString().split(' ')[0];
-        }} else if (tSpan <= 86400) {{
-          timeLabel = dt.toTimeString().substring(0, 5);
-        }} else {{
-          timeLabel = (dt.getMonth() + 1) + '/' + dt.getDate() + ' ' + dt.toTimeString().substring(0, 5);
-        }}
-        ctx.fillText(timeLabel, xPos, h - 5);
       }}
 
       // Area gradient
@@ -2038,73 +3382,20 @@ def render_dashboard_html() -> str:
 """
 
 # ---------------------------------------------------------------------------
-# Chaos Crash Invocation (Thread / Process Crash)
-# ---------------------------------------------------------------------------
-def trigger_target_crash(target: str, crash_type: str = "process", tag: str = None) -> dict:
-    app_urls = {
-        "python": APP_BASE_URL,
-        "java": JAVA_APP_BASE_URL,
-        "rust": RUST_APP_BASE_URL,
-        "node": NODE_APP_BASE_URL,
-        "go": GO_APP_BASE_URL,
-        "dotnet": DOTNET_APP_BASE_URL,
-        "c": C_APP_BASE_URL,
-    }
-    tgt_clean = (target or "java").lower().strip()
-    crash_type_clean = "thread" if (crash_type or "").lower().strip() == "thread" else "process"
-    targets = [tgt_clean] if tgt_clean in app_urls else list(app_urls.keys())
-
-    clean_tag = tag.strip() if tag and tag.strip() else f"CRASH-{tgt_clean.upper()}-{crash_type_clean.upper()}"
-
-    logger.warning("Triggering %s crash on target environment %s (tag: %s)",
-                   crash_type_clean, tgt_clean, clean_tag)
-
-    results = []
-    for tgt in targets:
-        base = app_urls[tgt]
-        url = f"{base}/crash?type={crash_type_clean}"
-        try:
-            resp = requests.post(url, json={"type": crash_type_clean, "tag": clean_tag}, timeout=2.0)
-            status_code = resp.status_code
-            try:
-                resp_data = resp.json()
-            except Exception:
-                resp_data = resp.text
-            results.append({
-                "target": tgt,
-                "url": url,
-                "status_code": status_code,
-                "response": resp_data
-            })
-        except Exception as exc:
-            # Process crash may abort TCP connection immediately
-            results.append({
-                "target": tgt,
-                "url": url,
-                "status": "connection_terminated",
-                "message": f"Connection reset / process terminated: {exc}"
-            })
-
-    fault_manager.start_fault(
-        tag=clean_tag,
-        fault_type=f"{crash_type_clean}_crash",
-        target=tgt_clean if tgt_clean in app_urls else "all",
-        duration_sec=30
-    )
-
-    return {
-        "status": "success",
-        "tag": clean_tag,
-        "crash_type": crash_type_clean,
-        "target": tgt_clean,
-        "results": results
-    }
-
-# ---------------------------------------------------------------------------
 # HTTP Server (Standard Library)
 # ---------------------------------------------------------------------------
 def start_dashboard_server(port: int) -> HTTPServer:
     class DashboardHandler(BaseHTTPRequestHandler):
+        def _send_cors_headers(self):
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+        def do_OPTIONS(self):
+            self.send_response(204)
+            self._send_cors_headers()
+            self.end_headers()
+
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
@@ -2113,6 +3404,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
             if path == "/" or path == "/index.html":
                 body = render_dashboard_html().encode("utf-8")
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -2121,6 +3413,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
             elif path in ("/stats", "/json"):
                 data = json.dumps(state.get_snapshot(), indent=2).encode("utf-8")
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
@@ -2133,6 +3426,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 res = trigger_target_crash(target, crash_type, tag)
                 resp = json.dumps(res).encode("utf-8")
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
                 self.end_headers()
@@ -2144,6 +3438,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 trend_data = query_trend_metrics(range_str, service)
                 data = json.dumps(trend_data).encode("utf-8")
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
@@ -2152,19 +3447,65 @@ def start_dashboard_server(port: int) -> HTTPServer:
             elif path == "/api/faults":
                 data = json.dumps(fault_manager.get_snapshot()).encode("utf-8")
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
 
+            elif path == "/api/containers":
+                data = json.dumps(docker_manager.get_containers_status(), indent=2).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            elif path == "/api/dependencies":
+                data = json.dumps(check_dependencies(), indent=2).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            elif path == "/api/sql/saved-queries":
+                data = json.dumps(SAVED_QUERIES, indent=2).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            elif path == "/api/qrcode":
+                target_url = query.get("url", [f"http://localhost:{CANARY_PORT}"])[0]
+                if qrcode:
+                    factory = qrcode.image.svg.SvgPathImage
+                    img = qrcode.make(target_url, image_factory=factory, box_size=10)
+                    svg_bytes = img.to_string()
+                else:
+                    # Fallback clean SVG
+                    svg_bytes = f'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><rect width="200" height="200" fill="#ffffff"/><text x="100" y="100" font-family="sans-serif" font-size="12" text-anchor="middle" fill="#000000">{html.escape(target_url)}</text></svg>'.encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "image/svg+xml")
+                self.send_header("Content-Length", str(len(svg_bytes)))
+                self.end_headers()
+                self.wfile.write(svg_bytes)
+
             elif path == "/health":
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "text/plain")
                 self.send_header("Content-Length", "2")
                 self.end_headers()
                 self.wfile.write(b"OK")
             else:
                 self.send_response(404)
+                self._send_cors_headers()
                 self.end_headers()
 
         def do_POST(self):
@@ -2192,6 +3533,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 active = fault_manager.start_fault(tag, fault_type, target, duration, rate, delay_ms)
                 resp = json.dumps({"status": "started", "fault": active}).encode("utf-8")
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
                 self.end_headers()
@@ -2201,6 +3543,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 stopped = fault_manager.stop_fault()
                 resp = json.dumps({"status": "stopped", "fault": stopped}).encode("utf-8")
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
                 self.end_headers()
@@ -2212,6 +3555,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 res = state.set_tps_override(tps, duration)
                 resp = json.dumps({"status": "applied", **res}).encode("utf-8")
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
                 self.end_headers()
@@ -2224,6 +3568,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 res = trigger_target_crash(target, crash_type, tag)
                 resp = json.dumps(res).encode("utf-8")
                 self.send_response(200)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
                 self.end_headers()
@@ -2233,6 +3578,33 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 res = state.clear_tps_override()
                 resp = json.dumps({"status": "reset", **res}).encode("utf-8")
                 self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+            elif path == "/api/containers/action":
+                lang = body.get("language", "")
+                action = body.get("action", "")
+                res = docker_manager.container_action(lang, action)
+                status_code = 200 if res.get("status") == "success" else 400
+                resp = json.dumps(res).encode("utf-8")
+                self.send_response(status_code)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+            elif path == "/api/sql/query":
+                query_str = body.get("query", "")
+                limit = int(body.get("limit", 100))
+                res = execute_sql_query(query_str, max_rows=limit)
+                status_code = 200 if res.get("status") == "success" else 400
+                resp = json.dumps(res).encode("utf-8")
+                self.send_response(status_code)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
                 self.end_headers()
@@ -2240,6 +3612,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
 
             else:
                 self.send_response(404)
+                self._send_cors_headers()
                 self.end_headers()
 
         def log_message(self, format, *args):
@@ -2248,7 +3621,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
     server = HTTPServer(("0.0.0.0", port), DashboardHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    logger.info("Compact Canary dashboard listening at http://0.0.0.0:%d/", port)
+    logger.info("Canary dashboard listening at http://0.0.0.0:%d/", port)
     return server
 
 # ---------------------------------------------------------------------------
@@ -2288,14 +3661,23 @@ def run() -> None:
 
     wait_for_apps(session)
     state.set_running()
-    logger.info("Starting canary loop with dynamic TPS and language color-coded fault injection")
+    logger.info("Starting canary loop with dynamic TPS, power management, and color-coded fault injection")
 
     next_tick = time.time()
 
     while True:
         for app_info in [("python", APP_BASE_URL), ("java", JAVA_APP_BASE_URL), ("rust", RUST_APP_BASE_URL), ("node", NODE_APP_BASE_URL), ("go", GO_APP_BASE_URL), ("dotnet", DOTNET_APP_BASE_URL), ("c", C_APP_BASE_URL)]:
             app_lang, base_url = app_info
+
+            # Workload awareness: Skip stopped / inactive containers to save resources and prevent false failures
+            if not state.is_app_active(app_lang):
+                continue
+
             for target in TARGETS:
+                # Re-verify container state before each target
+                if not state.is_app_active(app_lang):
+                    break
+
                 path         = target["path"]
                 method       = target["method"]
                 expected_4xx = target.get("expected_4xx", False)

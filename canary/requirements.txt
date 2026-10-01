@@ -1,5 +1,6 @@
-requests==2.33.0
 opentelemetry-api==1.21.0
 opentelemetry-sdk==1.21.0
 opentelemetry-exporter-otlp==1.21.0
 redis==5.0.1
+psycopg2-binary==2.9.9
+qrcode==7.4.2

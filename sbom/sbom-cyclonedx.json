@@ -1,0 +1,300 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.5.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:6e8d9efd-94d1-45f0-9514-48728df84c4f",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-01T01:56:00Z",
+    "tools": [
+      {
+        "vendor": "Antigravity Agentic AI",
+        "name": "CycloneDX-Generator",
+        "version": "2.0.0"
+      }
+    ],
+    "authors": [
+      {
+        "name": "Observability Stack Engineering Team"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "name": "observability-demo",
+      "version": "1.0.1",
+      "description": "Enterprise-grade polyglot microservice observability platform with synthetic canary load generator, fault injection drills, container lifecycle control, SQL data grid, and cross-platform mobile client."
+    }
+  },
+  "components": [
+    {
+      "type": "application",
+      "name": "observability-python-app",
+      "version": "1.0.1",
+      "description": "Python Flask microservice featuring custom recursive-descent math evaluator, Fibonacci compute, PostgreSQL audit logging, and OpenTelemetry instrumentation.",
+      "purl": "pkg:docker/observability-python-app@1.0.1",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "properties": [
+        {
+          "name": "implementation",
+          "value": "Built with Python 3.11-slim, Flask WSGI framework, psycopg2-binary for relational PostgreSQL connection pooling, and OpenTelemetry Python SDK (opentelemetry-api, opentelemetry-sdk, opentelemetry-instrumentation-flask, opentelemetry-exporter-otlp) exporting metrics and traces via gRPC to otel-collector."
+        },
+        {
+          "name": "inspiration",
+          "value": "Inspired by Armin Ronacher's Flask micro-framework architecture, PEP 3333 WSGI standards, and Dijkstra's Shunting-yard algorithm / Pratt parsing for mathematical expression tokenization and AST evaluation without relying on eval()."
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "observability-java-app",
+      "version": "1.0.1",
+      "description": "High-performance Java 21 Spring Boot microservice with native Actuator health metrics, custom Pratt-parser math evaluator, and automated JavaAgent OpenTelemetry tracing.",
+      "purl": "pkg:maven/com.observability/observability-java-app@1.0.1",
+      "licenses": [{ "license": { "id": "Apache-2.0" } }],
+      "properties": [
+        {
+          "name": "implementation",
+          "value": "Built on Eclipse Temurin JDK 21 Alpine, Spring Boot 3.2.0, Spring MVC, Spring Data JPA / HikariCP connection pool for PostgreSQL, and opentelemetry-javaagent-1.32.0 for zero-code bytecode instrumentation correlated with Spring Actuator micrometer Prometheus exports."
+        },
+        {
+          "name": "inspiration",
+          "value": "Inspired by the Spring Boot PetClinic reference architecture, Spring Framework's inversion of control (IoC) and dependency injection patterns, and enterprise Java fault tolerance practices popularized by Netflix Hystrix / Resilience4j."
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "observability-rust-app",
+      "version": "1.0.1",
+      "description": "Ultra-fast, memory-safe asynchronous Rust microservice utilizing Tokio and Axum with zero-dependency mathematical evaluation and tracing-opentelemetry subscribers.",
+      "purl": "pkg:cargo/observability-rust-app@1.0.1",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "properties": [
+        {
+          "name": "implementation",
+          "value": "Written in Rust 1.77 using Tokio async runtime, Axum web framework, Tower middleware, sqlx for asynchronous PostgreSQL queries, and tracing / tracing-opentelemetry subscriber pipeline streaming directly to otel-collector via OTLP gRPC."
+        },
+        {
+          "name": "inspiration",
+          "value": "Inspired by Tokio's work-stealing multi-threaded reactor pattern, Carl Lerche's async I/O design principles, and Rust's zero-cost abstraction philosophy guaranteeing fearless concurrency and data-race freedom."
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "observability-node-app",
+      "version": "1.0.1",
+      "description": "Event-driven Node.js Express microservice featuring recursive-descent math tokenizer, pg connection pool, and OpenTelemetry Node SDK.",
+      "purl": "pkg:npm/observability-node-app@1.0.1",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "properties": [
+        {
+          "name": "implementation",
+          "value": "Engineered in Node.js 22 LTS with Express 4.19, pg (node-postgres) connection pool, and @opentelemetry/sdk-node integrating OTLP gRPC metric and trace exporters."
+        },
+        {
+          "name": "inspiration",
+          "value": "Inspired by Ryan Dahl's original Node.js event-loop architecture, TJ Holowaychuk's Express middleware pipeline, and 12-factor microservice design patterns."
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "observability-go-app",
+      "version": "1.0.1",
+      "description": "Concurrent Go microservice using idiomatic net/http, Goroutines, pgx/v5 PostgreSQL driver, and OpenTelemetry Go SDK.",
+      "purl": "pkg:golang/github.com/observability-demo/go-app@1.0.1",
+      "licenses": [{ "license": { "id": "BSD-3-Clause" } }],
+      "properties": [
+        {
+          "name": "implementation",
+          "value": "Developed in Go 1.22 using the standard library net/http server, pgx/v5 connection pool, and go.opentelemetry.io/otel SDK with grpc OTLP exporters for distributed tracing and Prometheus-compatible metrics."
+        },
+        {
+          "name": "inspiration",
+          "value": "Inspired by Rob Pike and Ken Thompson's Communicating Sequential Processes (CSP) concurrency model, Go standard library minimalism, and Google's internal microservice guidelines."
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "observability-dotnet-app",
+      "version": "1.0.1",
+      "description": "Modern C# .NET 8.0 Linux containerized microservice using ASP.NET Core Minimal APIs, Npgsql, and OpenTelemetry .NET SDK.",
+      "purl": "pkg:nuget/ObservabilityDotnetApp@1.0.1",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "properties": [
+        {
+          "name": "implementation",
+          "value": "Constructed with .NET 8.0 SDK / ASP.NET Core Minimal APIs, Npgsql ADO.NET data provider, System.Text.Json, and OpenTelemetry.Extensions.Hosting with OTLP gRPC export."
+        },
+        {
+          "name": "inspiration",
+          "value": "Inspired by Microsoft ASP.NET Core Minimal API architecture (David Fowler), high-performance Kestrel web server design, and modern cross-platform .NET runtime on Linux containers."
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "observability-c-app",
+      "version": "1.0.1",
+      "description": "Pure POSIX C99 microservice implementing raw non-blocking socket HTTP parsing, recursive descent evaluator, and libpq PostgreSQL queries.",
+      "purl": "pkg:generic/observability-c-app@1.0.1",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "properties": [
+        {
+          "name": "implementation",
+          "value": "Implemented in C99 with POSIX Berkeley sockets, pthreads, libpq (PostgreSQL C client library), cJSON, and custom HTTP request parser without heavy web server dependencies."
+        },
+        {
+          "name": "inspiration",
+          "value": "Inspired by W. Richard Stevens' 'UNIX Network Programming', Dennis Ritchie's foundational C philosophy, and embedded micro-HTTP servers (like mongoose and civetweb)."
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "observability-canary",
+      "version": "1.0.1",
+      "description": "Synthetic traffic generator, Chaos Fault Injection coordinator, Docker lifecycle controller, PostgreSQL query engine, and real-time operations dashboard.",
+      "purl": "pkg:docker/observability-canary@1.0.1",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "properties": [
+        {
+          "name": "implementation",
+          "value": "Python 3.11 service with standard library HTTPServer, Unix domain socket Docker Engine API client, psycopg2-binary PostgreSQL client, Valkey Redis client, OpenTelemetry SDK, qrcode SVG engine, and HTML5 Canvas dashboard with first-principles data grid."
+        },
+        {
+          "name": "inspiration",
+          "value": "Inspired by Netflix Simian Army (Chaos Monkey), AWS Fault Injection Simulator (FIS), Microsoft SQL Server Management Studio (SSMS), pgAdmin 4 data grid design, and Google Site Reliability Engineering (SRE) synthetic probing practices."
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "canary-observability-mobile",
+      "version": "1.0.0",
+      "description": "Cross-platform mobile and desktop application for Android, iOS, Windows, and Web monitoring Canary telemetry and controlling container power.",
+      "purl": "pkg:npm/canary-observability-mobile@1.0.0",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "properties": [
+        {
+          "name": "implementation",
+          "value": "React Native 0.74, Expo 51, React 18, React Native for Web, and React Native Windows with responsive Flexbox layout and dark theme UI matching the Canary operations center."
+        },
+        {
+          "name": "inspiration",
+          "value": "Inspired by modern DevOps mobile command centers (Datadog Mobile, PagerDuty, Grafana Mobile, AWS Console Mobile) providing remote on-call triage and chaos response."
+        }
+      ]
+    },
+    {
+      "type": "container",
+      "name": "postgres",
+      "version": "16.1-alpine",
+      "description": "Primary relational database hosting system audit logs, schema metadata, and query analytics.",
+      "purl": "pkg:docker/postgres@16.1-alpine",
+      "licenses": [{ "license": { "id": "PostgreSQL" } }],
+      "properties": [
+        { "name": "role", "value": "Relational Data & Audit Store" },
+        { "name": "inspiration", "value": "Michael Stonebraker's POSTGRES research project at UC Berkeley (1986)." }
+      ]
+    },
+    {
+      "type": "container",
+      "name": "valkey",
+      "version": "7.2.5",
+      "description": "High-performance in-memory key-value data structure store caching canary metrics and endpoint duration sums.",
+      "purl": "pkg:docker/valkey/valkey@7.2.5",
+      "licenses": [{ "license": { "id": "BSD-3-Clause" } }],
+      "properties": [
+        { "name": "role", "value": "In-Memory Telemetry & Metrics Cache" },
+        { "name": "inspiration", "value": "Linux Foundation open-source continuation of Redis; Salvatore Sanfilippo's in-memory single-threaded reactor model." }
+      ]
+    },
+    {
+      "type": "container",
+      "name": "otel-collector",
+      "version": "0.88.0",
+      "description": "OpenTelemetry Collector Contrib receiving OTLP gRPC/HTTP telemetry and fanning out to Tempo, Mimir, and Loki.",
+      "purl": "pkg:docker/otel/opentelemetry-collector-contrib@0.88.0",
+      "licenses": [{ "license": { "id": "Apache-2.0" } }],
+      "properties": [
+        { "name": "role", "value": "Telemetry Pipeline & OTLP Router" },
+        { "name": "inspiration", "value": "Cloud Native Computing Foundation (CNCF) merger of OpenTracing and OpenCensus." }
+      ]
+    },
+    {
+      "type": "container",
+      "name": "tempo",
+      "version": "2.3.1",
+      "description": "High-scale, cost-effective distributed tracing backend storing trace blocks in object storage.",
+      "purl": "pkg:docker/grafana/tempo@2.3.1",
+      "licenses": [{ "license": { "id": "AGPL-3.0" } }],
+      "properties": [
+        { "name": "role", "value": "Distributed Tracing Backend" },
+        { "name": "inspiration", "value": "Google Dapper research paper (2010) and Grafana Labs distributed storage patterns." }
+      ]
+    },
+    {
+      "type": "container",
+      "name": "loki",
+      "version": "2.9.2",
+      "description": "Horizontally scalable, multi-tenant log aggregation system indexing metadata labels rather than full text.",
+      "purl": "pkg:docker/grafana/loki@2.9.2",
+      "licenses": [{ "license": { "id": "AGPL-3.0" } }],
+      "properties": [
+        { "name": "role", "value": "Log Aggregation & LogQL Engine" },
+        { "name": "inspiration", "value": "Prometheus label-indexing model applied to unstructured application log streams." }
+      ]
+    },
+    {
+      "type": "container",
+      "name": "mimir",
+      "version": "2.11.0",
+      "description": "Horizontally scalable, highly available, multi-tenant long-term storage for Prometheus metrics.",
+      "purl": "pkg:docker/grafana/mimir@2.11.0",
+      "licenses": [{ "license": { "id": "AGPL-3.0" } }],
+      "properties": [
+        { "name": "role", "value": "Long-Term Prometheus Metrics Store" },
+        { "name": "inspiration", "value": "Cortex TSDB architecture and Grafana Labs long-term timeseries storage." }
+      ]
+    },
+    {
+      "type": "container",
+      "name": "prometheus",
+      "version": "2.48.0",
+      "description": "Cloud native metrics scraper, alert evaluator, and time-series query engine.",
+      "purl": "pkg:docker/prom/prometheus@v2.48.0",
+      "licenses": [{ "license": { "id": "Apache-2.0" } }],
+      "properties": [
+        { "name": "role", "value": "Metrics Scraper & PromQL Engine" },
+        { "name": "inspiration", "value": "Google Borgmon monitoring system developed by Matt Proud and Julius Volz at SoundCloud." }
+      ]
+    },
+    {
+      "type": "container",
+      "name": "grafana",
+      "version": "10.2.2",
+      "description": "Operational visualization and dashboarding platform providing correlated dashboards across metrics, logs, and traces.",
+      "purl": "pkg:docker/grafana/grafana@10.2.2",
+      "licenses": [{ "license": { "id": "AGPL-3.0" } }],
+      "properties": [
+        { "name": "role", "value": "Visualization & Dashboarding UI" },
+        { "name": "inspiration", "value": "Torkel Ödegaard's 2014 vision for unified time-series dashboarding." }
+      ]
+    },
+    {
+      "type": "container",
+      "name": "redpanda",
+      "version": "v23.3.3",
+      "description": "Kafka-compatible, C++20 event streaming platform with Raft consensus and zero JVM dependencies.",
+      "purl": "pkg:docker/redpandadata/redpanda@v23.3.3",
+      "licenses": [{ "license": { "id": "BSL-1.1" } }],
+      "properties": [
+        { "name": "role", "value": "Kafka-Compatible Event Streaming Bus" },
+        { "name": "inspiration", "value": "Apache Kafka event-log paradigm combined with Seastar asynchronous C++ thread-per-core engine." }
+      ]
+    }
+  ]
+}

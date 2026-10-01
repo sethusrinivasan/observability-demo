@@ -398,10 +398,21 @@ services:
       - C_APP_BASE_URL=http://observability-c-app:8080
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - MIMIR_URL=http://mimir:9009
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=observability
+      - POSTGRES_USER=observability
+      - POSTGRES_PASSWORD=observability
+      - TEMPO_URL=http://tempo:3200
+      - LOKI_URL=http://loki:3100
+      - PROMETHEUS_URL=http://prometheus:9090
+      - GRAFANA_URL=http://grafana:3000
+      - REDPANDA_ADMIN_URL=http://redpanda:9644
       - CANARY_TPS=6
       - CANARY_PORT=8085
     volumes:
       - ./canary/canary.py:/app/canary.py
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - observability-python-app
       - observability-java-app
@@ -410,6 +421,7 @@ services:
       - observability-go-app
       - observability-dotnet-app
       - observability-c-app
+      - postgres
       - otel-collector
       - mimir
     networks:

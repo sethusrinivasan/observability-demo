@@ -42,14 +42,18 @@ Consolidated distributed tracing (Tempo), metrics (Mimir/Prometheus), logs (Loki
 ## Features
 
 * **Multi-Language Telemetry Parity**: Identical endpoint semantics, custom OTel histograms/counters, and tracing context across Python, Java, Rust, Node.js, Go, C# .NET, and C (POSIX).
-* **Canary Load & Fault Injection Station**:
-  * **Historical Trend Graphs**: Availability (%), Error Rate (err/s), Response Latency (ms), and Throughput (TPS) queried directly from Mimir.
-  * **6 Time Horizons**: `Past 5 Min`, `Past 30 Min`, `Past Hour`, `Past 6 Hours`, `Past Day`, and `Past Month`.
+* **Canary Load & Operations Station**:
+  * **Collapsible Controls Drawer**: Chaos fault injection, target crashes, TPS overrides, and container power controls are enclosed in an expandable drawer that is **collapsed by default** to preserve screen real estate for clean monitoring.
+  * **Container Power & Resource Management**: Shut down and restart individual containers hosting specific languages directly from the dashboard or mobile app to conserve system resources. Canary synthetic workload automatically detects container states and suspends requests to stopped containers, preventing artificial failure spikes.
+  * **PostgreSQL SQL Query Editor & Data Grid**: First-principles interactive query runner inspired by SSMS, pgAdmin, and DataGrip. Features curated saved queries, query execution timing, and a responsive tabular data grid with `#` row numbering, sortable headers, and CSV/JSON export.
+  * **Dependencies Health Telemetry**: Dedicated view rolling up availability %, roundtrip latency (ms), error rates, and resource capacity across all 9 stack dependencies (PostgreSQL, Valkey, OTel Collector, Tempo, Loki, Mimir, Prometheus, Grafana, Redpanda).
+  * **Historical Trend Graphs**: Availability (%), Error Rate (err/s), Response Latency (ms), and Throughput (TPS) queried directly from Mimir across 6 horizons (`5m`, `30m`, `1h`, `6h`, `1d`, `30d`).
   * **Fault Injection Testing (Chaos Drills)**: Induce `Error Spikes`, `High Latency (+1000ms)`, `Service Outage (Drops)`, or `Intermittent Errors` with custom event tagging.
-  * **Chaos Crash Triggering (Thread / Process Crash)**: Directly issue requests from the dashboard to target test environments to trigger process crashes (fatal termination & container restart) or worker thread crashes with tagged events.
+  * **Chaos Crash Triggering (Thread / Process Crash)**: Directly issue requests from the dashboard to target test environments to trigger process crashes or worker thread crashes with tagged events.
   * **Language-Specific Event Color Coding**: Fault events are visually tagged and overlaid on trend charts using distinct language color palettes (🟠 Java, 🔵 Python, 🟣 Rust, 🟢 Node, 🩵 Go, 💜 .NET, ⚙️ C, 🔴 All).
   * **Dynamic Load Controller**: Bump up Canary TPS from baseline (6 TPS) to higher rates (e.g., 12, 24, 48 TPS) with automatic expiration and reset controls.
-  * **Dual View Architecture**: Toggle between `Both Views`, `Trends Only`, and `Current Raw Numbers`.
+* **Cross-Platform React Native Mobile App (`mobile/`)**: Native companion client for Android, iOS, Windows, and Web. Includes an interactive SVG QR code in the Canary dashboard for instant mobile scanning and connection pairing.
+* **Software Bill of Materials (SBOM)**: Comprehensive machine-readable CycloneDX 1.5 JSON artifact ([`sbom/sbom-cyclonedx.json`](./sbom/sbom-cyclonedx.json)) and detailed Markdown documentation ([`docs/sbom.md`](./docs/sbom.md)) acknowledging the implementation details and architectural inspirations for all polyglot microservices and stack components.
 * **Distributed Tracing**: OTLP traces streamed from microservices through OpenTelemetry Collector into Grafana Tempo.
 * **Metrics & Aggregations**: Standardized RED metrics (Rate, Errors, Duration) stored in Grafana Mimir.
 * **Structured Logging**: Unified OTLP log pipeline shipping structured JSON logs to Grafana Loki.
@@ -109,6 +113,8 @@ Once deployment completes, access the services:
 | [.NET Service](./dotnet-app) | `8087` (Docker) / `30009` (Kind) | C# .NET 8 ASP.NET Core service, Npgsql connection pool, recursive-descent evaluator | `1.0.1` |
 | [C Service](./c-app) | `8088` (Docker) / `30010` (Kind) | POSIX C99 multi-threaded socket service, libpq, zero-dependency evaluator | `1.0.1` |
 | [Canary Dashboard](./canary) | `8085` | Synthetic traffic generator, historical trend graphs, chaos fault injection | `1.0.1` |
+| [Canary Mobile App](./mobile) | — | Cross-platform React Native client for Android, iOS, Windows, Web | `1.0.0` |
+| [CycloneDX SBOM](./sbom/sbom-cyclonedx.json) | — | Software Bill of Materials & architectural acknowledgments | `1.5` |
 | Grafana | `3000` | Provisioned dashboards and data source integration (`admin`/`admin`) | `latest` |
 | Grafana Image Renderer | `8081` | Headless Chromium sidecar for automated PNG panel rendering | `latest` |
 | Prometheus | `9090` | Exporter scraper and metrics buffer | `latest` |
@@ -116,7 +122,7 @@ Once deployment completes, access the services:
 | Grafana Tempo | `3200` | Distributed tracing backend (backed by Redpanda) | `latest` |
 | Grafana Loki | `3100` | Log aggregation backend | `latest` |
 | OTel Collector | `4317` (gRPC) / `4318` (HTTP) | Telemetry ingestion and routing pipeline | `latest` |
-| PostgreSQL | `5432` | Audit log database with persistence | `18.6` |
+| PostgreSQL | `5432` | Audit log database with persistence | `16.1` |
 | Postgres Exporter | `9187` | Database runtime metrics (connections, locks, buffers) | `latest` |
 | Valkey | `6379` | High-performance Redis fork for canary counters and event logs | `latest` |
 | Redis Exporter | `9121` | Prometheus scraper for Valkey cache telemetry | `latest` |

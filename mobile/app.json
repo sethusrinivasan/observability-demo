@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "Canary Observability",
+    "slug": "canary-observability",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "platforms": ["android", "ios", "web", "windows"],
+    "splash": {
+      "backgroundColor": "#090e17"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.observability.canary"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#090e17"
+      },
+      "package": "com.observability.canary"
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "windows": {
+      "appName": "CanaryObservability",
+      "namespace": "CanaryObservability"
+    }
+  }
+}

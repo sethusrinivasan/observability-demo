@@ -1044,3 +1044,67 @@ class TestCanaryDashboard:
         # Stop fault drill
         requests.post(f"{CANARY_URL}/api/fault/stop", timeout=5)
 
+    def test_containers_endpoint(self):
+        resp = requests.get(f"{CANARY_URL}/api/containers", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        for lang in ["python", "java", "rust", "node", "go", "dotnet", "c"]:
+            assert lang in data
+            assert "is_running" in data[lang]
+            assert "active_in_canary" in data[lang]
+
+    def test_container_power_lifecycle(self):
+        # Stop dotnet container
+        resp_stop = requests.post(f"{CANARY_URL}/api/containers/action", json={"language": "dotnet", "action": "stop"}, timeout=5)
+        assert resp_stop.status_code == 200
+        assert resp_stop.json()["status"] == "success"
+
+        # Check containers endpoint reflects inactive workload
+        resp_c = requests.get(f"{CANARY_URL}/api/containers", timeout=5)
+        assert resp_c.status_code == 200
+        assert resp_c.json()["dotnet"]["active_in_canary"] is False
+
+        # Restart dotnet container
+        resp_start = requests.post(f"{CANARY_URL}/api/containers/action", json={"language": "dotnet", "action": "start"}, timeout=5)
+        assert resp_start.status_code == 200
+        assert resp_start.json()["status"] == "success"
+
+    def test_dependencies_endpoint(self):
+        resp = requests.get(f"{CANARY_URL}/api/dependencies", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total_dependencies" in data
+        assert data["total_dependencies"] == 9
+        assert "healthy_count" in data
+        assert data["healthy_count"] >= 8
+        assert "overall_availability_pct" in data
+        dep_names = [d["id"] for d in data["dependencies"]]
+        for expected in ["postgres", "valkey", "otel-collector", "tempo", "loki", "mimir", "prometheus", "grafana", "redpanda"]:
+            assert expected in dep_names
+
+    def test_sql_saved_queries_endpoint(self):
+        resp = requests.get(f"{CANARY_URL}/api/sql/saved-queries", timeout=5)
+        assert resp.status_code == 200
+        queries = resp.json()
+        assert len(queries) >= 5
+        for q in queries:
+            assert "name" in q
+            assert "sql" in q
+
+    def test_sql_query_execution(self):
+        query = "SELECT id, created_at, endpoint, status_code FROM audit_logs ORDER BY id DESC LIMIT 5;"
+        resp = requests.post(f"{CANARY_URL}/api/sql/query", json={"query": query}, timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "success"
+        assert "columns" in data
+        assert "rows" in data
+        assert len(data["rows"]) > 0
+        assert "execution_time_ms" in data
+
+    def test_qrcode_endpoint(self):
+        resp = requests.get(f"{CANARY_URL}/api/qrcode?url=http://192.168.1.100:8085", timeout=5)
+        assert resp.status_code == 200
+        assert "image/svg+xml" in resp.headers.get("Content-Type", "")
+        assert b"<svg" in resp.content
+
