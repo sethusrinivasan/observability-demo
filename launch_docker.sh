@@ -2,8 +2,7 @@
 # launch.sh — full teardown then fresh deploy of the observability stack.
 #
 # Safe to run on a new machine or after any previous partial/broken deployment.
-# Handles root-owned containers (from background docker compose runs) by
-# killing their host PIDs before attempting compose teardown.
+# Stops existing containers through the Docker API before compose teardown.
 #
 # Run with no arguments (or --help) to see this usage message.
 
@@ -59,18 +58,14 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# Step 1: Force-kill any root-owned containers that compose can't stop,
-#         then remove all known containers by name so compose starts clean.
+# Step 1: Stop and remove existing containers so compose starts clean.
 # ---------------------------------------------------------------------------
 echo "=== Clearing any existing containers ==="
-for name in $(docker ps -aq --format '{{.Names}}' 2>/dev/null); do
-    pid=$(docker inspect "$name" --format '{{.State.Pid}}' 2>/dev/null || echo "0")
-    if [ "$pid" != "0" ] && [ -n "$pid" ]; then
-        echo "  Stopping $name (PID $pid)..."
-        sudo kill -9 "$pid" 2>/dev/null || true
-    fi
-done
-sleep 3
+ids=$(docker ps -aq 2>/dev/null || true)
+if [ -n "$ids" ]; then
+    docker stop $ids >/dev/null 2>&1 || true
+    docker rm -f $ids >/dev/null 2>&1 || true
+fi
 
 # Force-remove all containers by name (handles both compose and manually started)
 for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app observability-c-app \

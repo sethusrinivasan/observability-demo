@@ -29,7 +29,7 @@ spec:
     spec:
       containers:
       - name: otel-collector
-        image: otel/opentelemetry-collector-contrib:latest
+        image: otel/opentelemetry-collector-contrib:0.161.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 4317
@@ -76,7 +76,7 @@ spec:
     spec:
       containers:
       - name: tempo
-        image: grafana/tempo:latest
+        image: grafana/tempo:3.0.0
         imagePullPolicy: IfNotPresent
         args: ["-config.file=/etc/tempo/config.yaml"]
         ports:
@@ -117,7 +117,7 @@ spec:
     spec:
       containers:
       - name: redpanda
-        image: redpandadata/redpanda:latest
+        image: redpandadata/redpanda:v26.2.3
         imagePullPolicy: IfNotPresent
         command:
         - rpk
@@ -163,7 +163,7 @@ spec:
     spec:
       containers:
       - name: mimir
-        image: grafana/mimir:latest
+        image: grafana/mimir:3.2.1
         imagePullPolicy: IfNotPresent
         args: ["-config.file=/etc/mimir/config.yaml"]
         ports:
@@ -206,7 +206,7 @@ spec:
     spec:
       containers:
       - name: loki
-        image: grafana/loki:latest
+        image: grafana/loki:3.7.8
         imagePullPolicy: IfNotPresent
         args: ["-config.file=/etc/loki/config.yaml"]
         ports:
@@ -249,7 +249,7 @@ spec:
     spec:
       containers:
       - name: grafana
-        image: grafana/grafana:latest
+        image: grafana/grafana:13.2.2
         imagePullPolicy: IfNotPresent
         env:
         - name: GF_AUTH_ANONYMOUS_ENABLED
@@ -314,7 +314,7 @@ spec:
     spec:
       containers:
       - name: renderer
-        image: grafana/grafana-image-renderer:latest
+        image: grafana/grafana-image-renderer@sha256:4c5574b3261ca7566fbca11d3fb3615bd8e753c69cb4fe9108f3ec8d1d3841d6
         imagePullPolicy: IfNotPresent
         env:
         - name: ENABLE_METRICS
@@ -377,7 +377,7 @@ spec:
     spec:
       containers:
       - name: exporter
-        image: bitnami/postgres-exporter:latest
+        image: bitnami/postgres-exporter@sha256:59b0b9ddee90a32fd24cc6345d65ac7308b211f932da8fc1e4270e421e34fd7e
         imagePullPolicy: IfNotPresent
         env:
         - name: DATA_SOURCE_NAME
@@ -426,7 +426,7 @@ spec:
     spec:
       containers:
       - name: prometheus
-        image: prom/prometheus:latest
+        image: prom/prometheus:v3.15.0
         imagePullPolicy: IfNotPresent
         args:
         - "--config.file=/etc/prometheus/prometheus.yml"
@@ -468,7 +468,7 @@ spec:
     spec:
       containers:
       - name: valkey
-        image: valkey/valkey:latest
+        image: valkey/valkey:9.1.2
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 6379
@@ -489,7 +489,7 @@ spec:
     spec:
       containers:
       - name: redis-exporter
-        image: oliver006/redis_exporter:latest
+        image: oliver006/redis_exporter:v1.92.1
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 9121

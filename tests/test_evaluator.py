@@ -247,6 +247,10 @@ class TestEvaluate:
     def test_decimal_division(self):
         assert evaluate("7.5/2.5") == pytest.approx(3.0)
 
+    def test_malformed_decimal_raises(self):
+        with pytest.raises(ValueError):
+            evaluate("1.2.3+4")
+
     # --- complex nested expressions ---
     def test_deeply_nested(self):
         # (((1+2)*3)+4)*5 = ((3*3)+4)*5 = (9+4)*5 = 13*5 = 65

@@ -127,7 +127,7 @@ case "$MODE" in
             --name "$CONTAINER_NAME" \
             --restart unless-stopped \
             --network "$NETWORK_NAME" \
-            cloudflare/cloudflared:latest \
+            cloudflare/cloudflared:2026.9.3 \
             tunnel --no-autoupdate --url http://canary:8085 >/dev/null
 
         echo -n "Waiting for public HTTPS tunnel URL to be provisioned"

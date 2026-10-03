@@ -169,18 +169,18 @@ For detailed architecture diagrams, 24/7 power outage recovery, and systemd auto
 | [Canary Dashboard](./canary) | `8085` | Synthetic traffic generator, historical trend graphs, chaos fault injection | `1.0.1` |
 | [Canary Mobile App](./mobile) | — | Cross-platform React Native client for Android, iOS, Windows, Web | `1.0.0` |
 | [CycloneDX SBOM](./sbom/sbom-cyclonedx.json) | — | Software Bill of Materials & architectural acknowledgments | `1.5` |
-| Grafana | `3000` | Provisioned dashboards and data source integration (`admin`/`admin`) | `latest` |
-| Grafana Image Renderer | `8081` | Headless Chromium sidecar for automated PNG panel rendering | `latest` |
-| Prometheus | `9090` | Exporter scraper and metrics buffer | `latest` |
-| Grafana Mimir | `9009` | Distributed long-term metrics storage | `latest` |
-| Grafana Tempo | `3200` | Distributed tracing backend (backed by Redpanda) | `latest` |
-| Grafana Loki | `3100` | Log aggregation backend | `latest` |
-| OTel Collector | `4317` (gRPC) / `4318` (HTTP) | Telemetry ingestion and routing pipeline | `latest` |
-| PostgreSQL | `5432` | Audit log database with persistence | `16.1` |
-| Postgres Exporter | `9187` | Database runtime metrics (connections, locks, buffers) | `latest` |
-| Valkey | `6379` | High-performance Redis fork for canary counters and event logs | `latest` |
-| Redis Exporter | `9121` | Prometheus scraper for Valkey cache telemetry | `latest` |
-| Redpanda | `9092` | Kafka-compatible distributed event log for Tempo traces | `latest` |
+| Grafana | `3000` | Provisioned dashboards and data source integration (`admin`/`admin`) | `13.2.2` |
+| Grafana Image Renderer | `8081` | Headless Chromium sidecar for automated PNG panel rendering | pinned digest |
+| Prometheus | `9090` | Exporter scraper and metrics buffer | `3.15.0` |
+| Grafana Mimir | `9009` | Distributed long-term metrics storage | `3.2.1` |
+| Grafana Tempo | `3200` | Distributed tracing backend (backed by Redpanda) | `3.0.0` |
+| Grafana Loki | `3100` | Log aggregation backend | `3.7.8` |
+| OTel Collector | `4317` (gRPC) / `4318` (HTTP) | Telemetry ingestion and routing pipeline | `0.161.0` |
+| PostgreSQL | `5432` | Audit log database with persistence | `18.6` |
+| Postgres Exporter | `9187` | Database runtime metrics (connections, locks, buffers) | `0.20.1` |
+| Valkey | `6379` | High-performance Redis fork for canary counters and event logs | `9.1.2` |
+| Redis Exporter | `9121` | Prometheus scraper for Valkey cache telemetry | `1.92.1` |
+| Redpanda | `9092` | Kafka-compatible distributed event log for Tempo traces | `26.2.3` |
 
 ---
 
@@ -208,12 +208,20 @@ Every microservice implements identical API contracts:
 Comprehensive multi-layer test suite covering unit tests, evaluator logic, infrastructure health, and end-to-end integration:
 
 ```bash
+pip install -r requirements-dev.txt
+
 # Multi-language integration smoke tests
 python3 tests/smoke_test.py --docker
 
 # Run unit and infrastructure test suite
 pytest tests/ -v
 ```
+
+`pytest` lives in `requirements-dev.txt`, so it is not installed in the Python service image.
+
+Stop the stack and keep volumes with `./stop.sh`. `./launch_docker.sh --teardown-only` also deletes volumes.
+
+If the Docker daemon restarts and containers lose bridge connectivity, bring the stack back with `docker compose up -d`. Compose recreates the bridge rules. Do not kill container processes on the host.
 
 ---
 

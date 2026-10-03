@@ -123,14 +123,27 @@ def tokenise(expression: str) -> List[Token]:
             continue
 
         # --- number (integer or decimal) ---
-        if ch.isdigit() or ch == ".":
+        if ch.isdigit() or (ch == "." and i + 1 < n and expression[i + 1].isdigit()):
             j = i
-            # consume all digits and at most one decimal point
-            while j < n and (expression[j].isdigit() or expression[j] == "."):
-                j += 1
+            dot_seen = False
+            while j < n:
+                c = expression[j]
+                if c.isdigit():
+                    j += 1
+                    continue
+                if c == ".":
+                    if dot_seen:
+                        raise ValueError(f"Invalid number '{expression[i:j + 1]}'")
+                    dot_seen = True
+                    j += 1
+                    continue
+                break
             tokens.append((NUMBER, expression[i:j]))
             i = j
             continue
+
+        if ch == ".":
+            raise ValueError(f"Unexpected character '.' at position {i}")
 
         # --- unary minus: treat as part of the next number token ---
         # A '-' is unary when it is the very first token, or when the

@@ -35,6 +35,7 @@ Thumbs.db
 
 # Docker
 .dockerignore
+fix_iptables.sh
 
 # Kubernetes
 .kube/

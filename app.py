@@ -9,7 +9,11 @@ import threading
 import json
 from datetime import datetime, timezone
 import psycopg2
-from psycopg2 import pool# Replace the hardcoded endpoints with environment variables
+from psycopg2 import pool
+import urllib.parse
+from contextlib import contextmanager
+from evaluator import evaluate as eval_expr
+# Replace the hardcoded endpoints with environment variables
 OTLP_ENDPOINT = os.getenv('OTEL_EXPORTER_OTLP_ENDPOINT', 'http://localhost:4317')
 DB_HOST = os.getenv('POSTGRES_HOST', 'postgres')
 DB_PORT = int(os.getenv('POSTGRES_PORT', 5432))
@@ -18,10 +22,6 @@ DB_USER = os.getenv('POSTGRES_USER', 'observability')
 DB_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'observability')
 DB_RETRY_COUNT = int(os.getenv('DB_RETRY_COUNT', 10))
 DB_RETRY_DELAY = float(os.getenv('DB_RETRY_DELAY', 1.0))
-
-
-# Similarly for metrics and logs
-
 
 # OpenTelemetry imports
 from opentelemetry import trace, metrics
@@ -69,8 +69,6 @@ def get_db_connection():
         password=DB_PASSWORD,
     )
 
-
-from contextlib import contextmanager
 
 db_pool = None
 
@@ -120,15 +118,8 @@ def ensure_audit_table():
                     );
                     """
                 )
-                cursor.execute(
-                    """
-                    ALTER TABLE audit_logs
-                    ADD COLUMN IF NOT EXISTS response_time_seconds DOUBLE PRECISION;
-                    """
-                )
                 conn.commit()
     except Exception as e:
-        import logging
         logging.getLogger(__name__).warning("ensure_audit_table skipped due to concurrency: %s", e)
 
 
@@ -634,8 +625,6 @@ def eval_expression():
     Internally delegates to evaluator.evaluate() which implements the
     full Shunting-Yard pipeline: tokenise → RPN → evaluate.
     """
-    from evaluator import evaluate as eval_expr
-
     with tracer.start_as_current_span("eval-endpoint") as span:
         # --- extract the expression from whichever input method was used ---
         if request.method == "POST":
@@ -644,7 +633,6 @@ def eval_expression():
             else:
                 expr = request.form.get("expr", "")
         else:
-            import urllib.parse
             qs = request.query_string.decode('utf-8')
             expr = ""
             for pair in qs.split('&'):

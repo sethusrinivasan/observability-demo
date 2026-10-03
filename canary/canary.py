@@ -104,6 +104,9 @@ request_error_counter   = meter.create_counter(
 request_duration        = meter.create_histogram(
     "app.synthetic.request.duration",
     description="Canary request duration in seconds")
+schedule_behind_counter = meter.create_counter(
+    "app.synthetic.schedule.behind",
+    description="Loops where a slow request pushed the canary behind its target rate")
 
 TARGETS = [
     {"path": "/",                                          "method": "GET"},
@@ -4373,6 +4376,7 @@ def run() -> None:
         next_tick += inter_arrival
         now_t = time.time()
         if next_tick < now_t - 1.0:
+            schedule_behind_counter.add(1, {"language": app_lang})
             next_tick = now_t
         sleep_time = max(0.0, next_tick - now_t)
         time.sleep(sleep_time)
