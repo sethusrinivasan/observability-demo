@@ -73,6 +73,7 @@ If you do not have a custom domain or Cloudflare account yet, you can spin up an
 ```
 
 * **Instant Access**: Share this URL with anyone on mobile or desktop anywhere in the world.
+* **Portfolio link**: `--quick` commits that URL into the observability-demo Live Demo link in `~/sethusrinivasan.github.io` and pushes it, so [sethusrinivasan.github.io](https://sethusrinivasan.github.io/) follows the current tunnel. Set `SHOWCASE_PAGES_REPO` if that checkout lives somewhere else.
 * **Auto-Discovery**: The Canary dashboard's QR code modal automatically detects the tunnel hostname so phone scans open the secure URL.
 * **Check Status**: `./scripts/showcase_tunnel.sh --status`
 * **Stop Tunnel**: `./scripts/showcase_tunnel.sh --stop`

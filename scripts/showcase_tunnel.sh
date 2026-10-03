@@ -25,6 +25,70 @@ clear_showcase_url() {
     rm -f "$SHOWCASE_URL_FILE"
 }
 
+publish_pages_demo_link() {
+    local url="${1%/}/"
+    local pages_repo="${SHOWCASE_PAGES_REPO:-${HOME}/sethusrinivasan.github.io}"
+    local work=""
+    local result
+
+    if [ ! -d "${pages_repo}/.git" ] && [ ! -f "${pages_repo}/.git" ]; then
+        echo "  Pages repo not found at ${pages_repo}."
+        echo "  Set SHOWCASE_PAGES_REPO to publish the live demo link."
+        return 0
+    fi
+
+    git -C "$pages_repo" fetch origin main
+    work="$(mktemp -d)"
+    git -C "$pages_repo" worktree add --detach "$work" origin/main >/dev/null
+
+    result="$(python3 - "${work}/index.html" "$url" <<'PY'
+import pathlib, re, sys
+path, url = sys.argv[1], sys.argv[2]
+file = pathlib.Path(path)
+text = file.read_text()
+pattern = re.compile(
+    r'(<a href="https://github.com/sethusrinivasan/observability-demo">.*?<a class="live" href=")[^"]+(">)',
+    re.DOTALL,
+)
+def repl(match):
+    return match.group(1) + url + match.group(2)
+new, count = pattern.subn(repl, text, count=1)
+if count != 1:
+    raise SystemExit("observability-demo Live Demo link was not found")
+if new == text:
+    print("unchanged")
+else:
+    file.write_text(new)
+    print("updated")
+PY
+)" || {
+        git -C "$pages_repo" worktree remove --force "$work" >/dev/null 2>&1 || true
+        rm -rf "$work"
+        echo "  Could not update the live demo link in ${pages_repo}."
+        return 0
+    }
+    if [ "$result" = "unchanged" ]; then
+        git -C "$pages_repo" worktree remove --force "$work" >/dev/null 2>&1 || true
+        rm -rf "$work"
+        echo "  Live demo link already points at ${url}"
+        return 0
+    fi
+
+    git -C "$work" add index.html
+    GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-Sethu Srinivasan}" \
+    GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-sethusrinivasan@users.noreply.github.com}" \
+    GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-Sethu Srinivasan}" \
+    GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-sethusrinivasan@users.noreply.github.com}" \
+    git -C "$work" commit -m "Point the observability-demo live demo at the current showcase tunnel."
+    git -C "$work" push origin HEAD:main
+    git -C "$pages_repo" worktree remove --force "$work" >/dev/null 2>&1 || true
+    rm -rf "$work"
+    if git -C "$pages_repo" diff --quiet && git -C "$pages_repo" diff --cached --quiet; then
+        git -C "$pages_repo" merge --ff-only origin/main >/dev/null 2>&1 || true
+    fi
+    echo "  Published live demo link: ${url}"
+}
+
 print_header() {
     echo "================================================================="
     echo "   🚀 Cloudflare Tunnel — Live Showcase Bridge"
@@ -48,6 +112,10 @@ Modes:
 Environment Variables:
   CLOUDFLARE_TUNNEL_TOKEN   If set in environment or .env, running with no args
                             or --token will use this token automatically.
+  SHOWCASE_PAGES_REPO       GitHub Pages checkout whose observability-demo
+                            Live Demo link is updated after --quick.
+                            Defaults to ~/sethusrinivasan.github.io.
+                            A changed link is committed and pushed.
 
 Examples:
   ./scripts/showcase_tunnel.sh --quick
@@ -166,6 +234,7 @@ case "$MODE" in
             save_showcase_url "$TUNNEL_URL"
             echo "  Public HTTPS URL:  $TUNNEL_URL"
             echo "  Saved to:          $SHOWCASE_URL_FILE"
+            publish_pages_demo_link "$TUNNEL_URL" || echo "  WARNING: the public site link was not updated."
             echo "  Target Service:    Canary Telemetry & Load Dashboard (port 8085)"
             echo "  Other services:    ${TUNNEL_URL}/open/<service>/  (not ${TUNNEL_URL}:port)"
             echo ""
