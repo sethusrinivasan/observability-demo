@@ -1110,7 +1110,10 @@ class TestCanaryDashboard:
         resp = self.http.get(f"{CANARY_URL}/api/sql/saved-queries", timeout=5)
         assert resp.status_code == 200
         queries = resp.json()
-        assert len(queries) >= 5
+        assert len(queries) >= 20
+        ids = {q["id"] for q in queries}
+        assert "latency_percentiles" in ids
+        assert "instrumentation_coverage" in ids
         for q in queries:
             assert "name" in q
             assert "sql" in q
@@ -1125,6 +1128,9 @@ class TestCanaryDashboard:
         assert "rows" in data
         assert len(data["rows"]) > 0
         assert "execution_time_ms" in data
+        assert data["plan"]["rows"]
+        assert "node" in data["plan"]["columns"]
+        assert data["plan"]["execution_time_ms"] is not None
 
     def test_sql_rejects_writes_and_catalog_reads(self):
         for query in (

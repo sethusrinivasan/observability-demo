@@ -21,7 +21,9 @@ ALLOWED_FUNCTIONS = frozenset({
     "abs", "ceil", "ceiling", "floor", "greatest", "least", "now",
     "to_char", "to_timestamp", "to_number", "age", "cast", "array_agg",
     "string_agg", "bool_and", "bool_or", "jsonb_typeof", "row_number",
-    "rank", "dense_rank", "lag", "lead",
+    "rank", "dense_rank", "lag", "lead", "percentile_cont", "percentile_disc",
+    "stddev", "stddev_pop", "stddev_samp", "variance", "var_pop", "var_samp",
+    "width_bucket", "ntile", "date_bin", "corr",
 })
 
 # Function-style syntax whose parentheses do not introduce a table.

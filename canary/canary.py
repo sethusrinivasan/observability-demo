@@ -15,13 +15,14 @@ import html
 import re
 import secrets
 import http.client
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 import math
 import os
 import random
 import socket
+import sys
 import threading
 import time
 import urllib.parse
@@ -322,37 +323,145 @@ docker_manager = DockerManager()
 SAVED_QUERIES = [
     {
         "id": "recent_audit_logs",
-        "name": "📜 Recent Audit Logs (All Languages)",
-        "description": "Fetches the 50 most recent synthetic audit log entries across all microservices.",
-        "sql": "SELECT id, created_at, endpoint, status_code, coalesce(details->>'language', 'python') AS language, coalesce(details->>'service', 'python-app') AS service FROM audit_logs ORDER BY id DESC LIMIT 50;"
+        "name": "📜 Recent audit rows",
+        "description": "The latest calls, with language and service taken from the JSON details.",
+        "sql": "SELECT id, created_at, endpoint, status_code, round(response_time_seconds::numeric, 4) AS duration_sec, coalesce(details->>'language', 'python') AS language, coalesce(details->>'service', 'python-app') AS service FROM audit_logs ORDER BY id DESC LIMIT 50;"
+    },
+    {
+        "id": "recent_failures",
+        "name": "🚨 Recent failures",
+        "description": "Calls that returned 4xx or 5xx, newest first.",
+        "sql": "SELECT id, created_at, endpoint, status_code, round(response_time_seconds::numeric, 4) AS duration_sec, coalesce(details->>'language', 'python') AS language, left(coalesce(details->>'user_agent', ''), 80) AS user_agent FROM audit_logs WHERE status_code >= 400 ORDER BY id DESC LIMIT 50;"
     },
     {
         "id": "lang_audit_counts",
-        "name": "📊 Audit Log Volume by Language",
-        "description": "Rolls up total audit entries and timestamps grouped by microservice language.",
-        "sql": "SELECT coalesce(details->>'language', 'python') AS language, count(*) AS total_entries, min(created_at) AS first_entry, max(created_at) AS latest_entry FROM audit_logs GROUP BY 1 ORDER BY total_entries DESC;"
+        "name": "📊 Volume by language",
+        "description": "How many audit rows each language has written, and the time span covered.",
+        "sql": "SELECT coalesce(details->>'language', 'python') AS language, count(*) AS calls, min(created_at) AS first_seen, max(created_at) AS last_seen FROM audit_logs GROUP BY 1 ORDER BY calls DESC;"
+    },
+    {
+        "id": "endpoint_coverage",
+        "name": "🧭 Endpoint coverage",
+        "description": "Which routes show up, how often, and when they were first and last seen.",
+        "sql": "SELECT endpoint, count(*) AS calls, min(created_at) AS first_seen, max(created_at) AS last_seen, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs GROUP BY endpoint ORDER BY calls DESC;"
     },
     {
         "id": "action_breakdown",
-        "name": "⚡ Endpoint Hit & Duration Breakdown",
-        "description": "Analyzes the frequency of routes, status codes, and average response times.",
-        "sql": "SELECT endpoint, status_code, count(*) AS total_calls, round(avg(response_time_seconds)::numeric, 4) AS avg_duration_sec FROM audit_logs GROUP BY endpoint, status_code ORDER BY total_calls DESC;"
+        "name": "⚡ Calls by endpoint and status",
+        "description": "Volume and average duration for each route and status code.",
+        "sql": "SELECT endpoint, status_code, count(*) AS calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs GROUP BY endpoint, status_code ORDER BY calls DESC;"
+    },
+    {
+        "id": "status_classes",
+        "name": "🚦 Status class mix",
+        "description": "Share of 2xx, 4xx, and 5xx responses and the average duration of each class.",
+        "sql": "SELECT CASE WHEN status_code < 300 THEN '2xx' WHEN status_code < 400 THEN '3xx' WHEN status_code < 500 THEN '4xx' ELSE '5xx' END AS status_class, count(*) AS calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs GROUP BY 1 ORDER BY 1;"
+    },
+    {
+        "id": "error_rate_by_route",
+        "name": "📉 Error rate by route",
+        "description": "Percentage of calls at status 400 or above, by language and endpoint.",
+        "sql": "SELECT coalesce(details->>'language', 'python') AS language, endpoint, count(*) AS calls, count(*) FILTER (WHERE status_code >= 400) AS errors, round((100.0 * count(*) FILTER (WHERE status_code >= 400) / nullif(count(*), 0))::numeric, 2) AS error_pct FROM audit_logs GROUP BY 1, 2 ORDER BY error_pct DESC, calls DESC;"
+    },
+    {
+        "id": "latency_percentiles",
+        "name": "📏 Latency percentiles by endpoint",
+        "description": "p50, p95, and p99 response time for each route. This is the SLO view.",
+        "sql": "SELECT endpoint, count(*) AS timed_calls, round(percentile_disc(0.50) WITHIN GROUP (ORDER BY response_time_seconds)::numeric, 4) AS p50_sec, round(percentile_disc(0.95) WITHIN GROUP (ORDER BY response_time_seconds)::numeric, 4) AS p95_sec, round(percentile_disc(0.99) WITHIN GROUP (ORDER BY response_time_seconds)::numeric, 4) AS p99_sec, round(max(response_time_seconds)::numeric, 4) AS max_sec FROM audit_logs WHERE response_time_seconds IS NOT NULL GROUP BY endpoint ORDER BY p95_sec DESC;"
+    },
+    {
+        "id": "latency_by_language",
+        "name": "🏁 Latency percentiles by language",
+        "description": "Compare p50 and p95 across the services that record a response time.",
+        "sql": "SELECT coalesce(details->>'language', 'python') AS language, count(*) AS timed_calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec, round(percentile_disc(0.50) WITHIN GROUP (ORDER BY response_time_seconds)::numeric, 4) AS p50_sec, round(percentile_disc(0.95) WITHIN GROUP (ORDER BY response_time_seconds)::numeric, 4) AS p95_sec FROM audit_logs WHERE response_time_seconds IS NOT NULL GROUP BY 1 ORDER BY p95_sec DESC;"
+    },
+    {
+        "id": "latency_spread",
+        "name": "📐 Latency spread by endpoint",
+        "description": "Average versus standard deviation, so a route with a wild tail stands out.",
+        "sql": "SELECT endpoint, count(*) AS timed_calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec, round(stddev_samp(response_time_seconds)::numeric, 4) AS stddev_sec, round(max(response_time_seconds)::numeric, 4) AS max_sec FROM audit_logs WHERE response_time_seconds IS NOT NULL GROUP BY endpoint ORDER BY stddev_sec DESC NULLS LAST;"
+    },
+    {
+        "id": "slowest_calls",
+        "name": "🐢 Slowest recent calls",
+        "description": "The individual audit rows with the highest response time.",
+        "sql": "SELECT id, created_at, endpoint, status_code, round(response_time_seconds::numeric, 4) AS duration_sec, coalesce(details->>'language', 'python') AS language FROM audit_logs WHERE response_time_seconds IS NOT NULL ORDER BY response_time_seconds DESC LIMIT 25;"
+    },
+    {
+        "id": "latency_histogram",
+        "name": "📊 Latency histogram",
+        "description": "Ten buckets from 0 to 1 second, plus a bucket for anything slower.",
+        "sql": "SELECT width_bucket(response_time_seconds, 0, 1, 10) AS bucket, count(*) AS calls, round(min(response_time_seconds)::numeric, 4) AS min_sec, round(max(response_time_seconds)::numeric, 4) AS max_sec FROM audit_logs WHERE response_time_seconds IS NOT NULL GROUP BY 1 ORDER BY 1;"
     },
     {
         "id": "hourly_activity",
-        "name": "⏱️ Hourly Activity (Past 24 Hours)",
-        "description": "Aggregates total audit activity by 1-hour time windows.",
-        "sql": "SELECT date_trunc('hour', created_at) AS hour_window, count(*) AS total_records FROM audit_logs GROUP BY 1 ORDER BY hour_window DESC LIMIT 24;"
+        "name": "⏱️ Hourly volume and latency",
+        "description": "Call count, error count, and average duration for each hour.",
+        "sql": "SELECT date_trunc('hour', created_at) AS hour_window, count(*) AS calls, count(*) FILTER (WHERE status_code >= 400) AS errors, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs GROUP BY 1 ORDER BY hour_window DESC LIMIT 48;"
+    },
+    {
+        "id": "five_minute_traffic",
+        "name": "⏱️ Five-minute traffic",
+        "description": "A finer volume and latency trend for the last six hours.",
+        "sql": "SELECT date_bin('5 minutes', created_at, timestamp '2000-01-01') AS bucket, count(*) AS calls, count(*) FILTER (WHERE status_code >= 400) AS errors, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs WHERE created_at >= now() - interval '6 hours' GROUP BY 1 ORDER BY bucket DESC;"
+    },
+    {
+        "id": "hour_of_day",
+        "name": "🗓️ Volume by weekday and hour",
+        "description": "When traffic clusters. Day 0 is Sunday, matching PostgreSQL extract(dow).",
+        "sql": "SELECT extract(dow from created_at) AS day_of_week, extract(hour from created_at) AS hour_of_day, count(*) AS calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs GROUP BY 1, 2 ORDER BY 1, 2;"
+    },
+    {
+        "id": "resource_vs_latency",
+        "name": "🖥️ Load and memory beside latency",
+        "description": "Per-minute average load, container memory percent, and response time.",
+        "sql": "SELECT date_trunc('minute', created_at) AS minute, count(*) AS calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec, round(avg(system_loadavg_1m)::numeric, 2) AS avg_load, round(avg(container_memory_percent)::numeric, 1) AS avg_mem_pct FROM audit_logs WHERE response_time_seconds IS NOT NULL GROUP BY 1 ORDER BY minute DESC LIMIT 60;"
+    },
+    {
+        "id": "memory_headroom",
+        "name": "🧠 Container memory headroom",
+        "description": "Average and peak container memory use against the cgroup limit, by language.",
+        "sql": "SELECT coalesce(details->>'language', 'python') AS language, count(*) AS samples, round(avg(container_memory_percent)::numeric, 1) AS avg_mem_pct, round(max(container_memory_percent)::numeric, 1) AS max_mem_pct, round(avg(container_memory_current)::numeric, 0) AS avg_bytes, round(avg(container_memory_limit)::numeric, 0) AS limit_bytes FROM audit_logs WHERE container_memory_percent IS NOT NULL GROUP BY 1 ORDER BY max_mem_pct DESC;"
+    },
+    {
+        "id": "instrumentation_coverage",
+        "name": "🔎 Which fields are actually filled",
+        "description": "Shows which languages record timing and container samples, and which leave them null.",
+        "sql": "SELECT coalesce(details->>'language', 'python') AS language, count(*) AS calls, count(response_time_seconds) AS timed_calls, count(process_memory_rss) AS process_memory_samples, count(container_memory_percent) AS container_mem_samples, count(container_cpu_usage_ns) AS container_cpu_samples FROM audit_logs GROUP BY 1 ORDER BY calls DESC;"
+    },
+    {
+        "id": "caller_mix",
+        "name": "🌐 Caller addresses",
+        "description": "Remote addresses stored in details, and how many of those calls failed.",
+        "sql": "SELECT coalesce(details->>'remote_addr', '(none)') AS remote_addr, count(*) AS calls, count(*) FILTER (WHERE status_code >= 400) AS errors FROM audit_logs GROUP BY 1 ORDER BY calls DESC LIMIT 20;"
+    },
+    {
+        "id": "load_latency_corr",
+        "name": "🔗 Load versus latency",
+        "description": "Correlation of host load and container memory with response time. Near 0 means they move independently.",
+        "sql": "SELECT count(*) AS samples, round(corr(system_loadavg_1m, response_time_seconds)::numeric, 4) AS load_latency_corr, round(corr(container_memory_percent, response_time_seconds)::numeric, 4) AS memory_latency_corr FROM audit_logs WHERE response_time_seconds IS NOT NULL;"
     },
     {
         "id": "recent_editor_queries",
-        "name": "📝 Recent SQL Editor Runs",
-        "description": "Statements submitted from the SQL editor, including ones the guard rejected.",
+        "name": "📝 Recent SQL editor runs",
+        "description": "Statements submitted from this editor, including ones the guard rejected.",
         "sql": "SELECT id, created_at, username, status, row_count, execution_time_ms, left(query_text, 120) AS query_preview FROM sql_query_audit ORDER BY id DESC LIMIT 50;"
     },
     {
+        "id": "editor_outcomes",
+        "name": "🧪 Editor allow, deny, and error counts",
+        "description": "How often editor statements succeed, get rejected, or fail in Postgres.",
+        "sql": "SELECT status, count(*) AS attempts, round(avg(execution_time_ms)::numeric, 2) AS avg_ms, max(created_at) AS latest FROM sql_query_audit GROUP BY status ORDER BY attempts DESC;"
+    },
+    {
+        "id": "slow_editor_queries",
+        "name": "🐢 Slowest editor statements",
+        "description": "Successful editor queries ordered by how long they took.",
+        "sql": "SELECT id, created_at, username, row_count, round(execution_time_ms::numeric, 2) AS ms, left(query_text, 160) AS query_preview FROM sql_query_audit WHERE status = 'success' ORDER BY execution_time_ms DESC LIMIT 20;"
+    },
+    {
         "id": "saved_query_catalog",
-        "name": "🗂️ Saved Queries",
+        "name": "🗂️ Saved query catalog",
         "description": "Queries stored for reuse in the SQL editor.",
         "sql": "SELECT id, name, description, created_by, updated_at FROM sql_saved_queries ORDER BY name;"
     }
@@ -491,6 +600,311 @@ def _record_sql_audit(username, query_text, status, error_message, row_count, el
         logger.warning("Could not write SQL editor audit row: %s", exc)
 
 
+_PLAN_COLUMNS = [
+    "node", "relation", "startup_cost", "total_cost", "plan_rows",
+    "actual_rows", "actual_ms", "loops", "shared_hit", "shared_read", "detail",
+]
+
+
+def _sql_cell(val):
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return str(val)
+    if isinstance(val, float):
+        return str(round(val, 4))
+    if isinstance(val, (dict, list)):
+        return json.dumps(val)
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
+    return str(val)
+
+
+def _flatten_explain(payload) -> dict:
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if isinstance(payload, list):
+        payload = payload[0] if payload else {}
+    rows = []
+
+    explanations = []
+
+    def walk(node, depth, parent_type=None):
+        if parent_type:
+            node["_parent_type"] = parent_type
+        detail_parts = _plan_detail_parts(node)
+        rows.append([
+            ("  " * depth) + str(node.get("Node Type") or ""),
+            node.get("Relation Name"),
+            node.get("Startup Cost"),
+            node.get("Total Cost"),
+            node.get("Plan Rows"),
+            node.get("Actual Rows"),
+            node.get("Actual Total Time"),
+            node.get("Actual Loops"),
+            node.get("Shared Hit Blocks"),
+            node.get("Shared Read Blocks"),
+            "; ".join(detail_parts) or None,
+        ])
+        explanations.append(_explain_plan_node(node))
+        for child in node.get("Plans") or []:
+            walk(child, depth + 1, node.get("Node Type"))
+
+    walk(payload.get("Plan") or {}, 0)
+    return {
+        "columns": list(_PLAN_COLUMNS),
+        "rows": [[_sql_cell(cell) for cell in row] for row in rows],
+        "explanations": explanations,
+        "planning_time_ms": payload.get("Planning Time"),
+        "execution_time_ms": payload.get("Execution Time"),
+    }
+
+
+def _plan_list(value) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return str(value)
+
+
+def _plan_detail_parts(node: dict) -> list[str]:
+    parts = []
+    if node.get("Index Name"):
+        parts.append("Index: " + str(node["Index Name"]))
+    if node.get("Scan Direction"):
+        parts.append("Direction: " + str(node["Scan Direction"]))
+    if node.get("Parent Relationship"):
+        parts.append("Role: " + str(node["Parent Relationship"]))
+    for label, key in (
+        ("Filter", "Filter"),
+        ("Index Cond", "Index Cond"),
+        ("Hash Cond", "Hash Cond"),
+        ("Join Filter", "Join Filter"),
+        ("Recheck Cond", "Recheck Cond"),
+    ):
+        if node.get(key):
+            parts.append(f"{label}: {node[key]}")
+    if node.get("Sort Key"):
+        parts.append("Sort Key: " + _plan_list(node["Sort Key"]))
+    if node.get("Group Key"):
+        parts.append("Group Key: " + _plan_list(node["Group Key"]))
+    if node.get("Workers Launched") is not None:
+        parts.append(
+            f"Workers: {node.get('Workers Launched')} launched of {node.get('Workers Planned')} planned"
+        )
+    return parts
+
+
+_PLAN_NODE_TEXT = {
+    "Seq Scan": "Reads the table heap from start to finish. No index skips pages.",
+    "Index Scan": "Searches an index for matching entries, then fetches those rows from the heap. The index condition is applied in the index. A filter is checked only after the heap row is fetched.",
+    "Index Only Scan": "Searches an index that already holds every column this step needs. The heap is skipped when the visibility map says the page is all-visible, and visited when it does not.",
+    "Bitmap Index Scan": "Builds a bitmap of matching row locations from an index. It does not fetch heap rows. The bitmap heap scan above it does that.",
+    "Bitmap Heap Scan": "Fetches heap pages from a bitmap of row locations, in physical page order, so a page is read once. A recheck means the bitmap was not exact and each candidate row is tested again.",
+    "BitmapAnd": "Keeps row locations that appear in every child bitmap. This is how several indexes are combined with AND.",
+    "BitmapOr": "Unions row locations from the child bitmaps. This is how several indexes are combined with OR.",
+    "Nested Loop": "For each row from the outer child, runs the inner child once. This stays cheap when the outer side is small and the inner side is an index lookup.",
+    "Hash Join": "Builds a hash table from one side and probes it with the other. The hash condition is the equality used for the match.",
+    "Merge Join": "Walks two inputs that are already ordered on the join key and merges matches. A sort underneath exists when nothing else supplied that order.",
+    "Hash": "Builds the hash table that the hash join above it probes.",
+    "Sort": "Orders its input by the sort key before the parent can use the rows. The parent is typically ORDER BY, a merge join, a group aggregate, or a unique step.",
+    "Incremental Sort": "Sorts groups that are already ordered on a prefix of the sort key, instead of sorting the whole input again.",
+    "Aggregate": "Computes aggregates over the whole input. With no GROUP BY, one row comes out.",
+    "GroupAggregate": "Computes aggregates for groups that arrive already sorted on the group key. One row comes out per group.",
+    "HashAggregate": "Puts groups in a hash table keyed by the GROUP BY columns, then emits one row per group. Memory grows with the number of distinct groups.",
+    "MixedAggregate": "Computes some aggregates from a hash table and others from sorted input.",
+    "Limit": "Stops after the requested number of rows, so work above this step can finish early. A sort underneath still has to order its input before the first row can leave, unless that input was already ordered.",
+    "Gather": "Collects rows from parallel workers into the leader. It does not keep the workers' sort order. The child plan is what each worker ran.",
+    "Gather Merge": "Collects ordered streams from parallel workers and merges them so the combined output stays sorted.",
+    "Materialize": "Stores the child output so a parent can read it again without running the child another time.",
+    "Memoize": "Remembers inner results of a nested loop, keyed by the current parameter values, so a repeated lookup is not executed again.",
+    "CTE Scan": "Reads a WITH query that was materialized rather than inlined. The CTE ran on its own, and this step scans that stored result.",
+    "Subquery Scan": "Runs a subquery as its own plan and scans that output. The subquery was not flattened into the outer query.",
+    "Result": "Produces rows from expressions, with no table read. A constant select or a projection shows up this way.",
+    "Unique": "Drops duplicates that sit next to each other, so the input has to arrive sorted. This is one way DISTINCT is executed.",
+    "WindowAgg": "Computes window functions over the ordered frame and keeps the rows in that order.",
+    "Append": "Runs each child in turn and concatenates the rows. UNION ALL and a scan of several partitions use this. It does not remove duplicates.",
+    "MergeAppend": "Merges several already-ordered children so the combined output stays ordered.",
+    "Recursive Union": "Runs a WITH RECURSIVE query, feeding each round's new rows back in until a round adds nothing.",
+    "WorkTable Scan": "Reads the working table that the recursive step is filling for the current round.",
+    "Function Scan": "Calls a set-returning function and scans the rows it returns.",
+    "Values Scan": "Scans the rows written in a VALUES list. No table is read.",
+    "Tid Scan": "Fetches rows by ctid, their physical location.",
+    "Sample Scan": "Reads a sample of the table rather than every row.",
+    "Foreign Scan": "Asks a foreign-data wrapper for rows stored outside this database. The time includes waiting on that source.",
+    "LockRows": "Locks the qualifying rows, as SELECT FOR UPDATE does, before they are returned.",
+    "ModifyTable": "Writes rows with INSERT, UPDATE, DELETE, or MERGE.",
+    "ProjectSet": "Expands a set-returning function in the select list into one output row per returned value.",
+}
+
+
+def _fmt_plan_num(value, digits: int = 2):
+    if value is None:
+        return "n/a"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if digits == 0 or number.is_integer():
+        return str(int(number)) if number.is_integer() and abs(number) < 1e15 else f"{number:.2f}".rstrip("0").rstrip(".")
+    return f"{number:.{digits}f}".rstrip("0").rstrip(".")
+
+
+def _describe_plan_node(node: dict, node_type: str) -> str:
+    if node_type == "Aggregate":
+        partial = node.get("Partial Mode")
+        strategy = node.get("Strategy")
+        if partial == "Partial":
+            return (
+                "Each parallel worker aggregates only the rows it read. "
+                "What comes out is a partial aggregate state for each group, not the final totals. "
+                "A finalize step above this one combines those states."
+            )
+        if partial == "Finalize":
+            return "Combines the partial aggregate states from the workers into one finished row per group."
+        if strategy == "Sorted":
+            return _PLAN_NODE_TEXT["GroupAggregate"]
+        if strategy == "Hashed" or node.get("Group Key"):
+            return _PLAN_NODE_TEXT["HashAggregate"]
+        return _PLAN_NODE_TEXT["Aggregate"]
+    return _PLAN_NODE_TEXT.get(node_type, "PostgreSQL used this step while producing the query result.")
+
+
+def _explain_plan_node(node: dict) -> str:
+    node_type = str(node.get("Node Type") or "Plan node")
+    what = _describe_plan_node(node, node_type)
+    if node.get("Parallel Aware"):
+        what = "Parallel workers ran this step. " + what
+    relation = node.get("Relation Name")
+    if relation:
+        alias = node.get("Alias")
+        if alias and alias != relation:
+            what += f" The table is {relation}, aliased as {alias}."
+        else:
+            what += f" The table is {relation}."
+    if node.get("Index Name"):
+        what += f" The index is {node['Index Name']}."
+        if node.get("Scan Direction"):
+            what += f" The scan direction is {node['Scan Direction']}."
+
+    paragraphs = [what]
+    startup = node.get("Startup Cost")
+    total = node.get("Total Cost")
+    if startup is not None or total is not None:
+        paragraphs.append(
+            f"Startup cost {_fmt_plan_num(startup)} is the planner's estimate of effort before the first row. "
+            f"Total cost {_fmt_plan_num(total)} is the estimate to produce the rows it expected. "
+            "Costs are arbitrary units, where one sequential page read is about 1. They are not milliseconds."
+        )
+    actual_ms = node.get("Actual Total Time")
+    loops = node.get("Actual Loops")
+    if actual_ms is not None:
+        timing = f"One run took {_fmt_plan_num(actual_ms, 3)} ms, and that time includes the steps underneath this one."
+        try:
+            loop_count = float(loops or 1)
+        except (TypeError, ValueError):
+            loop_count = 1
+        if loop_count > 1:
+            timing += (
+                f" The node ran {_fmt_plan_num(loop_count, 0)} times, and the time above is the average of those runs "
+                f"(about {_fmt_plan_num(float(actual_ms) * loop_count, 3)} ms added together)."
+            )
+        if node.get("Plans"):
+            timing += " Adding this time to the times of its children double-counts those children."
+        paragraphs.append(timing)
+
+    plan_rows = node.get("Plan Rows")
+    actual_rows = node.get("Actual Rows")
+    if plan_rows is not None and actual_rows is not None:
+        try:
+            expected = float(plan_rows)
+            actual = float(actual_rows)
+            loop_count = float(loops or 1)
+        except (TypeError, ValueError):
+            expected = actual = loop_count = None
+        if expected is not None:
+            estimate = (
+                f"The planner expected about {_fmt_plan_num(expected)} rows from one run of this step. "
+                f"This run returned about {_fmt_plan_num(actual)} rows"
+            )
+            if loop_count and loop_count > 1:
+                estimate += (
+                    f" each time it ran, about {_fmt_plan_num(round(actual * loop_count))} rows across all "
+                    f"{_fmt_plan_num(loop_count, 0)} runs"
+                )
+            estimate += "."
+            if expected > 0 and (actual >= expected * 10 or actual * 10 <= expected):
+                estimate += " The estimate is far from the measured count. That usually means the column statistics do not describe the rows this predicate selects."
+            paragraphs.append(estimate)
+
+    hit = node.get("Shared Hit Blocks")
+    read = node.get("Shared Read Blocks")
+    if hit is not None or read is not None:
+        buffer_bits = []
+        if hit:
+            buffer_bits.append(f"{_fmt_plan_num(hit, 0)} pages were already in PostgreSQL shared buffers")
+        if read:
+            buffer_bits.append(
+                f"{_fmt_plan_num(read, 0)} pages were not in shared buffers and were requested from the operating system. "
+                "That read does not prove the page came from disk; the operating system cache may still have held it"
+            )
+        if not hit and not read:
+            buffer_bits.append("This step did not report shared-buffer reads of its own")
+        buffer_text = ". ".join(buffer_bits) + "."
+        if node.get("Plans"):
+            buffer_text += " The counts include pages touched by the steps underneath this one."
+        paragraphs.append(buffer_text)
+
+    notes = []
+    if node.get("Filter"):
+        notes.append(
+            f"Filter ({node['Filter']}): rows are read and then dropped when they fail this test. "
+            "Dropped rows are not included in the actual row count, so the step can read more than that count shows."
+        )
+    if node.get("Index Cond"):
+        notes.append(
+            f"Index condition ({node['Index Cond']}): the index is searched with this predicate, so non-matching index entries are not fetched from the heap."
+        )
+    if node.get("Recheck Cond"):
+        notes.append(
+            f"Recheck ({node['Recheck Cond']}): the bitmap did not name exact rows, often because it switched to page granularity after it grew. Each candidate heap row is tested again."
+        )
+    if node.get("Hash Cond"):
+        notes.append(f"Hash condition ({node['Hash Cond']}): this equality chooses the hash bucket a row is built into or probed against.")
+    if node.get("Join Filter"):
+        notes.append(
+            f"Join filter ({node['Join Filter']}): applied after the join method has a candidate pair. It is a predicate that method could not use as its main match condition."
+        )
+    if node.get("Sort Key"):
+        notes.append(f"Sort key ({_plan_list(node['Sort Key'])}): rows are ordered by this list for the step above.")
+    if node.get("Group Key"):
+        notes.append(f"Group key ({_plan_list(node['Group Key'])}): one aggregate result is produced for each distinct value of this list.")
+    role = node.get("Parent Relationship")
+    parent_type = str((node.get("_parent_type") or ""))
+    if role in ("Outer", "Inner") and parent_type in ("Nested Loop", "Hash Join", "Merge Join"):
+        notes.append(f"This step is the {role.lower()} input of the {parent_type} above it.")
+    if node.get("Workers Launched") is not None:
+        notes.append(
+            f"{node.get('Workers Launched')} parallel workers launched, out of {node.get('Workers Planned')} the planner asked for."
+        )
+    if notes:
+        paragraphs.append(" ".join(notes))
+    return "\n\n".join(paragraphs)
+
+
+def _capture_plan(cur, sql: str) -> dict:
+    """Run EXPLAIN ANALYZE on a statement the guard has already accepted."""
+    explained = sql.strip().rstrip(";").strip()
+    cur.execute("SAVEPOINT sql_plan")
+    try:
+        cur.execute("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + explained)
+        payload = cur.fetchone()[0]
+        cur.execute("RELEASE SAVEPOINT sql_plan")
+        return _flatten_explain(payload)
+    except Exception as exc:
+        cur.execute("ROLLBACK TO SAVEPOINT sql_plan")
+        return {"columns": [], "rows": [], "error": str(exc)}
+
+
 def execute_sql_query(query_str: str, max_rows: int = 100, username: str = "", client_addr: str = "") -> dict:
     """Run one read-only SELECT against the application tables and audit the attempt."""
     if not psycopg2:
@@ -526,19 +940,8 @@ def execute_sql_query(query_str: str, max_rows: int = 100, username: str = "", c
             raise SqlGuardError("Only read-only SELECT statements are allowed")
         columns = [desc[0] for desc in cur.description]
         raw_rows = cur.fetchmany(max_rows)
-        formatted_rows = []
-        for row in raw_rows:
-            formatted_row = []
-            for val in row:
-                if val is None:
-                    formatted_row.append(None)
-                elif isinstance(val, (dict, list)):
-                    formatted_row.append(json.dumps(val))
-                elif hasattr(val, "isoformat"):
-                    formatted_row.append(val.isoformat())
-                else:
-                    formatted_row.append(str(val))
-            formatted_rows.append(formatted_row)
+        formatted_rows = [[_sql_cell(val) for val in row] for row in raw_rows]
+        plan = _capture_plan(cur, clean_q)
         conn.rollback()
         elapsed_ms = round((time.time() - t0) * 1000, 2)
         _record_sql_audit(username, clean_q, "success", None, len(formatted_rows), elapsed_ms, client_addr)
@@ -550,6 +953,7 @@ def execute_sql_query(query_str: str, max_rows: int = 100, username: str = "", c
             "execution_time_ms": elapsed_ms,
             "truncated": len(raw_rows) >= max_rows,
             "query": clean_q,
+            "plan": plan,
         }
     except Exception as exc:
         if conn:
@@ -2257,22 +2661,57 @@ def render_dashboard_html() -> str:
       gap: 8px;
       flex-wrap: wrap;
     }}
-    .sql-textarea {{
-      width: 100%;
-      background: #090e17;
+    .sql-editor-box {{
+      position: relative;
+      margin-bottom: 10px;
       border: 1px solid var(--card-border);
       border-radius: 4px;
-      color: #7dd3fc;
+      background: #090e17;
+    }}
+    .sql-editor-box:focus-within {{ border-color: var(--accent); }}
+    .sql-highlight,
+    .sql-textarea {{
+      margin: 0;
+      padding: 10px 12px 10px 12px;
+      border: 0;
+      width: 100%;
+      min-height: 168px;
+      box-sizing: border-box;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 0.84rem;
-      padding: 8px 10px;
-      line-height: 1.4;
-      resize: vertical;
-      min-height: 85px;
-      outline: none;
-      margin-bottom: 10px;
+      line-height: 1.45;
+      tab-size: 2;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }}
-    .sql-textarea:focus {{ border-color: var(--accent); }}
+    .sql-highlight {{
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      color: #e2e8f0;
+      padding-right: 28px;
+    }}
+    .sql-textarea {{
+      position: relative;
+      display: block;
+      resize: vertical;
+      background: transparent;
+      color: transparent;
+      caret-color: #f8fafc;
+      outline: none;
+      overflow: auto;
+      scrollbar-gutter: stable;
+    }}
+    .sql-textarea::placeholder {{ color: #64748b; }}
+    .sql-kw {{ color: #7dd3fc; font-weight: 650; }}
+    .sql-fn {{ color: #c4b5fd; }}
+    .sql-str {{ color: #86efac; }}
+    .sql-num {{ color: #fdba74; }}
+    .sql-cmt {{ color: #64748b; font-style: italic; }}
+    .sql-op {{ color: #f9a8d4; }}
+    .sql-id {{ color: #e2e8f0; }}
     .sql-meta-bar {{
       display: flex;
       justify-content: space-between;
@@ -2376,6 +2815,97 @@ def render_dashboard_html() -> str:
     .sql-grid-table tr:hover td {{ background: #16243b; }}
     .sql-grid-table tr:hover td.row-num {{ background: #121c2e; }}
     .sql-null {{ color: #64748b; font-style: italic; }}
+    .sql-grid-table.sql-resizable {{
+      table-layout: fixed;
+      width: max-content;
+    }}
+    .sql-grid-table.sql-resizable th,
+    .sql-grid-table.sql-resizable td {{
+      max-width: none;
+      min-width: 0;
+      position: relative;
+    }}
+    .col-resize {{
+      position: absolute;
+      top: 0;
+      right: -3px;
+      width: 8px;
+      height: 100%;
+      cursor: col-resize;
+      z-index: 4;
+    }}
+    .col-resize:hover {{ background: rgba(96, 165, 250, 0.45); }}
+    .sql-cell-tip {{
+      position: fixed;
+      z-index: 80;
+      max-width: 440px;
+      max-height: 220px;
+      overflow: auto;
+      padding: 8px 10px;
+      background: #0b111e;
+      color: #e2e8f0;
+      border: 1px solid #334e77;
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.72rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      pointer-events: none;
+    }}
+    .plan-view-toggle {{ display: inline-flex; gap: 4px; }}
+    .plan-view-toggle .active {{
+      color: var(--text);
+      border-color: #60a5fa;
+      background: #152238;
+    }}
+    .plan-graph {{
+      padding: 12px 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }}
+    .plan-branch {{ display: flex; flex-direction: column; gap: 8px; }}
+    .plan-card {{
+      border: 1px solid #334e77;
+      background: #121c2e;
+      border-radius: 6px;
+      padding: 8px 10px;
+      max-width: 460px;
+    }}
+    .plan-card-type {{ font-weight: 700; color: #e2e8f0; }}
+    .plan-card-rel {{ color: #93c5fd; margin-left: 6px; }}
+    .plan-card-meta {{ color: #94a3b8; font-size: 0.72rem; margin-top: 3px; }}
+    .plan-card-detail {{
+      color: #cbd5e1;
+      font-size: 0.72rem;
+      margin-top: 4px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }}
+    .plan-children {{
+      margin-left: 18px;
+      padding-left: 12px;
+      border-left: 1px solid #334e77;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }}
+    #sql-plan-table tbody tr {{ cursor: pointer; }}
+    #sql-plan-table tr.plan-selected td {{ background: #1e3a5f !important; }}
+    .plan-card.plan-selected {{ border-color: #60a5fa; }}
+    .plan-explain {{
+      margin-top: 8px;
+      padding: 10px 12px;
+      border: 1px solid #334e77;
+      border-radius: 4px;
+      background: #111a29;
+      color: #e2e8f0;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }}
 
     /* Cell Value Inspector Modal */
     .cell-modal-box {{
@@ -3075,6 +3605,7 @@ def render_dashboard_html() -> str:
           </div>
           <div style="display:flex; align-items:center; gap:6px;">
             <input id="sql-save-name" class="ctrl-input" placeholder="Name to save" style="width:140px;">
+            <button class="btn btn-outline" onclick="formatSqlEditor()">Format</button>
             <button class="btn btn-outline" onclick="saveSqlQuery()">Save</button>
             <button class="btn btn-accent" onclick="runSqlQuery()">▶ Run Query (Ctrl+Enter)</button>
             <button class="btn btn-secondary" onclick="clearSqlQuery()">🧹 Clear</button>
@@ -3083,7 +3614,10 @@ def render_dashboard_html() -> str:
           </div>
         </div>
 
-        <textarea id="sql-query-input" class="sql-textarea" rows="4" spellcheck="false" placeholder="Enter SQL query here... e.g. SELECT * FROM audit_logs ORDER BY id DESC LIMIT 50;"></textarea>
+        <div class="sql-editor-box" id="sql-editor-box">
+          <pre class="sql-highlight" id="sql-highlight" aria-hidden="true"></pre>
+          <textarea id="sql-query-input" class="sql-textarea" spellcheck="false" placeholder="Enter SQL query here... e.g. SELECT * FROM audit_logs ORDER BY id DESC LIMIT 50;"></textarea>
+        </div>
 
         <div class="sql-meta-bar" id="sql-status-bar">
           <span id="sql-status-text">Ready &bull; Press Ctrl+Enter or click Run Query</span>
@@ -3095,11 +3629,35 @@ def render_dashboard_html() -> str:
           <div id="sql-grid-empty" style="padding: 30px; text-align: center; color: var(--muted);">
             No query results to display. Select a saved query above or run your own SQL.
           </div>
-          <table class="sql-grid-table" id="sql-grid-table" style="display: none;">
+          <table class="sql-grid-table sql-resizable" id="sql-grid-table" style="display: none;">
+            <colgroup id="sql-grid-cols"></colgroup>
             <thead id="sql-grid-thead"></thead>
             <tbody id="sql-grid-tbody"></tbody>
           </table>
         </div>
+
+        <div id="sql-plan-panel" style="display: none; margin-top: 12px;">
+          <div class="sql-meta-bar">
+            <span>Execution plan</span>
+            <span style="display:inline-flex; align-items:center; gap:10px;">
+              <span id="sql-plan-summary">--</span>
+              <span class="plan-view-toggle">
+                <button type="button" class="btn btn-outline btn-sm active" id="plan-view-grid" onclick="setPlanView('grid')">Grid</button>
+                <button type="button" class="btn btn-outline btn-sm" id="plan-view-graph" onclick="setPlanView('graph')">Graph</button>
+              </span>
+            </span>
+          </div>
+          <div class="sql-grid-wrapper" id="sql-plan-wrapper">
+            <table class="sql-grid-table sql-resizable" id="sql-plan-table">
+              <colgroup id="sql-plan-cols"></colgroup>
+              <thead id="sql-plan-thead"></thead>
+              <tbody id="sql-plan-tbody"></tbody>
+            </table>
+          </div>
+          <div class="sql-grid-wrapper" id="sql-plan-graph" style="display: none;"></div>
+          <div id="sql-plan-explain" class="plan-explain" hidden>Click a row in the plan. The note here describes that step.</div>
+        </div>
+        <div id="sql-cell-tip" class="sql-cell-tip" hidden></div>
       </div>
     </div>
 
@@ -3557,6 +4115,346 @@ def render_dashboard_html() -> str:
     }}
 
     // SSMS & pgAdmin Style SQL Editor & First-Principles Data Grid
+    const SQL_KEYWORDS = new Set(`
+    select from where group order having limit offset fetch union except intersect with recursive
+    as on join inner left right full cross natural and or not null is in like ilike between
+    case when then else end distinct all asc desc nulls last first filter over within using
+    by cast interval timestamp true false window lateral only
+    `.trim().split(/\\s+/));
+
+    const CLAUSES = new Set(['select','from','where','group','order','having','limit','offset','fetch','union','except','intersect','with','window']);
+
+    function tokenizeSql(sql) {{
+      const tokens = [];
+      let i = 0;
+      const n = sql.length;
+      while (i < n) {{
+        const c = sql[i];
+        if (/\\s/.test(c)) {{ i++; continue; }}
+        if (c === '-' && sql[i + 1] === '-') {{
+          let j = i + 2;
+          while (j < n && sql[j] !== '\\n' && sql[j] !== '\\r') j++;
+          tokens.push({{ type: 'comment', value: sql.slice(i, j) }});
+          i = j;
+          continue;
+        }}
+        if (c === '/' && sql[i + 1] === '*') {{
+          const end = sql.indexOf('*/', i + 2);
+          const j = end < 0 ? n : end + 2;
+          tokens.push({{ type: 'comment', value: sql.slice(i, j) }});
+          i = j;
+          continue;
+        }}
+        if (c === "'") {{
+          let j = i + 1;
+          while (j < n) {{
+            if (sql[j] === "'" && sql[j + 1] === "'") {{ j += 2; continue; }}
+            if (sql[j] === "'") {{ j++; break; }}
+            j++;
+          }}
+          tokens.push({{ type: 'string', value: sql.slice(i, j) }});
+          i = j;
+          continue;
+        }}
+        if (/[0-9]/.test(c)) {{
+          let j = i + 1;
+          while (j < n && /[0-9.]/.test(sql[j])) j++;
+          tokens.push({{ type: 'number', value: sql.slice(i, j) }});
+          i = j;
+          continue;
+        }}
+        if (/[A-Za-z_]/.test(c)) {{
+          let j = i + 1;
+          while (j < n && /[A-Za-z0-9_]/.test(sql[j])) j++;
+          tokens.push({{ type: 'word', value: sql.slice(i, j) }});
+          i = j;
+          continue;
+        }}
+        const ops = ['->>', '->', '::', '>=', '<=', '<>', '!=', '||'];
+        const op = ops.find(item => sql.startsWith(item, i));
+        if (op) {{
+          tokens.push({{ type: 'op', value: op }});
+          i += op.length;
+          continue;
+        }}
+        tokens.push({{ type: 'punct', value: c }});
+        i++;
+      }}
+      return tokens;
+    }}
+
+    function nextWord(tokens, i) {{
+      for (let j = i + 1; j < tokens.length; j++) {{
+        if (tokens[j].type === 'word') return tokens[j].value.toLowerCase();
+        if (tokens[j].type !== 'comment') return '';
+      }}
+      return '';
+    }}
+
+    function beautifySql(sql) {{
+      const tokens = tokenizeSql(sql || '');
+      if (!tokens.length) return '';
+      const lines = [];
+      let buf = '';
+      let paren = 0;
+      const stmt = [0];
+      let selectDepth = -1;
+      const caseIndents = [];
+      let lineIndent = 0;
+
+      function atStmt() {{ return paren === stmt[stmt.length - 1]; }}
+
+      function flush() {{
+        const text = buf.replace(/[ \\t]+$/g, '').replace(/^[ \\t]+/g, '');
+        if (text) lines.push('  '.repeat(Math.max(0, lineIndent)) + text);
+        buf = '';
+      }}
+      function startLine(indent, token) {{
+        flush();
+        lineIndent = indent;
+        buf = token ? token.value : '';
+      }}
+
+      function tightBefore(token) {{
+        if (!buf) return true;
+        const prev = buf[buf.length - 1];
+        if ('(.'.includes(prev)) return true;
+        if (token.value === '(') {{
+          const named = buf.match(/([A-Za-z_]+)$/);
+          if (named && ['filter', 'over', 'within', 'group'].includes(named[1].toLowerCase())) return false;
+          return true;
+        }}
+        if (token.value === '.' || token.value === ',' || token.value === ')' || token.value === ';') return true;
+        if (token.type === 'op' && (token.value === '->>' || token.value === '->' || token.value === '::')) return true;
+        if (buf.endsWith('->>') || buf.endsWith('->') || buf.endsWith('::')) return true;
+        return false;
+      }}
+
+      function add(token) {{
+        if (buf && !tightBefore(token)) buf += ' ';
+        buf += token.value;
+      }}
+
+      for (let i = 0; i < tokens.length; i++) {{
+        const t = tokens[i];
+        const word = t.type === 'word' ? t.value.toLowerCase() : '';
+        const upcoming = nextWord(tokens, i);
+
+        if (t.type === 'comment') {{
+          flush();
+          lines.push('  '.repeat(lineIndent) + t.value);
+          continue;
+        }}
+
+        if (t.value === '(') {{
+          add(t);
+          paren++;
+          if (upcoming === 'select' || upcoming === 'with') stmt.push(paren);
+          continue;
+        }}
+        if (t.value === ')') {{
+          if (stmt[stmt.length - 1] === paren) stmt.pop();
+          if (selectDepth === paren) selectDepth = -1;
+          paren = Math.max(0, paren - 1);
+          if (!buf.trim()) {{
+            lineIndent = paren;
+            buf = ')';
+            flush();
+          }} else {{
+            add(t);
+          }}
+          continue;
+        }}
+
+        const joinHead = /^(inner|left|right|full|cross|natural)$/i.test(buf.trim());
+        if (word === 'join' && joinHead) {{
+          add(t);
+          continue;
+        }}
+        const startsJoin = atStmt() && (word === 'join' || ((word === 'inner' || word === 'left' || word === 'right' || word === 'full' || word === 'cross' || word === 'natural') && upcoming === 'join'));
+        const startsClause = atStmt() && CLAUSES.has(word) && word !== 'by';
+        if (startsJoin || startsClause) {{
+          if (word === 'select') {{
+            flush();
+            lineIndent = paren;
+            buf = t.value;
+            flush();
+            selectDepth = paren;
+            lineIndent = paren + 1;
+          }} else {{
+            if (selectDepth === paren) selectDepth = -1;
+            startLine(paren, t);
+          }}
+          continue;
+        }}
+        if ((word === 'and' || word === 'or') && atStmt()) {{
+          startLine(paren + 1, t);
+          continue;
+        }}
+        if (word === 'case') {{
+          const inSelect = selectDepth === paren;
+          if (buf.trim()) flush();
+          const base = paren + (inSelect ? 1 : 0);
+          caseIndents.push(base);
+          lineIndent = base;
+          buf = t.value;
+          continue;
+        }}
+        if (word === 'when' || word === 'else') {{
+          const base = caseIndents.length ? caseIndents[caseIndents.length - 1] : paren;
+          if (buf.trim().toLowerCase() === 'case') flush();
+          else flush();
+          lineIndent = base + 1;
+          buf = t.value;
+          continue;
+        }}
+        if (word === 'end' && caseIndents.length) {{
+          const base = caseIndents.pop();
+          flush();
+          lineIndent = base;
+          buf = t.value;
+          continue;
+        }}
+        if (t.value === ',' && selectDepth === paren) {{
+          buf += ',';
+          flush();
+          lineIndent = paren + 1;
+          continue;
+        }}
+        add(t);
+      }}
+      flush();
+      return lines.join('\\n').replace(/\\n{{3,}}/g, '\\n\\n').trim();
+    }}
+
+    function highlightSql(sql) {{
+      let html = '';
+      let i = 0;
+      const text = sql || '';
+      const n = text.length;
+      function esc(s) {{
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }}
+      while (i < n) {{
+        const c = text[i];
+        if (c === '\\n' || c === ' ' || c === '\\t') {{
+          let j = i + 1;
+          while (j < n && (text[j] === ' ' || text[j] === '\\t')) j++;
+          html += esc(text.slice(i, j));
+          i = j;
+          continue;
+        }}
+        if (c === '-' && text[i + 1] === '-') {{
+          let j = i + 2;
+          while (j < n && text[j] !== '\\n') j++;
+          html += '<span class="sql-cmt">' + esc(text.slice(i, j)) + '</span>';
+          i = j;
+          continue;
+        }}
+        if (c === '/' && text[i + 1] === '*') {{
+          const end = text.indexOf('*/', i + 2);
+          const j = end < 0 ? n : end + 2;
+          html += '<span class="sql-cmt">' + esc(text.slice(i, j)) + '</span>';
+          i = j;
+          continue;
+        }}
+        if (c === "'") {{
+          let j = i + 1;
+          while (j < n) {{
+            if (text[j] === "'" && text[j + 1] === "'") {{ j += 2; continue; }}
+            if (text[j] === "'") {{ j++; break; }}
+            j++;
+          }}
+          html += '<span class="sql-str">' + esc(text.slice(i, j)) + '</span>';
+          i = j;
+          continue;
+        }}
+        if (/[0-9]/.test(c)) {{
+          let j = i + 1;
+          while (j < n && /[0-9.]/.test(text[j])) j++;
+          html += '<span class="sql-num">' + esc(text.slice(i, j)) + '</span>';
+          i = j;
+          continue;
+        }}
+        if (/[A-Za-z_]/.test(c)) {{
+          let j = i + 1;
+          while (j < n && /[A-Za-z0-9_]/.test(text[j])) j++;
+          const word = text.slice(i, j);
+          let k = j;
+          while (k < n && (text[k] === ' ' || text[k] === '\\t')) k++;
+          const isFn = text[k] === '(' && !SQL_KEYWORDS.has(word.toLowerCase());
+          const cls = SQL_KEYWORDS.has(word.toLowerCase()) ? 'sql-kw' : (isFn ? 'sql-fn' : 'sql-id');
+          html += '<span class="' + cls + '">' + esc(word) + '</span>';
+          i = j;
+          continue;
+        }}
+        const ops = ['->>', '->', '::', '>=', '<=', '<>', '!=', '||'];
+        const op = ops.find(item => text.startsWith(item, i));
+        if (op) {{
+          html += '<span class="sql-op">' + esc(op) + '</span>';
+          i += op.length;
+          continue;
+        }}
+        html += esc(c);
+        i++;
+      }}
+      return html;
+    }}
+
+    function setSqlEditorText(sql, format) {{
+      const el = document.getElementById('sql-query-input');
+      if (!el) return;
+      el.value = format ? beautifySql(sql || '') : (sql || '');
+      paintSqlEditor();
+      fitSqlEditor();
+    }}
+
+    function paintSqlEditor() {{
+      const el = document.getElementById('sql-query-input');
+      const pre = document.getElementById('sql-highlight');
+      if (!el || !pre) return;
+      pre.innerHTML = highlightSql(el.value);
+    }}
+
+    function fitSqlEditor() {{
+      const el = document.getElementById('sql-query-input');
+      if (!el) return;
+      el.style.height = 'auto';
+      const next = Math.min(380, Math.max(168, el.scrollHeight + 2));
+      el.style.height = next + 'px';
+      syncSqlScroll();
+    }}
+
+    function syncSqlScroll() {{
+      const el = document.getElementById('sql-query-input');
+      const pre = document.getElementById('sql-highlight');
+      if (!el || !pre) return;
+      pre.scrollTop = el.scrollTop;
+      pre.scrollLeft = el.scrollLeft;
+    }}
+
+    function formatSqlEditor() {{
+      const el = document.getElementById('sql-query-input');
+      if (!el) return;
+      const start = el.selectionStart;
+      setSqlEditorText(el.value, true);
+      el.focus();
+      const pos = Math.min(start, el.value.length);
+      el.setSelectionRange(pos, pos);
+    }}
+
+    function initSqlEditor() {{
+      const el = document.getElementById('sql-query-input');
+      if (!el || el.dataset.ready) return;
+      el.dataset.ready = '1';
+      el.addEventListener('input', () => {{
+        paintSqlEditor();
+        fitSqlEditor();
+      }});
+      el.addEventListener('scroll', syncSqlScroll);
+      paintSqlEditor();
+      fitSqlEditor();
+    }}
     async function loadSavedQueriesList() {{
       try {{
         const res = await fetch('/api/sql/saved-queries');
@@ -3572,10 +4470,13 @@ def render_dashboard_html() -> str:
           window._savedQueriesMap[q.id] = q.sql;
         }}
         // Default populate if empty
+        initSqlEditor();
         const textarea = document.getElementById('sql-query-input');
         if (!textarea.value.trim() && list.length > 0) {{
-          textarea.value = list[0].sql;
+          setSqlEditorText(list[0].sql, true);
           sel.value = list[0].id;
+        }} else {{
+          paintSqlEditor();
         }}
       }} catch (err) {{
         console.error("Error loading saved queries:", err);
@@ -3584,15 +4485,16 @@ def render_dashboard_html() -> str:
 
     function onSelectSavedQuery(qid) {{
       if (window._savedQueriesMap && window._savedQueriesMap[qid]) {{
-        document.getElementById('sql-query-input').value = window._savedQueriesMap[qid];
+        setSqlEditorText(window._savedQueriesMap[qid], true);
       }}
     }}
 
     function clearSqlQuery() {{
-      document.getElementById('sql-query-input').value = '';
+      setSqlEditorText('', false);
       document.getElementById('sql-saved-select').value = '';
       document.getElementById('sql-grid-empty').style.display = 'block';
       document.getElementById('sql-grid-table').style.display = 'none';
+      hideSqlPlan();
       document.getElementById('sql-status-text').innerText = 'Ready &bull; Cleared';
       document.getElementById('sql-timing-text').innerText = '-- ms';
     }}
@@ -3646,12 +4548,14 @@ def render_dashboard_html() -> str:
           statusText.innerHTML = `✅ Query Succeeded &bull; ${{data.row_count}} row(s) returned`;
           timingText.innerText = `${{data.execution_time_ms}} ms`;
           renderSqlGrid(data);
+          renderSqlPlan(data.plan);
         }} else {{
           statusText.innerHTML = `❌ Error: <span style="color:#ef4444;">${{data.error}}</span>`;
           timingText.innerText = `${{data.execution_time_ms || 0}} ms`;
           document.getElementById('sql-grid-empty').innerHTML = `<div style="color:#ef4444; font-family:monospace; padding:20px;">SQL Error: ${{data.error}}</div>`;
           document.getElementById('sql-grid-empty').style.display = 'block';
           document.getElementById('sql-grid-table').style.display = 'none';
+          hideSqlPlan();
         }}
       }} catch (err) {{
         statusText.innerHTML = `❌ Network Error: ${{err}}`;
@@ -3700,6 +4604,124 @@ def render_dashboard_html() -> str:
         trHtml += '</tr>';
       }}
       tbody.innerHTML = trHtml;
+    }}
+
+    function hideSqlPlan() {{
+      const panel = document.getElementById('sql-plan-panel');
+      if (panel) panel.style.display = 'none';
+      const explain = document.getElementById('sql-plan-explain');
+      if (explain) explain.hidden = true;
+    }}
+
+    function sqlEscape(value) {{
+      return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }}
+
+    let latestSqlPlan = null;
+    let planViewMode = 'grid';
+
+    function setPlanView(mode) {{
+      planViewMode = mode === 'graph' ? 'graph' : 'grid';
+      const grid = document.getElementById('sql-plan-wrapper');
+      const graph = document.getElementById('sql-plan-graph');
+      const gridBtn = document.getElementById('plan-view-grid');
+      const graphBtn = document.getElementById('plan-view-graph');
+      if (grid) grid.style.display = planViewMode === 'grid' ? 'block' : 'none';
+      if (graph) graph.style.display = planViewMode === 'graph' ? 'block' : 'none';
+      if (gridBtn) gridBtn.classList.toggle('active', planViewMode === 'grid');
+      if (graphBtn) graphBtn.classList.toggle('active', planViewMode === 'graph');
+      if (planViewMode === 'graph' && latestSqlPlan) renderPlanGraph(latestSqlPlan);
+    }}
+
+    function showPlanStep(index) {{
+      if (!latestSqlPlan || !latestSqlPlan.rows || !latestSqlPlan.rows[index]) return;
+      document.querySelectorAll('#sql-plan-table tbody tr').forEach((tr, i) => {{
+        tr.classList.toggle('plan-selected', i === index);
+      }});
+      document.querySelectorAll('#sql-plan-graph .plan-card').forEach(card => {{
+        card.classList.toggle('plan-selected', Number(card.dataset.index) === index);
+      }});
+      const explain = document.getElementById('sql-plan-explain');
+      if (!explain) return;
+      explain.hidden = false;
+      const text = (latestSqlPlan.explanations && latestSqlPlan.explanations[index]) || 'No explanation for this step.';
+      explain.textContent = text;
+    }}
+
+    function renderPlanGraph(plan) {{
+      const host = document.getElementById('sql-plan-graph');
+      if (!host) return;
+      const roots = [];
+      const stack = [];
+      (plan.rows || []).forEach((row, index) => {{
+        const label = String(row[0] || '');
+        const depth = Math.floor((label.match(/^ */) || [''])[0].length / 2);
+        const node = {{ index: index, label: label.trim(), relation: row[1], ms: row[6], rows: row[5], children: [] }};
+        while (stack.length > depth) stack.pop();
+        if (!stack.length) roots.push(node);
+        else stack[stack.length - 1].children.push(node);
+        stack[depth] = node;
+      }});
+      function draw(node) {{
+        const rel = node.relation ? `<span class="plan-card-rel">${{sqlEscape(node.relation)}}</span>` : '';
+        const meta = `${{sqlEscape(node.rows == null ? '' : node.rows + ' rows')}} · ${{sqlEscape(node.ms == null ? '' : node.ms + ' ms')}}`;
+        const kids = node.children.map(draw).join('');
+        return `<div class="plan-branch"><button type="button" class="plan-card" data-index="${{node.index}}" onclick="showPlanStep(${{node.index}})"><div class="plan-card-type">${{sqlEscape(node.label)}}${{rel}}</div><div class="plan-card-meta">${{meta}}</div></button>${{kids ? `<div class="plan-children">${{kids}}</div>` : ''}}</div>`;
+      }}
+      host.innerHTML = `<div class="plan-graph">${{roots.map(draw).join('')}}</div>`;
+    }}
+
+    function renderSqlPlan(plan) {{
+      const panel = document.getElementById('sql-plan-panel');
+      const summary = document.getElementById('sql-plan-summary');
+      const thead = document.getElementById('sql-plan-thead');
+      const tbody = document.getElementById('sql-plan-tbody');
+      const explain = document.getElementById('sql-plan-explain');
+      if (!panel) return;
+      if (!plan || !plan.rows || plan.rows.length === 0) {{
+        if (plan && plan.error) {{
+          panel.style.display = 'block';
+          summary.textContent = plan.error;
+          thead.innerHTML = '';
+          tbody.innerHTML = '';
+          if (explain) explain.hidden = true;
+        }} else {{
+          hideSqlPlan();
+        }}
+        return;
+      }}
+      latestSqlPlan = plan;
+      panel.style.display = 'block';
+      const bits = [];
+      if (plan.planning_time_ms != null) bits.push(plan.planning_time_ms + ' ms planning');
+      if (plan.execution_time_ms != null) bits.push(plan.execution_time_ms + ' ms execution');
+      summary.textContent = bits.join(' · ');
+      let thHtml = '<tr>';
+      (plan.columns || []).forEach(col => {{
+        thHtml += `<th>${{sqlEscape(col)}}</th>`;
+      }});
+      thHtml += '</tr>';
+      thead.innerHTML = thHtml;
+      let trHtml = '';
+      plan.rows.forEach((row, r) => {{
+        trHtml += `<tr onclick="showPlanStep(${{r}})">`;
+        row.forEach((cell, idx) => {{
+          if (cell === null || cell === undefined) {{
+            trHtml += '<td class="sql-null">&lt;NULL&gt;</td>';
+          }} else {{
+            const style = idx === 0 ? ' style="white-space:pre; font-family:ui-monospace,monospace;"' : '';
+            trHtml += `<td${{style}}>${{sqlEscape(cell)}}</td>`;
+          }}
+        }});
+        trHtml += '</tr>';
+      }});
+      tbody.innerHTML = trHtml;
+      if (explain) {{
+        explain.hidden = false;
+        explain.textContent = 'Click a row in the plan. The note here describes that step: what it reads, how the estimate compares with this run, and what a filter or sort is doing.';
+      }}
+      renderPlanGraph(plan);
+      setPlanView(planViewMode);
     }}
 
     let _sortDir = {{}};
@@ -4375,6 +5397,7 @@ def render_dashboard_html() -> str:
     }});
 
     function init() {{
+      initSqlEditor();
       fetchStats();
       fetchTrendsAndRefresh();
       setInterval(fetchStats, 3000);
@@ -4477,7 +5500,7 @@ def render_login_html() -> str:
 # ---------------------------------------------------------------------------
 # HTTP Server (Standard Library)
 # ---------------------------------------------------------------------------
-def start_dashboard_server(port: int) -> HTTPServer:
+def start_dashboard_server(port: int) -> ThreadingHTTPServer:
     class DashboardHandler(BaseHTTPRequestHandler):
         def _send_cors_headers(self):
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -4504,6 +5527,13 @@ def start_dashboard_server(port: int) -> HTTPServer:
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+
+        def _session_cookie(self, token: str, clear: bool = False) -> str:
+            host = self.headers.get("Host", "")
+            secure = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" or "trycloudflare.com" in host else ""
+            if clear:
+                return f"canary_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0{secure}"
+            return f"canary_session={token}; HttpOnly; SameSite=Lax; Path=/{secure}"
 
         def _send_login_page(self) -> None:
             self._send_bytes(200, render_login_html().encode("utf-8"), "text/html; charset=utf-8")
@@ -4715,7 +5745,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
                     token = issue_session(username)
                     payload = json.dumps({"status": "ok", "username": username}).encode("utf-8")
                     self._send_bytes(200, payload, "application/json", [
-                        ("Set-Cookie", f"canary_session={token}; HttpOnly; SameSite=Lax; Path=/"),
+                        ("Set-Cookie", self._session_cookie(token)),
                     ])
                 else:
                     self._send_bytes(401, b'{"error":"invalid username or password"}', "application/json")
@@ -4723,7 +5753,7 @@ def start_dashboard_server(port: int) -> HTTPServer:
             if path == "/api/logout":
                 drop_session(self._cookie_token())
                 self._send_bytes(200, b'{"status":"logged out"}', "application/json", [
-                    ("Set-Cookie", "canary_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"),
+                    ("Set-Cookie", self._session_cookie("", clear=True)),
                 ])
                 return
             user = self._require_user()
@@ -4877,7 +5907,16 @@ def start_dashboard_server(port: int) -> HTTPServer:
         def log_message(self, format, *args):
             pass
 
-    server = HTTPServer(("0.0.0.0", port), DashboardHandler)
+    class DashboardServer(ThreadingHTTPServer):
+        daemon_threads = True
+
+        def handle_error(self, request, client_address):
+            exc = sys.exception()
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError)):
+                return
+            super().handle_error(request, client_address)
+
+    server = DashboardServer(("0.0.0.0", port), DashboardHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     logger.info("Canary dashboard listening at http://0.0.0.0:%d/", port)

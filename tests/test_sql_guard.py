@@ -49,6 +49,20 @@ def test_join_allowed_tables():
     )
 
 
+def test_percentile_and_filter_aggregates():
+    _ok(
+        "SELECT endpoint, count(*) FILTER (WHERE status_code >= 400) AS errors, "
+        "round(percentile_disc(0.95) WITHIN GROUP (ORDER BY response_time_seconds)::numeric, 4) AS p95_sec "
+        "FROM audit_logs WHERE response_time_seconds IS NOT NULL GROUP BY endpoint;"
+    )
+    _ok(
+        "SELECT date_bin('5 minutes', created_at, timestamp '2000-01-01') AS bucket, count(*) "
+        "FROM audit_logs WHERE created_at >= now() - interval '6 hours' GROUP BY 1;"
+    )
+    _bad("EXPLAIN SELECT id FROM audit_logs")
+    _bad("EXPLAIN ANALYZE SELECT id FROM audit_logs")
+
+
 def test_editor_audit_preview():
     _ok(
         "SELECT id, created_at, username, status, row_count, "
