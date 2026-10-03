@@ -9,8 +9,11 @@ SQL query editor, and a compact, high-efficiency dashboard with collapsible cont
 
 from collections import deque
 from datetime import datetime
+import hashlib
+import hmac
 import html
 import re
+import secrets
 import http.client
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -43,6 +46,8 @@ from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, Re
 import redis
 import requests
 
+from sql_guard import SqlGuardError, guard_readonly_sql
+
 # ---------------------------------------------------------------------------
 # Configuration from environment variables
 # ---------------------------------------------------------------------------
@@ -66,6 +71,8 @@ POSTGRES_DB          = os.getenv("POSTGRES_DB",         "observability")
 POSTGRES_USER        = os.getenv("POSTGRES_USER",       "observability")
 POSTGRES_PASSWORD    = os.getenv("POSTGRES_PASSWORD",   "observability")
 DOCKER_SOCKET_PATH   = os.getenv("DOCKER_SOCKET_PATH",  "/var/run/docker.sock")
+CANARY_DEMO_USER     = os.getenv("CANARY_DEMO_USER",     "demouser")
+CANARY_DEMO_PASSWORD = os.getenv("CANARY_DEMO_PASSWORD", "demo")
 TEMPO_URL            = os.getenv("TEMPO_URL",           "http://tempo:3200")
 LOKI_URL             = os.getenv("LOKI_URL",            "http://loki:3100")
 PROMETHEUS_URL       = os.getenv("PROMETHEUS_URL",      "http://prometheus:9090")
@@ -338,99 +345,226 @@ SAVED_QUERIES = [
         "sql": "SELECT date_trunc('hour', created_at) AS hour_window, count(*) AS total_records FROM audit_logs GROUP BY 1 ORDER BY hour_window DESC LIMIT 24;"
     },
     {
-        "id": "table_sizes",
-        "name": "💾 Postgres Table Sizes & Row Estimates",
-        "description": "Inspects relational table sizes, live tuples, and vacuum stats from pg_stat_user_tables.",
-        "sql": "SELECT relname AS table_name, n_live_tup AS estimated_rows, pg_size_pretty(pg_total_relation_size(relid)) AS total_size, last_vacuum, last_autovacuum FROM pg_stat_user_tables ORDER BY n_live_tup DESC;"
+        "id": "recent_editor_queries",
+        "name": "📝 Recent SQL Editor Runs",
+        "description": "Statements submitted from the SQL editor, including ones the guard rejected.",
+        "sql": "SELECT id, created_at, username, status, row_count, execution_time_ms, left(query_text, 120) AS query_preview FROM sql_query_audit ORDER BY id DESC LIMIT 50;"
     },
     {
-        "id": "db_connections",
-        "name": "🔌 Active Database Connections",
-        "description": "Lists current client connections and queries from pg_stat_activity.",
-        "sql": "SELECT pid, datname, usename, client_addr, state, query_start, wait_event_type, wait_event, left(query, 60) AS query_preview FROM pg_stat_activity WHERE datname = 'observability' LIMIT 20;"
-    },
-    {
-        "id": "schema_tables",
-        "name": "🗄️ Information Schema Table Catalog",
-        "description": "Queries database catalog tables and types in the observability schema.",
-        "sql": "SELECT table_schema, table_name, table_type FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema') ORDER BY table_schema, table_name;"
+        "id": "saved_query_catalog",
+        "name": "🗂️ Saved Queries",
+        "description": "Queries stored for reuse in the SQL editor.",
+        "sql": "SELECT id, name, description, created_by, updated_at FROM sql_saved_queries ORDER BY name;"
     }
 ]
 
-def execute_sql_query(query_str: str, max_rows: int = 100) -> dict:
-    """Executes SQL query against PostgreSQL with safety timeout and formatting."""
+def _pg_connect(read_only: bool = False):
+    options = "-c statement_timeout=5000"
+    if read_only:
+        options += " -c default_transaction_read_only=on"
+    return psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        dbname=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+        connect_timeout=4,
+        options=options,
+    )
+
+
+def ensure_sql_editor_schema() -> None:
+    """Create the editor's saved-query and audit tables, then seed the curated reads."""
+    if not psycopg2:
+        return
+    conn = _pg_connect()
+    conn.autocommit = True
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sql_saved_queries (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                sql TEXT NOT NULL,
+                created_by TEXT NOT NULL DEFAULT 'demouser',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sql_query_audit (
+                id BIGSERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                username TEXT NOT NULL,
+                query_text TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error_message TEXT,
+                row_count INTEGER,
+                execution_time_ms DOUBLE PRECISION,
+                client_addr TEXT
+            )
+            """
+        )
+        for query in SAVED_QUERIES:
+            guard_readonly_sql(query["sql"])
+            cur.execute(
+                """
+                INSERT INTO sql_saved_queries (id, name, description, sql, created_by)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    description = EXCLUDED.description,
+                    sql = EXCLUDED.sql,
+                    updated_at = now()
+                """,
+                (query["id"], query["name"], query["description"], query["sql"], CANARY_DEMO_USER),
+            )
+    finally:
+        conn.close()
+
+
+def list_saved_queries() -> list[dict]:
+    ensure_sql_editor_schema()
+    conn = _pg_connect(read_only=True)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, description, sql, created_by FROM sql_saved_queries ORDER BY name"
+        )
+        return [
+            {"id": row[0], "name": row[1], "description": row[2], "sql": row[3], "created_by": row[4]}
+            for row in cur.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def save_saved_query(name: str, sql: str, description: str, username: str) -> dict:
+    guard_readonly_sql(sql)
+    ensure_sql_editor_schema()
+    query_id = "user-" + secrets.token_hex(4)
+    conn = _pg_connect()
+    conn.autocommit = True
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO sql_saved_queries (id, name, description, sql, created_by)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (query_id, name[:80], (description or "")[:240], sql[:4000], username or CANARY_DEMO_USER),
+        )
+    finally:
+        conn.close()
+    return {"id": query_id, "name": name[:80], "description": description or "", "sql": sql[:4000]}
+
+
+def _record_sql_audit(username, query_text, status, error_message, row_count, elapsed_ms, client_addr) -> None:
+    if not psycopg2:
+        return
+    try:
+        conn = _pg_connect()
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO sql_query_audit
+                (username, query_text, status, error_message, row_count, execution_time_ms, client_addr)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                username or CANARY_DEMO_USER,
+                (query_text or "")[:4000],
+                status,
+                (error_message or None),
+                row_count,
+                elapsed_ms,
+                client_addr or None,
+            ),
+        )
+        conn.close()
+    except Exception as exc:
+        logger.warning("Could not write SQL editor audit row: %s", exc)
+
+
+def execute_sql_query(query_str: str, max_rows: int = 100, username: str = "", client_addr: str = "") -> dict:
+    """Run one read-only SELECT against the application tables and audit the attempt."""
     if not psycopg2:
         return {
             "status": "error",
             "error": "psycopg2 driver not installed in canary runtime",
-            "query": query_str
+            "query": query_str,
         }
 
-    clean_q = query_str.strip()
-    if not clean_q:
-        return {"status": "error", "error": "Query cannot be empty", "query": query_str}
-
+    clean_q = (query_str or "").strip()
+    max_rows = min(max(int(max_rows or 100), 1), 200)
     t0 = time.time()
-    conn = None
     try:
-        conn = psycopg2.connect(
-            host=POSTGRES_HOST,
-            port=POSTGRES_PORT,
-            dbname=POSTGRES_DB,
-            user=POSTGRES_USER,
-            password=POSTGRES_PASSWORD,
-            connect_timeout=4,
-            options="-c statement_timeout=5000"
-        )
-        conn.autocommit = True
-        cur = conn.cursor()
-        cur.execute(clean_q)
-
-        if cur.description:
-            columns = [desc[0] for desc in cur.description]
-            raw_rows = cur.fetchmany(max_rows)
-            formatted_rows = []
-            for row in raw_rows:
-                formatted_row = []
-                for val in row:
-                    if val is None:
-                        formatted_row.append(None)
-                    elif isinstance(val, (dict, list)):
-                        formatted_row.append(json.dumps(val))
-                    elif hasattr(val, "isoformat"):
-                        formatted_row.append(val.isoformat())
-                    else:
-                        formatted_row.append(str(val))
-                formatted_rows.append(formatted_row)
-
-            elapsed_ms = round((time.time() - t0) * 1000, 2)
-            return {
-                "status": "success",
-                "columns": columns,
-                "rows": formatted_rows,
-                "row_count": len(formatted_rows),
-                "execution_time_ms": elapsed_ms,
-                "truncated": len(raw_rows) >= max_rows,
-                "query": clean_q
-            }
-        else:
-            elapsed_ms = round((time.time() - t0) * 1000, 2)
-            rowcount = cur.rowcount
-            return {
-                "status": "success",
-                "columns": ["status", "rows_affected"],
-                "rows": [["Command Executed Successfully", str(rowcount)]],
-                "row_count": 1,
-                "execution_time_ms": elapsed_ms,
-                "query": clean_q
-            }
-    except Exception as exc:
+        guard_readonly_sql(clean_q)
+    except SqlGuardError as exc:
         elapsed_ms = round((time.time() - t0) * 1000, 2)
+        _record_sql_audit(username, clean_q, "denied", str(exc), None, elapsed_ms, client_addr)
         return {
             "status": "error",
             "error": str(exc),
             "execution_time_ms": elapsed_ms,
-            "query": clean_q
+            "query": clean_q,
+        }
+
+    conn = None
+    try:
+        conn = _pg_connect(read_only=True)
+        conn.autocommit = False
+        cur = conn.cursor()
+        cur.execute("BEGIN READ ONLY")
+        cur.execute(clean_q)
+        if not cur.description:
+            raise SqlGuardError("Only read-only SELECT statements are allowed")
+        columns = [desc[0] for desc in cur.description]
+        raw_rows = cur.fetchmany(max_rows)
+        formatted_rows = []
+        for row in raw_rows:
+            formatted_row = []
+            for val in row:
+                if val is None:
+                    formatted_row.append(None)
+                elif isinstance(val, (dict, list)):
+                    formatted_row.append(json.dumps(val))
+                elif hasattr(val, "isoformat"):
+                    formatted_row.append(val.isoformat())
+                else:
+                    formatted_row.append(str(val))
+            formatted_rows.append(formatted_row)
+        conn.rollback()
+        elapsed_ms = round((time.time() - t0) * 1000, 2)
+        _record_sql_audit(username, clean_q, "success", None, len(formatted_rows), elapsed_ms, client_addr)
+        return {
+            "status": "success",
+            "columns": columns,
+            "rows": formatted_rows,
+            "row_count": len(formatted_rows),
+            "execution_time_ms": elapsed_ms,
+            "truncated": len(raw_rows) >= max_rows,
+            "query": clean_q,
+        }
+    except Exception as exc:
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        elapsed_ms = round((time.time() - t0) * 1000, 2)
+        message = str(exc)
+        _record_sql_audit(username, clean_q, "error", message, None, elapsed_ms, client_addr)
+        return {
+            "status": "error",
+            "error": message,
+            "execution_time_ms": elapsed_ms,
+            "query": clean_q,
         }
     finally:
         if conn:
@@ -2483,6 +2617,7 @@ def render_dashboard_html() -> str:
         </div>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="openQrModal()" title="Mobile App & QR Code">📱 Connect / QR</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="fetchTrendsAndRefresh()" title="Refresh now">🔄</button>
+        <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="logoutCanary()" title="Sign out">Log out</button>
       </div>
     </header>
 
@@ -2926,7 +3061,7 @@ def render_dashboard_html() -> str:
           <span>💾 PostgreSQL SQL Query Editor & Data Grid</span>
         </div>
         <div>
-          <span class="badge badge-success">Target: postgres:5432 (observability)</span>
+          <span class="badge badge-success">Read-only · audit_logs, sql_saved_queries, sql_query_audit</span>
         </div>
       </div>
 
@@ -2939,6 +3074,8 @@ def render_dashboard_html() -> str:
             </select>
           </div>
           <div style="display:flex; align-items:center; gap:6px;">
+            <input id="sql-save-name" class="ctrl-input" placeholder="Name to save" style="width:140px;">
+            <button class="btn btn-outline" onclick="saveSqlQuery()">Save</button>
             <button class="btn btn-accent" onclick="runSqlQuery()">▶ Run Query (Ctrl+Enter)</button>
             <button class="btn btn-secondary" onclick="clearSqlQuery()">🧹 Clear</button>
             <button class="btn btn-outline" onclick="exportSqlResults('csv')">📥 Export CSV</button>
@@ -3458,6 +3595,32 @@ def render_dashboard_html() -> str:
       document.getElementById('sql-grid-table').style.display = 'none';
       document.getElementById('sql-status-text').innerText = 'Ready &bull; Cleared';
       document.getElementById('sql-timing-text').innerText = '-- ms';
+    }}
+
+    async function logoutCanary() {{
+      await fetch('/api/logout', {{ method: 'POST' }});
+      window.location.href = '/login';
+    }}
+
+    async function saveSqlQuery() {{
+      const name = document.getElementById('sql-save-name').value.trim();
+      const query = document.getElementById('sql-query-input').value.trim();
+      if (!name || !query) {{
+        showToast('Enter a name and a query to save', true);
+        return;
+      }}
+      const res = await fetch('/api/sql/saved-queries', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ name: name, sql: query }})
+      }});
+      const data = await res.json();
+      if (!res.ok) {{
+        showToast(data.error || 'Could not save query', true);
+        return;
+      }}
+      showToast('Saved query');
+      loadSavedQueriesList();
     }}
 
     async function runSqlQuery() {{
@@ -4226,6 +4389,92 @@ def render_dashboard_html() -> str:
     return html_page.replace("__SHOWCASE_FOOTER__", _showcase_footer_html())
 
 # ---------------------------------------------------------------------------
+# Demo login. One shared account until real authentication exists.
+# ---------------------------------------------------------------------------
+_sessions: dict[str, str] = {}
+_sessions_lock = threading.Lock()
+
+
+def _secret_eq(left: str, right: str) -> bool:
+    return hmac.compare_digest(
+        hashlib.sha256(left.encode("utf-8")).digest(),
+        hashlib.sha256(right.encode("utf-8")).digest(),
+    )
+
+
+def issue_session(username: str) -> str:
+    token = secrets.token_urlsafe(32)
+    with _sessions_lock:
+        if len(_sessions) > 200:
+            _sessions.clear()
+        _sessions[token] = username
+    return token
+
+
+def session_user(token: str) -> str | None:
+    if not token:
+        return None
+    with _sessions_lock:
+        return _sessions.get(token)
+
+
+def drop_session(token: str) -> None:
+    with _sessions_lock:
+        _sessions.pop(token, None)
+
+
+def render_login_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Canary login</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+           background: #090e17; color: #f1f5f9; font-family: system-ui, sans-serif; }
+    form { width: min(360px, calc(100% - 32px)); background: #151f30; border: 1px solid #24344d;
+           border-radius: 8px; padding: 22px; display: grid; gap: 10px; }
+    h1 { margin: 0; font-size: 1.15rem; }
+    p { margin: 0; color: #94a3b8; font-size: 0.85rem; }
+    input { background: #0b1220; color: #f1f5f9; border: 1px solid #334155; border-radius: 4px; padding: 8px; }
+    button { background: #38bdf8; color: #041226; border: 0; border-radius: 4px; padding: 8px; font-weight: 700; cursor: pointer; }
+    .err { color: #fca5a5; min-height: 1.1em; font-size: 0.82rem; }
+  </style>
+</head>
+<body>
+  <form id="login-form">
+    <h1>Canary dashboard</h1>
+    <p>Demo account: <strong>demouser</strong> / <strong>demo</strong>. This is a placeholder login, not real authentication.</p>
+    <input id="username" name="username" autocomplete="username" placeholder="Username" required>
+    <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Password" required>
+    <button type="submit">Sign in</button>
+    <div class="err" id="login-error"></div>
+  </form>
+  <script>
+    document.getElementById('login-form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: document.getElementById('username').value,
+          password: document.getElementById('password').value
+        })
+      });
+      if (res.ok) {
+        window.location.href = '/';
+        return;
+      }
+      document.getElementById('login-error').textContent = 'Invalid username or password';
+    });
+  </script>
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------------------------
 # HTTP Server (Standard Library)
 # ---------------------------------------------------------------------------
 def start_dashboard_server(port: int) -> HTTPServer:
@@ -4234,6 +4483,37 @@ def start_dashboard_server(port: int) -> HTTPServer:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+        def _cookie_token(self) -> str:
+            raw = self.headers.get("Cookie", "")
+            for part in raw.split(";"):
+                part = part.strip()
+                if part.startswith("canary_session="):
+                    return part.split("=", 1)[1]
+            return ""
+
+        def _user(self) -> str | None:
+            return session_user(self._cookie_token())
+
+        def _send_bytes(self, status: int, payload: bytes, content_type: str, extra_headers=None) -> None:
+            self.send_response(status)
+            self._send_cors_headers()
+            for key, value in extra_headers or []:
+                self.send_header(key, value)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def _send_login_page(self) -> None:
+            self._send_bytes(200, render_login_html().encode("utf-8"), "text/html; charset=utf-8")
+
+        def _require_user(self) -> str | None:
+            user = self._user()
+            if user:
+                return user
+            self._send_bytes(401, b'{"error":"login required"}', "application/json")
+            return None
 
         def do_OPTIONS(self):
             self.send_response(204)
@@ -4251,6 +4531,13 @@ def start_dashboard_server(port: int) -> HTTPServer:
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
+
+            if path in ("/login",) or (path in ("/", "/index.html") and not self._user()):
+                self._send_login_page()
+                return
+            if path != "/health" and not self._user():
+                self._send_bytes(401, b'{"error":"login required"}', "application/json")
+                return
 
             if path.startswith("/open/"):
                 status, headers, payload = proxy_open_request("GET", self.path, b"", self.headers)
@@ -4354,7 +4641,12 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 self.wfile.write(data)
 
             elif path == "/api/sql/saved-queries":
-                data = json.dumps(SAVED_QUERIES, indent=2).encode("utf-8")
+                try:
+                    data = json.dumps(list_saved_queries(), indent=2).encode("utf-8")
+                except Exception as exc:
+                    data = json.dumps({"error": str(exc)}).encode("utf-8")
+                    self._send_bytes(500, data, "application/json")
+                    return
                 self.send_response(200)
                 self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
@@ -4412,6 +4704,31 @@ def start_dashboard_server(port: int) -> HTTPServer:
             path = parsed.path
             content_length = int(self.headers.get("Content-Length", 0))
             raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+            if path == "/api/login":
+                try:
+                    creds = json.loads(raw_body.decode("utf-8") or "{}")
+                except Exception:
+                    creds = {}
+                username = str(creds.get("username") or "")
+                password = str(creds.get("password") or "")
+                if _secret_eq(username, CANARY_DEMO_USER) and _secret_eq(password, CANARY_DEMO_PASSWORD):
+                    token = issue_session(username)
+                    payload = json.dumps({"status": "ok", "username": username}).encode("utf-8")
+                    self._send_bytes(200, payload, "application/json", [
+                        ("Set-Cookie", f"canary_session={token}; HttpOnly; SameSite=Lax; Path=/"),
+                    ])
+                else:
+                    self._send_bytes(401, b'{"error":"invalid username or password"}', "application/json")
+                return
+            if path == "/api/logout":
+                drop_session(self._cookie_token())
+                self._send_bytes(200, b'{"status":"logged out"}', "application/json", [
+                    ("Set-Cookie", "canary_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"),
+                ])
+                return
+            user = self._require_user()
+            if not user:
+                return
             if path.startswith("/open/"):
                 status, headers, payload = proxy_open_request("POST", self.path, raw_body, self.headers)
                 self.send_response(status)
@@ -4519,10 +4836,30 @@ def start_dashboard_server(port: int) -> HTTPServer:
                 self.end_headers()
                 self.wfile.write(resp)
 
+            elif path == "/api/sql/saved-queries":
+                name = (body.get("name") or "").strip()
+                sql = body.get("sql") or body.get("query") or ""
+                if not name or not str(sql).strip():
+                    self._send_bytes(400, b'{"error":"name and sql are required"}', "application/json")
+                    return
+                try:
+                    saved = save_saved_query(name, str(sql), body.get("description") or "", user)
+                except SqlGuardError as exc:
+                    payload = json.dumps({"status": "error", "error": str(exc)}).encode("utf-8")
+                    self._send_bytes(400, payload, "application/json")
+                    return
+                except Exception as exc:
+                    payload = json.dumps({"status": "error", "error": str(exc)}).encode("utf-8")
+                    self._send_bytes(500, payload, "application/json")
+                    return
+                self._send_bytes(200, json.dumps({"status": "saved", "query": saved}).encode("utf-8"), "application/json")
+                return
+
             elif path == "/api/sql/query":
                 query_str = body.get("query", "")
                 limit = int(body.get("limit", 100))
-                res = execute_sql_query(query_str, max_rows=limit)
+                client_addr = self.client_address[0] if self.client_address else ""
+                res = execute_sql_query(query_str, max_rows=limit, username=user, client_addr=client_addr)
                 status_code = 200 if res.get("status") == "success" else 400
                 resp = json.dumps(res).encode("utf-8")
                 self.send_response(status_code)
@@ -4585,6 +4922,10 @@ def wait_for_apps(session: requests.Session) -> None:
             state.set_app_active(lang, True)
 
 def run() -> None:
+    try:
+        ensure_sql_editor_schema()
+    except Exception as exc:
+        logger.warning("SQL editor tables are not ready yet: %s", exc)
     start_dashboard_server(CANARY_PORT)
 
     session = requests.Session()

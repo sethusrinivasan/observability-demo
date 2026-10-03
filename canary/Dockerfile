@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY canary.py .
+COPY canary.py sql_guard.py ./
 
 EXPOSE 8085
 

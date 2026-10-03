@@ -166,9 +166,14 @@ sleep 5
 canary_status=$(docker inspect canary --format '{{.State.Status}}' 2>/dev/null || echo "not found")
 if [ "$canary_status" = "running" ]; then
     echo "  ✓ Canary"
-    curl -s -m 5 -X POST http://localhost:8085/api/markers \
+    canary_cookie="$(mktemp)"
+    curl -s -m 5 -c "$canary_cookie" -X POST http://localhost:8085/api/login \
+        -H 'Content-Type: application/json' \
+        -d '{"username":"demouser","password":"demo"}' >/dev/null || true
+    curl -s -m 5 -b "$canary_cookie" -X POST http://localhost:8085/api/markers \
         -H 'Content-Type: application/json' \
         -d '{"kind":"deploy","target":"stack","tag":"deploy"}' >/dev/null || true
+    rm -f "$canary_cookie"
 else
     echo "  ✗ Canary (status: $canary_status)"
 fi

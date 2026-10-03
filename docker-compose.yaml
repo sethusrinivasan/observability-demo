@@ -439,6 +439,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./canary/canary.py:/app/canary.py
+      - ./canary/sql_guard.py:/app/sql_guard.py
       - ./.showcase:/app/.showcase
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

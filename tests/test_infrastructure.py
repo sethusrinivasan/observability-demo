@@ -959,14 +959,34 @@ class TestValkeyAndRedisExporter:
 
 @requires_canary
 class TestCanaryDashboard:
-    def test_dashboard_html_returns_200(self):
+    @classmethod
+    def setup_class(cls):
+        cls.http = requests.Session()
+        resp = cls.http.post(
+            f"{CANARY_URL}/api/login",
+            json={"username": "demouser", "password": "demo"},
+            timeout=5,
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_anonymous_dashboard_is_the_login_page(self):
         resp = requests.get(f"{CANARY_URL}/", timeout=5)
+        assert resp.status_code == 200
+        assert "demouser" in resp.text
+        assert "Canary Load Generator" not in resp.text
+
+    def test_api_requires_login(self):
+        resp = requests.get(f"{CANARY_URL}/api/trends?range=5m", timeout=5)
+        assert resp.status_code == 401
+
+    def test_dashboard_html_returns_200(self):
+        resp = self.http.get(f"{CANARY_URL}/", timeout=5)
         assert resp.status_code == 200
         assert "Canary Load Generator" in resp.text
         assert 'http-equiv="refresh"' in resp.text
 
     def test_stats_json_endpoint(self):
-        resp = requests.get(f"{CANARY_URL}/stats", timeout=5)
+        resp = self.http.get(f"{CANARY_URL}/stats", timeout=5)
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] in ["Running", "Initializing"]
@@ -987,7 +1007,7 @@ class TestCanaryDashboard:
 
     def test_trends_endpoint(self):
         for r in ["5m", "30m", "1h", "6h", "1d", "30d"]:
-            resp = requests.get(f"{CANARY_URL}/api/trends?range={r}", timeout=5)
+            resp = self.http.get(f"{CANARY_URL}/api/trends?range={r}", timeout=5)
             assert resp.status_code == 200
             data = resp.json()
             assert "metrics" in data
@@ -998,7 +1018,7 @@ class TestCanaryDashboard:
 
     def test_fault_injection_lifecycle(self):
         # Start fault
-        resp = requests.post(f"{CANARY_URL}/api/fault/start", json={
+        resp = self.http.post(f"{CANARY_URL}/api/fault/start", json={
             "tag": "TEST-CI-DRILL",
             "fault_type": "error_spike",
             "target": "java",
@@ -1008,28 +1028,28 @@ class TestCanaryDashboard:
         assert resp.json()["status"] == "started"
 
         # Check active fault list
-        resp_f = requests.get(f"{CANARY_URL}/api/faults", timeout=5)
+        resp_f = self.http.get(f"{CANARY_URL}/api/faults", timeout=5)
         assert resp_f.status_code == 200
         assert resp_f.json()["active_fault"]["tag"] == "TEST-CI-DRILL"
 
         # Stop fault
-        resp_s = requests.post(f"{CANARY_URL}/api/fault/stop", timeout=5)
+        resp_s = self.http.post(f"{CANARY_URL}/api/fault/stop", timeout=5)
         assert resp_s.status_code == 200
         assert resp_s.json()["status"] == "stopped"
 
     def test_tps_override_lifecycle(self):
         # Apply TPS override
-        resp = requests.post(f"{CANARY_URL}/api/tps", json={"tps": 18, "duration_sec": 10}, timeout=5)
+        resp = self.http.post(f"{CANARY_URL}/api/tps", json={"tps": 18, "duration_sec": 10}, timeout=5)
         assert resp.status_code == 200
         assert resp.json()["effective_tps"] == 18.0
 
         # Reset TPS
-        resp_r = requests.post(f"{CANARY_URL}/api/tps/reset", timeout=5)
+        resp_r = self.http.post(f"{CANARY_URL}/api/tps/reset", timeout=5)
         assert resp_r.status_code == 200
         assert resp_r.json()["status"] == "reset"
 
     def test_crash_trigger_api(self):
-        resp = requests.post(f"{CANARY_URL}/api/crash", json={
+        resp = self.http.post(f"{CANARY_URL}/api/crash", json={
             "target": "python",
             "type": "thread",
             "tag": "TEST-CI-CRASH-THREAD"
@@ -1042,10 +1062,10 @@ class TestCanaryDashboard:
         assert len(data["results"]) >= 1
 
         # Stop fault drill
-        requests.post(f"{CANARY_URL}/api/fault/stop", timeout=5)
+        self.http.post(f"{CANARY_URL}/api/fault/stop", timeout=5)
 
     def test_containers_endpoint(self):
-        resp = requests.get(f"{CANARY_URL}/api/containers", timeout=5)
+        resp = self.http.get(f"{CANARY_URL}/api/containers", timeout=5)
         assert resp.status_code == 200
         data = resp.json()
         for lang in ["python", "java", "rust", "node", "go", "dotnet", "c"]:
@@ -1055,22 +1075,22 @@ class TestCanaryDashboard:
 
     def test_container_power_lifecycle(self):
         # Stop dotnet container
-        resp_stop = requests.post(f"{CANARY_URL}/api/containers/action", json={"language": "dotnet", "action": "stop"}, timeout=5)
+        resp_stop = self.http.post(f"{CANARY_URL}/api/containers/action", json={"language": "dotnet", "action": "stop"}, timeout=5)
         assert resp_stop.status_code == 200
         assert resp_stop.json()["status"] == "success"
 
         # Check containers endpoint reflects inactive workload
-        resp_c = requests.get(f"{CANARY_URL}/api/containers", timeout=5)
+        resp_c = self.http.get(f"{CANARY_URL}/api/containers", timeout=5)
         assert resp_c.status_code == 200
         assert resp_c.json()["dotnet"]["active_in_canary"] is False
 
         # Restart dotnet container
-        resp_start = requests.post(f"{CANARY_URL}/api/containers/action", json={"language": "dotnet", "action": "start"}, timeout=5)
+        resp_start = self.http.post(f"{CANARY_URL}/api/containers/action", json={"language": "dotnet", "action": "start"}, timeout=5)
         assert resp_start.status_code == 200
         assert resp_start.json()["status"] == "success"
 
     def test_dependencies_endpoint(self):
-        resp = requests.get(f"{CANARY_URL}/api/dependencies", timeout=5)
+        resp = self.http.get(f"{CANARY_URL}/api/dependencies", timeout=5)
         assert resp.status_code == 200
         data = resp.json()
         assert "total_dependencies" in data
@@ -1087,7 +1107,7 @@ class TestCanaryDashboard:
         assert by_id["postgres"]["browser"]["port"] == 9187
 
     def test_sql_saved_queries_endpoint(self):
-        resp = requests.get(f"{CANARY_URL}/api/sql/saved-queries", timeout=5)
+        resp = self.http.get(f"{CANARY_URL}/api/sql/saved-queries", timeout=5)
         assert resp.status_code == 200
         queries = resp.json()
         assert len(queries) >= 5
@@ -1097,7 +1117,7 @@ class TestCanaryDashboard:
 
     def test_sql_query_execution(self):
         query = "SELECT id, created_at, endpoint, status_code FROM audit_logs ORDER BY id DESC LIMIT 5;"
-        resp = requests.post(f"{CANARY_URL}/api/sql/query", json={"query": query}, timeout=5)
+        resp = self.http.post(f"{CANARY_URL}/api/sql/query", json={"query": query}, timeout=5)
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "success"
@@ -1106,8 +1126,41 @@ class TestCanaryDashboard:
         assert len(data["rows"]) > 0
         assert "execution_time_ms" in data
 
+    def test_sql_rejects_writes_and_catalog_reads(self):
+        for query in (
+            "DROP TABLE audit_logs",
+            "SELECT * FROM pg_stat_activity",
+            "SELECT id FROM audit_logs; DELETE FROM audit_logs",
+        ):
+            resp = self.http.post(f"{CANARY_URL}/api/sql/query", json={"query": query}, timeout=5)
+            assert resp.status_code == 400
+            assert resp.json()["status"] == "error"
+
+        audit = self.http.post(
+            f"{CANARY_URL}/api/sql/query",
+            json={"query": "SELECT status FROM sql_query_audit ORDER BY id DESC LIMIT 5;"},
+            timeout=5,
+        )
+        assert audit.status_code == 200
+        statuses = [row[0] for row in audit.json()["rows"]]
+        assert "denied" in statuses
+
+    def test_sql_save_query_persists(self):
+        resp = self.http.post(
+            f"{CANARY_URL}/api/sql/saved-queries",
+            json={
+                "name": "Latest audit ids",
+                "sql": "SELECT id FROM audit_logs ORDER BY id DESC LIMIT 3;",
+            },
+            timeout=5,
+        )
+        assert resp.status_code == 200
+        saved_id = resp.json()["query"]["id"]
+        listed = self.http.get(f"{CANARY_URL}/api/sql/saved-queries", timeout=5)
+        assert saved_id in [q["id"] for q in listed.json()]
+
     def test_qrcode_endpoint(self):
-        resp = requests.get(f"{CANARY_URL}/api/qrcode?url=http://192.168.1.100:8085", timeout=5)
+        resp = self.http.get(f"{CANARY_URL}/api/qrcode?url=http://192.168.1.100:8085", timeout=5)
         assert resp.status_code == 200
         assert "image/svg+xml" in resp.headers.get("Content-Type", "")
         assert b"<svg" in resp.content
