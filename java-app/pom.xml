@@ -15,7 +15,7 @@
   <description>Java equivalent of the observability python app</description>
   <properties>
     <java.version>17</java.version>
-    <opentelemetry.version>1.36.0</opentelemetry.version>
+    <opentelemetry.version>1.62.0</opentelemetry.version>
   </properties>
   <dependencies>
     <dependency>
