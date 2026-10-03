@@ -71,8 +71,24 @@ function evaluate(str) {
       x = parseExpression();
       if (!eat(")")) throw new Error("Missing ')'");
     } else if (isDigit(ch) || ch === ".") {
-      while (isDigit(ch) || ch === ".") nextChar();
-      x = parseFloat(str.substring(startPos, pos));
+      let dotSeen = false;
+      while (isDigit(ch) || ch === ".") {
+        if (ch === ".") {
+          if (dotSeen) {
+            throw new Error("Invalid number '" + str.substring(startPos, pos + 1) + "'");
+          }
+          dotSeen = true;
+        }
+        nextChar();
+      }
+      const literal = str.substring(startPos, pos);
+      if (literal === "." || literal === "") {
+        throw new Error("Invalid number '" + literal + "'");
+      }
+      x = Number(literal);
+      if (!Number.isFinite(x)) {
+        throw new Error("Invalid number '" + literal + "'");
+      }
     } else if (isAlpha(ch)) {
       while (isAlpha(ch)) nextChar();
       const func = str.substring(startPos, pos).toLowerCase();

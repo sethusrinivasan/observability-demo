@@ -7,6 +7,7 @@
 # Run with no arguments (or --help) to see this usage message.
 
 set -euo pipefail
+cd "$(dirname "$0")"
 
 # Check Docker permissions
 if ! docker ps >/dev/null 2>&1; then
@@ -58,25 +59,22 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# Step 1: Stop and remove existing containers so compose starts clean.
+# Step 1: Stop and remove this project's containers so compose starts clean.
 # ---------------------------------------------------------------------------
 echo "=== Clearing any existing containers ==="
-ids=$(docker ps -aq 2>/dev/null || true)
+ids=$(docker compose ps -aq 2>/dev/null || true)
 if [ -n "$ids" ]; then
     docker stop $ids >/dev/null 2>&1 || true
     docker rm -f $ids >/dev/null 2>&1 || true
 fi
 
-# Force-remove all containers by name (handles both compose and manually started)
+# Force-remove known project containers by name (compose and the showcase tunnel).
 for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app observability-c-app \
             canary otel-collector tempo redpanda mimir loki \
             grafana grafana-renderer postgres postgres-exporter prometheus valkey redis-exporter \
             cloudflared cloudflared-showcase; do
     docker rm -f "$name" 2>/dev/null || true
 done
-
-# Also remove any remaining containers by ID
-docker ps -aq | xargs -r docker rm -f 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Step 2: Compose teardown — removes containers, networks, optionally volumes
@@ -100,9 +98,6 @@ for name in observability-python-app observability-java-app observability-rust-a
     docker rm -f "$name" 2>/dev/null || true
 done
 
-# Remove stale anonymous volumes
-docker volume prune -f 2>/dev/null || true
-
 # Exit here if --teardown-only was requested
 if [ "$TEARDOWN_ONLY" = true ]; then
     echo ""
@@ -120,31 +115,6 @@ if [ "$ENABLE_TUNNEL" = true ] || [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
     docker compose --profile tunnel up -d --build
 else
     docker compose up -d --build
-fi
-
-# ---------------------------------------------------------------------------
-# Step 3b: Restore Docker iptables forwarding rules
-# Docker daemon restarts wipe iptables rules for existing bridges.
-# After a fresh compose up the bridge is new so rules are set correctly,
-# but if the daemon was restarted previously we may need to re-add them.
-# We detect the active bridge and ensure FORWARD rules exist.
-# ---------------------------------------------------------------------------
-sleep 5
-BRIDGE=$(docker network inspect observability-demo_observability-network \
-    --format '{{.Id}}' 2>/dev/null | cut -c1-12)
-BRIDGE_IF="br-${BRIDGE}"
-if ip link show "$BRIDGE_IF" >/dev/null 2>&1; then
-    # Check if the bridge already has a FORWARD rule
-    if ! sudo iptables -C FORWARD -i "$BRIDGE_IF" -o "$BRIDGE_IF" -j ACCEPT 2>/dev/null; then
-        echo "  Restoring iptables rules for $BRIDGE_IF..."
-        sudo iptables -I DOCKER-CT 1 -o "$BRIDGE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-        sudo iptables -I DOCKER-CT 2 -i "$BRIDGE_IF" ! -o "$BRIDGE_IF" -j ACCEPT 2>/dev/null || true
-        sudo iptables -I DOCKER-CT 3 -i "$BRIDGE_IF" -o "$BRIDGE_IF" -j ACCEPT 2>/dev/null || true
-        sudo iptables -I FORWARD 1 -i "$BRIDGE_IF" -o "$BRIDGE_IF" -j ACCEPT 2>/dev/null || true
-        echo "  iptables rules restored"
-    else
-        echo "  iptables rules already present"
-    fi
 fi
 
 # ---------------------------------------------------------------------------

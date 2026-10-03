@@ -354,6 +354,17 @@ app.MapGet("/selftest", () =>
         // Expected
     }
 
+    testsRun++;
+    try
+    {
+        Evaluator.Evaluate("1.2.3+4");
+        failures++; // Should have thrown
+    }
+    catch
+    {
+        // Expected
+    }
+
     var success = failures == 0;
     var code = success ? 200 : 500;
     return Results.Json(WithContext(new Dictionary<string, object?>

@@ -60,8 +60,12 @@ public class Lexer
                 {
                     Next();
                 }
-                else if (cur == '.' && !hasDot)
+                else if (cur == '.')
                 {
+                    if (hasDot)
+                    {
+                        throw new ArgumentException($"invalid number '{_input.Substring(start, _pos - start + 1)}'");
+                    }
                     hasDot = true;
                     Next();
                 }
@@ -120,7 +124,7 @@ public class Parser
         _pos = 0;
     }
 
-    private Token Peek() => _pos >= _tokens.Count ? new Token(TokenType.EOF, "", 0) : _tokens[_pos];
+    public Token Peek() => _pos >= _tokens.Count ? new Token(TokenType.EOF, "", 0) : _tokens[_pos];
     private Token Next() => _pos >= _tokens.Count ? new Token(TokenType.EOF, "", 0) : _tokens[_pos++];
 
     private bool Match(TokenType type)
@@ -286,6 +290,10 @@ public static class Evaluator
 
         var parser = new Parser(tokens);
         var result = parser.ParseExpr();
+        if (parser.Peek().Type != TokenType.EOF)
+        {
+            throw new ArgumentException($"unexpected trailing token: '{parser.Peek().Val}'");
+        }
         return result;
     }
 }

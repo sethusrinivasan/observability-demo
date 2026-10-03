@@ -293,6 +293,15 @@ app.get("/selftest", (req, res) => {
       threw = true;
     }
     if (!threw) failures++;
+
+    testsRun++;
+    threw = false;
+    try {
+      evaluate("1.2.3+4");
+    } catch {
+      threw = true;
+    }
+    if (!threw) failures++;
   } catch {
     failures++;
   }
