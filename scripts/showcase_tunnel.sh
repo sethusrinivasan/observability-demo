@@ -14,6 +14,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 NETWORK_NAME="observability-demo_observability-network"
 CONTAINER_NAME="cloudflared-showcase"
+SHOWCASE_URL_FILE="${ROOT_DIR}/.showcase/url"
+
+save_showcase_url() {
+    mkdir -p "${ROOT_DIR}/.showcase"
+    printf '%s\n' "$1" > "$SHOWCASE_URL_FILE"
+}
+
+clear_showcase_url() {
+    rm -f "$SHOWCASE_URL_FILE"
+}
 
 print_header() {
     echo "================================================================="
@@ -66,6 +76,7 @@ case "$MODE" in
         echo "Stopping showcase tunnel..."
         docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
         docker compose -f "${ROOT_DIR}/docker-compose.yaml" --profile tunnel stop cloudflared 2>/dev/null || true
+        clear_showcase_url
         echo "✓ Showcase tunnel stopped."
         exit 0
         ;;
@@ -77,6 +88,8 @@ case "$MODE" in
             Q_URL=$(docker logs "$CONTAINER_NAME" 2>&1 | grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' | head -n 1 || true)
             if [ -n "$Q_URL" ]; then
                 echo "  Public URL: $Q_URL"
+                save_showcase_url "$Q_URL"
+                echo "  Saved for the dashboard: $SHOWCASE_URL_FILE"
             else
                 echo "  (Public URL provisioning in progress... check logs: docker logs $CONTAINER_NAME)"
             fi
@@ -121,6 +134,7 @@ case "$MODE" in
 
         # Stop existing quick tunnel if running
         docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+        clear_showcase_url
 
         echo "Launching cloudflared container connected to ${NETWORK_NAME}..."
         docker run -d \
@@ -149,8 +163,11 @@ case "$MODE" in
             echo " 🎉 LIVE PUBLIC SHOWCASE URL READY!"
             echo "================================================================="
             echo ""
+            save_showcase_url "$TUNNEL_URL"
             echo "  Public HTTPS URL:  $TUNNEL_URL"
+            echo "  Saved to:          $SHOWCASE_URL_FILE"
             echo "  Target Service:    Canary Telemetry & Load Dashboard (port 8085)"
+            echo "  Other services:    ${TUNNEL_URL}/open/<service>/  (not ${TUNNEL_URL}:port)"
             echo ""
             echo "  Features:"
             echo "    ✓ End-to-end HTTPS with valid TLS certificate"

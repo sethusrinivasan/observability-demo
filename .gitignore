@@ -12,6 +12,9 @@ build/
 bin/
 obj/
 
+# TryCloudflare URL from ./scripts/showcase_tunnel.sh --quick (changes every run)
+.showcase/url
+
 # Runtime / temp files
 *.out
 *.log

@@ -166,6 +166,9 @@ sleep 5
 canary_status=$(docker inspect canary --format '{{.State.Status}}' 2>/dev/null || echo "not found")
 if [ "$canary_status" = "running" ]; then
     echo "  ✓ Canary"
+    curl -s -m 5 -X POST http://localhost:8085/api/markers \
+        -H 'Content-Type: application/json' \
+        -d '{"kind":"deploy","target":"stack","tag":"deploy"}' >/dev/null || true
 else
     echo "  ✗ Canary (status: $canary_status)"
 fi
@@ -191,6 +194,10 @@ echo "  Prometheus: http://localhost:9090"
 echo "  Tempo:      http://localhost:3200"
 echo "  Loki:       http://localhost:3100"
 echo "  Mimir:      http://localhost:9009"
+if [ -f .showcase/url ]; then
+    echo "  Showcase:   $(head -n 1 .showcase/url)"
+    echo "              Dependency links on that page use /open/<service>/, not :port"
+fi
 if [ "$ENABLE_TUNNEL" = true ] || [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
     echo "  Showcase:   Cloudflare Tunnel active (see ./scripts/showcase_tunnel.sh --status)"
 else

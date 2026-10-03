@@ -9,6 +9,7 @@ services:
     ports:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
+      - "55679:55679" # zpages (browser)
     depends_on:
       - tempo
       - mimir
@@ -39,6 +40,7 @@ services:
     restart: unless-stopped
     ports:
       - "9092:9092"   # Kafka API for Tempo
+      - "9644:9644"   # Admin API (browser)
     command: >
       redpanda start --overprovisioned
       --mode=dev-container
@@ -432,10 +434,12 @@ services:
       - CANARY_TPS=6
       - CANARY_PORT=8085
       - CANARY_HOST_IP=${CANARY_HOST_IP:-${HOST_IP:-}}
+      - SHOWCASE_URL_FILE=/app/.showcase/url
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./canary/canary.py:/app/canary.py
+      - ./.showcase:/app/.showcase
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - observability-python-app

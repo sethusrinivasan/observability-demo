@@ -8,7 +8,9 @@ SQL query editor, and a compact, high-efficiency dashboard with collapsible cont
 """
 
 from collections import deque
+from datetime import datetime
 import html
+import re
 import http.client
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -193,6 +195,32 @@ class DockerManager:
                 except Exception:
                     pass
 
+    def container_started_at(self, container_id: str) -> float | None:
+        """Unix time the container process last started, from the Docker API."""
+        if not container_id or container_id in ("unknown", "not_found"):
+            return None
+        code, data = self._request("GET", f"/containers/{container_id}/json")
+        if code != 200 or not isinstance(data, dict):
+            return None
+        raw = ((data.get("State") or {}).get("StartedAt") or "")
+        if not raw or raw.startswith("0001"):
+            return None
+        match = re.match(
+            r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})?",
+            raw,
+        )
+        if not match:
+            return None
+        frac = (match.group(2) or "0")[:6].ljust(6, "0")
+        tz = match.group(3) or "Z"
+        if tz == "Z":
+            tz = "+00:00"
+        try:
+            parsed = datetime.fromisoformat(f"{match.group(1)}.{frac}{tz}")
+            return parsed.timestamp()
+        except Exception:
+            return None
+
     def get_containers_status(self) -> dict:
         status_code, data = self._request("GET", "/containers/json?all=1")
         if status_code != 200 or not isinstance(data, list):
@@ -257,18 +285,24 @@ class DockerManager:
             state.set_app_active(lang.lower(), False)
             state.mark_unreachable(lang.lower())
             logger.info("Power Control: Stopped container %s (%s). Canary workload suspended.", container_name, cid)
+            if code < 400:
+                deploy_markers.record("stop", lang.lower(), f"stop {lang.lower()}")
             return {"status": "success", "action": "stop", "language": lang, "docker_code": code}
         elif action_clean == "start":
             code, data = self._request("POST", f"/containers/{cid}/start")
             state.set_app_active(lang.lower(), True)
             state.mark_unreachable(lang.lower())
             logger.info("Power Control: Started container %s (%s). Canary workload queued for warmup.", container_name, cid)
+            if code < 400:
+                deploy_markers.record("start", lang.lower(), f"start {lang.lower()}")
             return {"status": "success", "action": "start", "language": lang, "docker_code": code}
         elif action_clean == "restart":
             code, data = self._request("POST", f"/containers/{cid}/restart?t=3")
             state.set_app_active(lang.lower(), True)
             state.mark_unreachable(lang.lower())
             logger.info("Power Control: Restarted container %s (%s). Canary workload queued for warmup.", container_name, cid)
+            if code < 400:
+                deploy_markers.record("restart", lang.lower(), f"restart {lang.lower()}")
             return {"status": "success", "action": "restart", "language": lang, "docker_code": code}
         else:
             return {"status": "error", "message": f"Unsupported action: {action}"}
@@ -694,6 +728,28 @@ def check_dependencies() -> dict:
         "details": {"status": "ready" if rp_ok else "down"}
     })
 
+    # Host ports published by docker-compose. The dashboard builds the URL
+    # from the browser's hostname so the link works on localhost and on the LAN.
+    browser_links = {
+        "postgres": {"port": 9187, "path": "/metrics", "label": "Open metrics"},
+        "valkey": {"port": 9121, "path": "/metrics", "label": "Open metrics"},
+        "otel-collector": {"port": 55679, "path": "/debug/tracez", "label": "Open"},
+        "tempo": {"port": 3200, "path": "/status", "label": "Open"},
+        "loki": {"port": 3100, "path": "/services", "label": "Open"},
+        "mimir": {"port": 9009, "path": "/", "label": "Open"},
+        "prometheus": {"port": 9090, "path": "/query", "label": "Open"},
+        "grafana": {
+            "port": 3000,
+            "path": "/d/observability-demo-metrics/observability-demo",
+            "label": "Open",
+        },
+        "redpanda": {"port": 9644, "path": "/v1/cluster/health_overview", "label": "Open"},
+    }
+    for dep in deps:
+        link = browser_links.get(dep["id"])
+        if link:
+            dep["browser"] = link
+
     total_cnt = len(deps)
     healthy_cnt = sum(1 for d in deps if d["available"])
     avg_latency = round(sum(d["latency_ms"] for d in deps) / total_cnt, 1) if total_cnt > 0 else 0.0
@@ -836,6 +892,97 @@ class FaultManager:
             return sorted(events, key=lambda x: x["start_time"])
 
 fault_manager = FaultManager()
+
+# ---------------------------------------------------------------------------
+# Deploy and restart markers for the trend graphs
+# ---------------------------------------------------------------------------
+class DeployMarkers:
+    """Point-in-time tags for stack deploys and container restarts.
+
+    Stored in Valkey so the lines remain after the canary process restarts.
+    """
+
+    KEY = "canary:deploy_markers"
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._events: list[dict] = []
+        self._vk = None
+
+    def attach(self, client) -> None:
+        self._vk = client
+        if client is None:
+            return
+        try:
+            raw = client.lrange(self.KEY, 0, -1)
+        except Exception as exc:
+            logger.warning("Could not load deploy markers: %s", exc)
+            return
+        loaded = []
+        for item in raw or []:
+            try:
+                loaded.append(json.loads(item))
+            except Exception:
+                continue
+        with self._lock:
+            self._events = loaded[-400:]
+
+    def record(self, kind: str, target: str, tag: str, when: float | None = None) -> dict:
+        when = float(time.time() if when is None else when)
+        target = (target or "stack").lower()
+        kind = kind if kind in ("deploy", "restart", "start", "stop") else "restart"
+        event = {
+            "kind": kind,
+            "target": target,
+            "tag": tag or kind,
+            "time": round(when, 3),
+        }
+        with self._lock:
+            for existing in self._events:
+                if (
+                    existing.get("kind") == kind
+                    and existing.get("target") == target
+                    and abs(float(existing.get("time", 0)) - when) < 45
+                ):
+                    return existing
+            self._events.append(event)
+            self._events = self._events[-400:]
+        if self._vk is not None:
+            try:
+                self._vk.rpush(self.KEY, json.dumps(event))
+                self._vk.ltrim(self.KEY, -400, -1)
+            except Exception as exc:
+                logger.debug("Could not store deploy marker: %s", exc)
+        logger.info("Graph marker %s %s at %s", kind, target, event["tag"])
+        return event
+
+    def ingest_starts(self, starts: list[tuple[str, float]]) -> None:
+        """Record container start times. A tight burst becomes one deploy marker."""
+        if not starts:
+            return
+        ordered = sorted(starts, key=lambda item: item[1])
+        span = ordered[-1][1] - ordered[0][1]
+        if len(ordered) >= 3 and span <= 180:
+            self.record("deploy", "stack", "deploy", when=ordered[0][1])
+            return
+        for lang, started in ordered:
+            self.record("restart", lang, f"restart {lang}", when=started)
+
+    def for_range(self, start_time: float, end_time: float, service: str = "all") -> list[dict]:
+        with self._lock:
+            events = []
+            for event in self._events:
+                stamp = float(event.get("time", 0))
+                if stamp < start_time or stamp > end_time:
+                    continue
+                target = event.get("target", "stack")
+                if service not in ("all", "", None) and target not in (service, "stack"):
+                    continue
+                events.append(dict(event))
+            return sorted(events, key=lambda item: item["time"])
+
+
+deploy_markers = DeployMarkers()
 
 # ---------------------------------------------------------------------------
 # Thread-safe Canary State & Dynamic TPS Override
@@ -1007,8 +1154,11 @@ class CanaryState:
             for old_k in [k for k in self.ts_buckets if k < cutoff]:
                 del self.ts_buckets[old_k]
 
+            wall_ns = time.time_ns()
+            secs, nanos = divmod(wall_ns, 1_000_000_000)
+            clock = time.strftime("%H:%M:%S", time.localtime(secs))
             self.recent_requests.append({
-                "time": time.strftime("%H:%M:%S", time.localtime(now)),
+                "time": f"{clock}.{nanos:09d}",
                 "timestamp": now,
                 "lang": lang,
                 "method": method,
@@ -1183,12 +1333,16 @@ class CanaryState:
 state = CanaryState()
 
 def start_docker_sync_thread() -> None:
+    last_seen: dict[str, tuple] = {}
+
     def sync_loop():
         while True:
             try:
                 statuses = docker_manager.get_containers_status()
+                fresh_starts = []
                 for lang, info in statuses.items():
                     is_run = info.get("is_running", False)
+                    cid = info.get("id")
                     if not is_run:
                         if state.is_app_active(lang):
                             state.set_app_active(lang, False)
@@ -1196,6 +1350,13 @@ def start_docker_sync_thread() -> None:
                     else:
                         if not state.is_app_active(lang):
                             state.set_app_active(lang, True)
+                    signature = (cid, is_run)
+                    if is_run and cid not in ("unknown", "not_found", "", None) and last_seen.get(lang) != signature:
+                        started = docker_manager.container_started_at(cid)
+                        if started:
+                            fresh_starts.append((lang, started))
+                    last_seen[lang] = signature
+                deploy_markers.ingest_starts(fresh_starts)
             except Exception as e:
                 logger.debug("Docker sync background error: %s", e)
             time.sleep(2.0)
@@ -1305,6 +1466,7 @@ def query_trend_metrics(range_str: str = "5m", service: str = "all") -> dict:
                 results[k] = mem_data.get(k, [])
 
     fault_events = fault_manager.get_events_for_range(start, now)
+    markers = deploy_markers.for_range(start, now, service)
 
     return {
         "range": range_str,
@@ -1313,7 +1475,8 @@ def query_trend_metrics(range_str: str = "5m", service: str = "all") -> dict:
         "end_time": now,
         "step": step,
         "metrics": results,
-        "fault_events": fault_events
+        "fault_events": fault_events,
+        "deploy_markers": markers
     }
 
 # ---------------------------------------------------------------------------
@@ -1379,10 +1542,121 @@ def trigger_target_crash(target: str, crash_type: str = "process", tag: str = No
     }
 
 # ---------------------------------------------------------------------------
+# Public showcase URL and same-origin service proxy
+# A TryCloudflare quick tunnel publishes only the canary. Other ports on that
+# hostname do not reach Mimir, Grafana, and the rest, so those links stay on
+# this origin and are proxied to the service inside the compose network.
+# ---------------------------------------------------------------------------
+OPEN_UPSTREAMS = {
+    "postgres": "http://postgres-exporter:9187",
+    "valkey": "http://redis-exporter:9121",
+    "otel-collector": "http://otel-collector:55679",
+    "tempo": "http://tempo:3200",
+    "loki": "http://loki:3100",
+    "mimir": "http://mimir:9009",
+    "prometheus": "http://prometheus:9090",
+    "grafana": "http://grafana:3000",
+    "redpanda": "http://redpanda:9644",
+}
+_PROXY_DROP_HEADERS = {
+    "content-encoding", "content-length", "transfer-encoding", "connection",
+    "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
+    "upgrade",
+}
+
+
+def read_showcase_url() -> str:
+    path = os.getenv("SHOWCASE_URL_FILE", "/app/.showcase/url")
+    try:
+        line = open(path, encoding="utf-8").read().strip().splitlines()[0].strip()
+    except Exception:
+        return ""
+    parsed = urllib.parse.urlparse(line)
+    if parsed.scheme == "https" and parsed.netloc and " " not in line and '"' not in line:
+        return line.rstrip("/")
+    return ""
+
+
+def _showcase_footer_html() -> str:
+    url = read_showcase_url()
+    if not url:
+        return ""
+    safe = html.escape(url, quote=True)
+    return f'<a href="{safe}" target="_blank" rel="noopener noreferrer">Public showcase: {safe}</a> &bull; '
+
+
+def _prefix_absolute_urls(text: str, prefix: str) -> str:
+    for attr in ("href", "src", "action"):
+        text = text.replace(f'{attr}="/', f'{attr}="{prefix}/')
+        text = text.replace(f"{attr}='/", f"{attr}='{prefix}/")
+    return text.replace("url(/", f"url({prefix}/")
+
+
+def proxy_open_request(method: str, target: str, body: bytes, req_headers) -> tuple[int, list[tuple[str, str]], bytes]:
+    """Forward /open/<service>/... to that service. Returns status, headers, body."""
+    parsed = urllib.parse.urlparse(target)
+    pieces = [part for part in parsed.path.split("/") if part]
+    if len(pieces) < 2 or pieces[0] != "open" or pieces[1] not in OPEN_UPSTREAMS:
+        payload = b'{"error":"unknown service"}'
+        return 404, [("Content-Type", "application/json")], payload
+    service = pieces[1]
+    rest = "/" + "/".join(pieces[2:])
+    if parsed.path.endswith("/") and not rest.endswith("/"):
+        rest += "/"
+    if len(pieces) == 2 and not parsed.path.endswith("/"):
+        location = f"/open/{service}/"
+        if parsed.query:
+            location += "?" + parsed.query
+        return 302, [("Location", location)], b""
+    upstream = OPEN_UPSTREAMS[service] + rest
+    if parsed.query:
+        upstream += "?" + parsed.query
+    forwarded = {}
+    for key, value in req_headers.items():
+        if key.lower() in ("host", "content-length", "connection", "transfer-encoding"):
+            continue
+        forwarded[key] = value
+    try:
+        upstream_resp = requests.request(
+            method, upstream, data=body or None, headers=forwarded,
+            timeout=20, allow_redirects=False,
+        )
+    except Exception as exc:
+        payload = json.dumps({"error": f"upstream unavailable: {exc}"}).encode("utf-8")
+        return 502, [("Content-Type", "application/json")], payload
+
+    prefix = f"/open/{service}"
+    content_type = upstream_resp.headers.get("Content-Type", "")
+    raw = upstream_resp.content or b""
+    lowered = content_type.lower()
+    if any(kind in lowered for kind in ("text/html", "text/css", "javascript")) and len(raw) <= 8_000_000:
+        text = raw.decode(upstream_resp.encoding or "utf-8", errors="replace")
+        raw = _prefix_absolute_urls(text, prefix).encode("utf-8")
+        content_type = content_type.split(";")[0] + "; charset=utf-8"
+
+    headers = []
+    for key, value in upstream_resp.headers.items():
+        if key.lower() in _PROXY_DROP_HEADERS:
+            continue
+        if key.lower() == "location":
+            if value.startswith("/"):
+                value = prefix + value
+            else:
+                for base in (OPEN_UPSTREAMS[service],):
+                    if value.startswith(base):
+                        value = prefix + value[len(base):]
+                        break
+        if key.lower() == "content-type":
+            value = content_type or value
+        headers.append((key, value))
+    return upstream_resp.status_code, headers, raw
+
+
+# ---------------------------------------------------------------------------
 # Compact, High-Efficiency HTML Dashboard Rendering
 # ---------------------------------------------------------------------------
 def render_dashboard_html() -> str:
-    return f"""<!doctype html>
+    html_page = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -2054,7 +2328,15 @@ def render_dashboard_html() -> str:
     .dep-card-header {{ display: flex; justify-content: space-between; align-items: center; }}
     .dep-name {{ font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px; }}
     .dep-role {{ font-size: 0.72rem; color: var(--muted); }}
-    .dep-meta-row {{ display: flex; justify-content: space-between; font-size: 0.74rem; }}
+    .dep-meta-row {{ display: flex; justify-content: space-between; font-size: 0.74rem; gap: 8px; }}
+    a.dep-open {{
+      color: #7dd3fc;
+      font-weight: 700;
+      text-decoration: underline;
+      cursor: pointer;
+      word-break: break-all;
+    }}
+    a.dep-open:hover {{ color: #e0f2fe; }}
 
     /* QR Code Modal */
     .modal-overlay {{
@@ -2435,7 +2717,7 @@ def render_dashboard_html() -> str:
       <div class="section-bar">
         <div class="section-title">
           <span>📈 Metric Trend Graphs</span>
-          <span style="font-size:0.75rem; color:var(--muted); font-weight:normal;">(Availability, Errors, Latency, Throughput)</span>
+          <span style="font-size:0.75rem; color:var(--muted); font-weight:normal;">(Availability, Errors, Latency, Throughput) · dashed lines mark deploys and container restarts</span>
         </div>
         <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
           <div class="btn-group">
@@ -2579,7 +2861,7 @@ def render_dashboard_html() -> str:
         <table>
           <thead>
             <tr>
-              <th style="width: 80px;">Time</th>
+              <th style="white-space:nowrap;">Time</th>
               <th style="width: 75px;">App</th>
               <th style="width: 60px;">Method</th>
               <th>Endpoint Path</th>
@@ -2686,7 +2968,7 @@ def render_dashboard_html() -> str:
 
     <footer>
       <div>Canary Load Generator &bull; Polyglot Telemetry &bull; Color-Coded Fault Injection &bull; Dynamic TPS Override &bull; Container Power Control &bull; SQL Data Grid</div>
-      <div><a href="/stats" target="_blank">JSON Snapshot</a> &bull; <a href="/api/trends?range=5m" target="_blank">Trends API</a> &bull; <a href="/api/dependencies" target="_blank">Dependencies API</a></div>
+      <div>__SHOWCASE_FOOTER__<a href="/stats" target="_blank">JSON Snapshot</a> &bull; <a href="/api/trends?range=5m" target="_blank">Trends API</a> &bull; <a href="/api/dependencies" target="_blank">Dependencies API</a></div>
     </footer>
   </div>
 
@@ -2978,7 +3260,7 @@ def render_dashboard_html() -> str:
           tagBadge = `<span class="badge ${{bCls}}">🏷️ ${{r.fault_tag}}</span>`;
         }}
         recRows += `<tr>
-          <td>${{r.time}}</td>
+          <td style="font-family:monospace; white-space:nowrap;">${{r.time}}</td>
           <td><span class="badge badge-${{r.lang}}">${{r.lang.toUpperCase()}}</span></td>
           <td><code style="color:var(--accent);">${{r.method}}</code></td>
           <td><code>${{r.path}}</code></td>
@@ -3088,17 +3370,38 @@ def render_dashboard_html() -> str:
           const statusBadge = isUp ? '<span class="badge badge-success">HEALTHY / UP</span>' : '<span class="badge badge-error">UNAVAILABLE</span>';
           const latColor = (dep.latency_ms < 10) ? '#10b981' : ((dep.latency_ms < 50) ? '#38bdf8' : '#f59e0b');
 
+          let browserHref = '';
+          if (dep.browser && dep.browser.port) {{
+            const host = window.location.hostname || 'localhost';
+            const path = dep.browser.path || '/';
+            const localHost = !host || host === 'localhost' || host === '127.0.0.1' || host === '::1'
+              || /^10\\./.test(host) || /^192\\.168\\./.test(host)
+              || /^172\\.(1[6-9]|2\\d|3[0-1])\\./.test(host);
+            if (localHost) {{
+              browserHref = `http://${{host}}:${{dep.browser.port}}${{path}}`;
+            }} else {{
+              const suffix = path.startsWith('/') ? path : `/${{path}}`;
+              browserHref = `${{window.location.origin}}/open/${{dep.id}}${{suffix}}`;
+            }}
+          }}
+          const nameHtml = browserHref
+            ? `<a class="dep-open" href="${{browserHref}}" target="_blank" rel="noopener noreferrer">${{dep.name}}</a>`
+            : dep.name;
+          const endpointHtml = browserHref
+            ? `<a class="dep-open" href="${{browserHref}}" target="_blank" rel="noopener noreferrer">${{browserHref}}</a>`
+            : `<code>${{dep.endpoint}}</code>`;
+
           cardsHtml += `<div class="dep-card" style="border-left: 3px solid ${{isUp ? '#10b981' : '#ef4444'}};">
             <div class="dep-card-header">
               <div>
-                <div class="dep-name">${{dep.name}}</div>
+                <div class="dep-name">${{nameHtml}}</div>
                 <div class="dep-role">${{dep.role}}</div>
               </div>
               <div>${{statusBadge}}</div>
             </div>
             <div class="dep-meta-row">
-              <span style="color:var(--muted);">Endpoint / Protocol:</span>
-              <code>${{dep.endpoint}}</code>
+              <span style="color:var(--muted);">Open in browser:</span>
+              ${{endpointHtml}}
             </div>
             <div class="dep-meta-row">
               <span style="color:var(--muted);">Observed Latency:</span>
@@ -3743,6 +4046,30 @@ def render_dashboard_html() -> str:
       }}
       ctx.stroke();
 
+      // Deploy and restart markers
+      const markers = options.markers || [];
+      for (const marker of markers) {{
+        if (marker.time < tMin || marker.time > tMax) continue;
+        const x = getX(marker.time);
+        const isDeploy = marker.kind === 'deploy';
+        const tgt = (marker.target || 'stack').toLowerCase();
+        const col = isDeploy ? '#fbbf24' : ((LANG_COLORS[tgt] || LANG_COLORS['all']).stroke);
+        ctx.save();
+        ctx.strokeStyle = col;
+        ctx.fillStyle = col;
+        ctx.lineWidth = isDeploy ? 2 : 1.5;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x, padTop);
+        ctx.lineTo(x, padTop + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = 'bold 8px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(marker.tag || marker.kind, x + 3, padTop + plotH - 4);
+        ctx.restore();
+      }}
+
       // Mousemove tooltip
       canvas.onmousemove = (ev) => {{
         const mRect = canvas.getBoundingClientRect();
@@ -3770,14 +4097,24 @@ def render_dashboard_html() -> str:
           }}
         }}
 
-        showTooltip(ev.pageX, ev.pageY, closest, options, faultEvent);
+        let markerEvent = null;
+        let markerDist = 12;
+        for (const marker of (options.markers || [])) {{
+          const dist = Math.abs(closest.t - marker.time);
+          if (dist < markerDist) {{
+            markerDist = dist;
+            markerEvent = marker;
+          }}
+        }}
+
+        showTooltip(ev.pageX, ev.pageY, closest, options, faultEvent, markerEvent);
       }};
 
       canvas.onmouseleave = () => hideTooltip();
     }}
 
     const tooltipEl = document.getElementById('chart-tooltip');
-    function showTooltip(pageX, pageY, pt, options, faultEvent) {{
+    function showTooltip(pageX, pageY, pt, options, faultEvent, markerEvent) {{
       const timeStr = new Date(pt.t * 1000).toLocaleTimeString();
       const metricLabel = options.metricLabel ? ` &bull; ${{options.metricLabel}}` : '';
       let html = `<div style="color:var(--muted); font-size:0.7rem;">${{timeStr}}${{metricLabel}}</div>
@@ -3786,6 +4123,10 @@ def render_dashboard_html() -> str:
         const tgt = (faultEvent.target || 'all').toLowerCase();
         const col = LANG_COLORS[tgt] || LANG_COLORS['all'];
         html += `<div style="margin-top:3px; color:${{col.stroke}}; font-weight:700; font-size:0.72rem;">🏷️ [${{tgt.toUpperCase()}}] ${{faultEvent.tag}} (${{faultEvent.fault_type}})</div>`;
+      }}
+      if (markerEvent) {{
+        const col = markerEvent.kind === 'deploy' ? '#fbbf24' : '#e2e8f0';
+        html += `<div style="margin-top:3px; color:${{col}}; font-weight:700; font-size:0.72rem;">⚑ ${{markerEvent.tag}}</div>`;
       }}
       tooltipEl.innerHTML = html;
       tooltipEl.style.display = 'block';
@@ -3800,6 +4141,7 @@ def render_dashboard_html() -> str:
       if (!payload || !payload.metrics) return;
       const m = payload.metrics;
       const faults = payload.fault_events || [];
+      const markers = payload.deploy_markers || [];
 
       // 1. Availability Chart
       const availPts = m.availability || [];
@@ -3815,7 +4157,8 @@ def render_dashboard_html() -> str:
         strokeColor: '#10b981',
         fillColor: 'rgba(16, 185, 129, 0.2)',
         unit: '%',
-        formatY: (v) => v.toFixed(0) + '%'
+        formatY: (v) => v.toFixed(0) + '%',
+        markers: markers
       }});
 
       // 2. Error Rate Chart
@@ -3828,7 +4171,8 @@ def render_dashboard_html() -> str:
         strokeColor: '#ef4444',
         fillColor: 'rgba(239, 68, 68, 0.2)',
         unit: 'err/s',
-        formatY: (v) => v.toFixed(1)
+        formatY: (v) => v.toFixed(1),
+        markers: markers
       }});
 
       // 3. Latency Chart (Selected Percentile: p50, p90, p95, p99, p100)
@@ -3844,7 +4188,8 @@ def render_dashboard_html() -> str:
         fillColor: 'rgba(56, 189, 248, 0.2)',
         unit: 'ms',
         metricLabel: `${{pLabel}} Latency`,
-        formatY: (v) => v.toFixed(0) + 'ms'
+        formatY: (v) => v.toFixed(0) + 'ms',
+        markers: markers
       }});
 
       // 4. Throughput Chart
@@ -3857,7 +4202,8 @@ def render_dashboard_html() -> str:
         strokeColor: '#a855f7',
         fillColor: 'rgba(168, 85, 247, 0.2)',
         unit: 'req/s',
-        formatY: (v) => v.toFixed(1)
+        formatY: (v) => v.toFixed(1),
+        markers: markers
       }});
     }}
 
@@ -3877,6 +4223,7 @@ def render_dashboard_html() -> str:
 </body>
 </html>
 """
+    return html_page.replace("__SHOWCASE_FOOTER__", _showcase_footer_html())
 
 # ---------------------------------------------------------------------------
 # HTTP Server (Standard Library)
@@ -3904,6 +4251,16 @@ def start_dashboard_server(port: int) -> HTTPServer:
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
+
+            if path.startswith("/open/"):
+                status, headers, payload = proxy_open_request("GET", self.path, b"", self.headers)
+                self.send_response(status)
+                for key, value in headers:
+                    self.send_header(key, value)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
 
             if path == "/api/network/host-ip":
                 detected_ip = get_detected_host_ip()
@@ -4054,7 +4411,17 @@ def start_dashboard_server(port: int) -> HTTPServer:
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
             content_length = int(self.headers.get("Content-Length", 0))
-            post_data = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else ""
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+            if path.startswith("/open/"):
+                status, headers, payload = proxy_open_request("POST", self.path, raw_body, self.headers)
+                self.send_response(status)
+                for key, value in headers:
+                    self.send_header(key, value)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            post_data = raw_body.decode("utf-8") if raw_body else ""
 
             body = {}
             if post_data:
@@ -4119,6 +4486,19 @@ def start_dashboard_server(port: int) -> HTTPServer:
             elif path == "/api/tps/reset":
                 res = state.clear_tps_override()
                 resp = json.dumps({"status": "reset", **res}).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+            elif path == "/api/markers":
+                kind = (body.get("kind") or "deploy").lower()
+                target = body.get("target") or "stack"
+                tag = body.get("tag") or kind
+                event = deploy_markers.record(kind, target, tag)
+                resp = json.dumps({"status": "recorded", "marker": event}).encode("utf-8")
                 self.send_response(200)
                 self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
@@ -4215,6 +4595,7 @@ def run() -> None:
         vk = None
 
     logger.info("Canary starting — Base TPS: %.0f, Mimir: %s", CANARY_TPS, MIMIR_URL)
+    deploy_markers.attach(vk)
 
     wait_for_apps(session)
     state.set_running()

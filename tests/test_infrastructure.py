@@ -1081,6 +1081,10 @@ class TestCanaryDashboard:
         dep_names = [d["id"] for d in data["dependencies"]]
         for expected in ["postgres", "valkey", "otel-collector", "tempo", "loki", "mimir", "prometheus", "grafana", "redpanda"]:
             assert expected in dep_names
+        by_id = {d["id"]: d for d in data["dependencies"]}
+        assert by_id["grafana"]["browser"]["port"] == 3000
+        assert by_id["prometheus"]["browser"]["path"] == "/query"
+        assert by_id["postgres"]["browser"]["port"] == 9187
 
     def test_sql_saved_queries_endpoint(self):
         resp = requests.get(f"{CANARY_URL}/api/sql/saved-queries", timeout=5)
