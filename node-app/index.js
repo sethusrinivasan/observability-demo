@@ -10,7 +10,7 @@ const os = require("os");
 const express = require("express");
 const { Pool } = require("pg");
 const { trace, context } = require("@opentelemetry/api");
-const { Resource } = require("@opentelemetry/resources");
+const { resourceFromAttributes } = require("@opentelemetry/resources");
 const { SEMRESATTRS_SERVICE_NAME, SEMRESATTRS_DEPLOYMENT_ENVIRONMENT, SEMRESATTRS_SERVICE_VERSION } = require("@opentelemetry/semantic-conventions");
 const { NodeTracerProvider } = require("@opentelemetry/sdk-trace-node");
 const { BatchSpanProcessor } = require("@opentelemetry/sdk-trace-base");
@@ -30,7 +30,7 @@ const APP_NAME = "observability-node-app";
 const VERSION = "1.0.1";
 const LANGUAGE = "nodejs";
 
-const resource = new Resource({
+const resource = resourceFromAttributes({
   [SEMRESATTRS_SERVICE_NAME]: APP_NAME,
   [SEMRESATTRS_DEPLOYMENT_ENVIRONMENT]: "local-dev",
   [SEMRESATTRS_SERVICE_VERSION]: VERSION,
@@ -40,9 +40,11 @@ const resource = new Resource({
 // ---------------------------------------------------------------------------
 // OpenTelemetry Tracing Setup
 // ---------------------------------------------------------------------------
-const tracerProvider = new NodeTracerProvider({ resource });
 const traceExporter = new OTLPTraceExporter({ url: OTLP_ENDPOINT });
-tracerProvider.addSpanProcessor(new BatchSpanProcessor(traceExporter));
+const tracerProvider = new NodeTracerProvider({
+  resource,
+  spanProcessors: [new BatchSpanProcessor(traceExporter)],
+});
 tracerProvider.register();
 const tracer = trace.getTracer(APP_NAME, VERSION);
 
@@ -54,8 +56,10 @@ const metricReader = new PeriodicExportingMetricReader({
   exporter: metricExporter,
   exportIntervalMillis: 5000,
 });
-const meterProvider = new MeterProvider({ resource });
-meterProvider.addMetricReader(metricReader);
+const meterProvider = new MeterProvider({
+  resource,
+  readers: [metricReader],
+});
 const meter = meterProvider.getMeter(APP_NAME, VERSION);
 
 const requestCounter = meter.createCounter("app.requests.total", {
