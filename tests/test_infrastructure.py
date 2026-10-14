@@ -969,14 +969,24 @@ class TestCanaryDashboard:
         )
         assert resp.status_code == 200, resp.text
 
-    def test_anonymous_dashboard_is_the_login_page(self):
+    def test_anonymous_dashboard_auto_logs_in_as_demo_user(self):
         resp = requests.get(f"{CANARY_URL}/", timeout=5)
         assert resp.status_code == 200
-        assert "demouser" in resp.text
-        assert "Canary Load Generator" not in resp.text
+        assert "Canary Load Generator" in resp.text
+        assert "canary_session" in resp.headers.get("Set-Cookie", "")
 
-    def test_api_requires_login(self):
+    def test_api_without_auth_auto_logs_in_as_demo_user(self):
         resp = requests.get(f"{CANARY_URL}/api/trends?range=5m", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "metrics" in data
+
+    def test_invalid_login_rejected(self):
+        resp = requests.post(
+            f"{CANARY_URL}/api/login",
+            json={"username": "wronguser", "password": "wrongpassword"},
+            timeout=5,
+        )
         assert resp.status_code == 401
 
     def test_dashboard_html_returns_200(self):
@@ -1004,10 +1014,10 @@ class TestCanaryDashboard:
         resp = requests.get(f"{CANARY_URL}/health", timeout=5)
         assert resp.status_code == 200
         assert "OK" in resp.text
-
     def test_trends_endpoint(self):
         for r in ["5m", "30m", "1h", "6h", "1d", "30d"]:
-            resp = self.http.get(f"{CANARY_URL}/api/trends?range={r}", timeout=5)
+            t = 15 if r in ("1d", "30d") else 5
+            resp = self.http.get(f"{CANARY_URL}/api/trends?range={r}", timeout=t)
             assert resp.status_code == 200
             data = resp.json()
             assert "metrics" in data

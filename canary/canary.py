@@ -3147,7 +3147,6 @@ def render_dashboard_html() -> str:
         </div>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="openQrModal()" title="Mobile App & QR Code">📱 Connect / QR</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="fetchTrendsAndRefresh()" title="Refresh now">🔄</button>
-        <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="logoutCanary()" title="Sign out">Log out</button>
       </div>
     </header>
 
@@ -5515,8 +5514,13 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                     return part.split("=", 1)[1]
             return ""
 
-        def _user(self) -> str | None:
-            return session_user(self._cookie_token())
+        def _user(self) -> str:
+            token = self._cookie_token()
+            user = session_user(token)
+            if user:
+                return user
+            # If no auth was specified, automatically authenticate as demo user
+            return CANARY_DEMO_USER
 
         def _send_bytes(self, status: int, payload: bytes, content_type: str, extra_headers=None) -> None:
             self.send_response(status)
@@ -5538,12 +5542,8 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
         def _send_login_page(self) -> None:
             self._send_bytes(200, render_login_html().encode("utf-8"), "text/html; charset=utf-8")
 
-        def _require_user(self) -> str | None:
-            user = self._user()
-            if user:
-                return user
-            self._send_bytes(401, b'{"error":"login required"}', "application/json")
-            return None
+        def _require_user(self) -> str:
+            return self._user()
 
         def do_OPTIONS(self):
             self.send_response(204)
@@ -5562,8 +5562,13 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
 
-            if path in ("/login",) or (path in ("/", "/index.html") and not self._user()):
-                self._send_login_page()
+            if path in ("/login",):
+                token = self._cookie_token()
+                extra_headers = [("Location", "/")]
+                if not session_user(token):
+                    token = issue_session(CANARY_DEMO_USER)
+                    extra_headers.append(("Set-Cookie", self._session_cookie(token)))
+                self._send_bytes(302, b"", "text/html", extra_headers)
                 return
             if path != "/health" and not self._user():
                 self._send_bytes(401, b'{"error":"login required"}', "application/json")
@@ -5595,9 +5600,16 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 return
 
             if path == "/" or path == "/index.html":
+                token = self._cookie_token()
+                extra_headers = []
+                if not session_user(token):
+                    token = issue_session(CANARY_DEMO_USER)
+                    extra_headers.append(("Set-Cookie", self._session_cookie(token)))
                 body = render_dashboard_html().encode("utf-8")
                 self.send_response(200)
                 self._send_cors_headers()
+                for key, value in extra_headers:
+                    self.send_header(key, value)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
