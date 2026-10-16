@@ -153,7 +153,7 @@ case "$MODE" in
         print_header
         if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
             echo "Status: Quick Tunnel RUNNING (Container: $CONTAINER_NAME)"
-            Q_URL=$(docker logs "$CONTAINER_NAME" 2>&1 | grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' | head -n 1 || true)
+            Q_URL=$(docker logs "$CONTAINER_NAME" 2>&1 | grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' | tail -n 1 || true)
             if [ -n "$Q_URL" ]; then
                 echo "  Public URL: $Q_URL"
                 save_showcase_url "$Q_URL"
@@ -217,7 +217,7 @@ case "$MODE" in
         for _ in $(seq 1 20); do
             sleep 1
             echo -n "."
-            URL_LINE=$(docker logs "$CONTAINER_NAME" 2>&1 | grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' | head -n 1 || true)
+            URL_LINE=$(docker logs "$CONTAINER_NAME" 2>&1 | grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' | tail -n 1 || true)
             if [ -n "$URL_LINE" ]; then
                 TUNNEL_URL="$URL_LINE"
                 break
