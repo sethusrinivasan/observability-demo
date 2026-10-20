@@ -4481,33 +4481,107 @@ def render_dashboard_html() -> str:
           const tr = document.createElement('tr');
           tr.className = 's3-folder-row';
           tr.onclick = function() {{ loadS3Objects(currentS3Bucket, f.prefix); }};
-          tr.innerHTML = '<td style="width:44px; text-align:center; font-size:1.1rem;">📁</td>' +
-                         '<td class="s3-folder-name">' + f.name + '</td>' +
-                         '<td style="color:var(--muted); font-size:0.75rem;">Folder</td>' +
-                         '<td style="color:var(--muted);">-</td>' +
-                         '<td style="text-align:right;">' +
-                           '<button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); loadS3Objects(\'' + currentS3Bucket + '\', \'' + f.prefix + '\')">Open</button>' +
-                         '</td>';
+
+          const tdIcon = document.createElement('td');
+          tdIcon.style.cssText = 'width:44px; text-align:center; font-size:1.1rem;';
+          tdIcon.textContent = '📁';
+
+          const tdName = document.createElement('td');
+          tdName.className = 's3-folder-name';
+          tdName.textContent = f.name;
+
+          const tdType = document.createElement('td');
+          tdType.style.cssText = 'color:var(--muted); font-size:0.75rem;';
+          tdType.textContent = 'Folder';
+
+          const tdDate = document.createElement('td');
+          tdDate.style.color = 'var(--muted)';
+          tdDate.textContent = '-';
+
+          const tdActions = document.createElement('td');
+          tdActions.style.textAlign = 'right';
+
+          const openBtn = document.createElement('button');
+          openBtn.className = 'btn btn-outline btn-sm';
+          openBtn.textContent = 'Open';
+          openBtn.onclick = function(e) {{
+            e.stopPropagation();
+            loadS3Objects(currentS3Bucket, f.prefix);
+          }};
+          tdActions.appendChild(openBtn);
+
+          tr.appendChild(tdIcon);
+          tr.appendChild(tdName);
+          tr.appendChild(tdType);
+          tr.appendChild(tdDate);
+          tr.appendChild(tdActions);
           tbody.appendChild(tr);
         }});
 
         // Files
         (data.files || []).forEach(file => {{
           const tr = document.createElement('tr');
-          const badge = file.is_parquet ? '<span class="s3-parquet-badge">PARQUET</span>' : '';
-          const safeKey = file.key.replace(/'/g, "\\'");
-          let actionBtns = '';
-          if (file.is_parquet) {{
-            actionBtns += '<button class="btn btn-accent btn-sm" onclick="inspectParquetFile(\'' + currentS3Bucket + '\', \'' + safeKey + '\')">📊 Inspect</button> ';
-          }}
-          actionBtns += '<button class="btn btn-outline btn-sm" onclick="downloadS3File(\'' + currentS3Bucket + '\', \'' + safeKey + '\')" title="Download file">⬇️</button> ';
-          actionBtns += '<button class="btn btn-warning btn-sm" onclick="deleteS3File(\'' + currentS3Bucket + '\', \'' + safeKey + '\')" title="Delete object">🗑️</button>';
 
-          tr.innerHTML = '<td style="width:44px; text-align:center; font-size:1.1rem;">' + (file.is_parquet ? '📊' : '📄') + '</td>' +
-                         '<td class="s3-file-name">' + file.name + ' ' + badge + '</td>' +
-                         '<td style="font-family:monospace; color:#93c5fd;">' + file.size_formatted + '</td>' +
-                         '<td style="color:var(--muted); font-size:0.75rem;">' + file.last_modified + '</td>' +
-                         '<td style="text-align:right;">' + actionBtns + '</td>';
+          const tdIcon = document.createElement('td');
+          tdIcon.style.cssText = 'width:44px; text-align:center; font-size:1.1rem;';
+          tdIcon.textContent = file.is_parquet ? '📊' : '📄';
+
+          const tdName = document.createElement('td');
+          tdName.className = 's3-file-name';
+          tdName.textContent = file.name + ' ';
+          if (file.is_parquet) {{
+            const badge = document.createElement('span');
+            badge.className = 's3-parquet-badge';
+            badge.textContent = 'PARQUET';
+            tdName.appendChild(badge);
+          }}
+
+          const tdSize = document.createElement('td');
+          tdSize.style.cssText = 'font-family:monospace; color:#93c5fd;';
+          tdSize.textContent = file.size_formatted;
+
+          const tdDate = document.createElement('td');
+          tdDate.style.cssText = 'color:var(--muted); font-size:0.75rem;';
+          tdDate.textContent = file.last_modified;
+
+          const tdActions = document.createElement('td');
+          tdActions.style.textAlign = 'right';
+
+          if (file.is_parquet) {{
+            const inspectBtn = document.createElement('button');
+            inspectBtn.className = 'btn btn-accent btn-sm';
+            inspectBtn.style.marginRight = '4px';
+            inspectBtn.textContent = '📊 Inspect';
+            inspectBtn.onclick = function() {{
+              inspectParquetFile(currentS3Bucket, file.key);
+            }};
+            tdActions.appendChild(inspectBtn);
+          }}
+
+          const dlBtn = document.createElement('button');
+          dlBtn.className = 'btn btn-outline btn-sm';
+          dlBtn.style.marginRight = '4px';
+          dlBtn.textContent = '⬇️';
+          dlBtn.title = 'Download file';
+          dlBtn.onclick = function() {{
+            downloadS3File(currentS3Bucket, file.key);
+          }};
+          tdActions.appendChild(dlBtn);
+
+          const delBtn = document.createElement('button');
+          delBtn.className = 'btn btn-warning btn-sm';
+          delBtn.textContent = '🗑️';
+          delBtn.title = 'Delete object';
+          delBtn.onclick = function() {{
+            deleteS3File(currentS3Bucket, file.key);
+          }};
+          tdActions.appendChild(delBtn);
+
+          tr.appendChild(tdIcon);
+          tr.appendChild(tdName);
+          tr.appendChild(tdSize);
+          tr.appendChild(tdDate);
+          tr.appendChild(tdActions);
           tbody.appendChild(tr);
         }});
 
@@ -4972,7 +5046,7 @@ def render_dashboard_html() -> str:
             return '"' + String(val).replace(/"/g, '""') + '"';
           }}).join(',');
         }});
-        content = cols + '\n' + rowLines.join('\n');
+        content = cols + '\\n' + rowLines.join('\\n');
       }} else {{
         mimeType = 'application/json';
         const objArray = latestDuckDBResult.rows.map(r => {{
