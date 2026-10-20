@@ -1364,10 +1364,10 @@ def execute_duckdb_query(query_str: str, max_rows: int = 500):
 
 
 # ---------------------------------------------------------------------------
-# Dependencies Health Prober (9 Stack Components)
+# Dependencies Health Prober (11 Stack Components)
 # ---------------------------------------------------------------------------
 def check_dependencies() -> dict:
-    """Probes all 9 stack dependencies and computes observed health, latency, usage, and error rate."""
+    """Probes all 11 stack dependencies and computes observed health, latency, usage, and error rate."""
     deps = []
 
     # 1. PostgreSQL
@@ -1486,7 +1486,7 @@ def check_dependencies() -> dict:
         "availability_pct": 100.0 if otel_ok else 0.0,
         "latency_ms": otel_lat,
         "error_rate_pct": 0.0 if otel_ok else 100.0,
-        "capacity_usage": "Pipelines: Traces (Tempo), Metrics (Mimir), Logs (Loki)" if otel_ok else "Pipeline Inactive",
+        "capacity_usage": "Pipelines: Traces (Tempo, S3 Lake), Metrics (Mimir, S3 Lake), Logs (Loki, S3 Lake)" if otel_ok else "Pipeline Inactive",
         "details": otel_details
     })
 
@@ -1652,6 +1652,66 @@ def check_dependencies() -> dict:
         "details": {"status": "ready" if rp_ok else "down"}
     })
 
+    # 10. Custom Telemetry Receiver
+    rcv_ok = False
+    rcv_lat = 0.0
+    rcv_details = {}
+    t0 = time.time()
+    try:
+        resp = requests.get(f"{TELEMETRY_RECEIVER_URL}/status", timeout=1.5)
+        rcv_lat = round((time.time() - t0) * 1000, 1)
+        if resp.status_code == 200:
+            rcv_ok = True
+            rcv_details = resp.json()
+    except Exception as exc:
+        rcv_lat = round((time.time() - t0) * 1000, 1)
+        rcv_details = {"error": str(exc)}
+
+    deps.append({
+        "id": "telemetry-receiver",
+        "name": "Custom OTel Receiver",
+        "role": "High-Throughput Ingestion & 10MB Parquet Compactor",
+        "endpoint": "custom-telemetry-receiver:4318",
+        "protocol": "OTLP HTTP / Protobuf / Parquet",
+        "status": "UP" if rcv_ok else "DOWN",
+        "available": rcv_ok,
+        "availability_pct": 100.0 if rcv_ok else 0.0,
+        "latency_ms": rcv_lat,
+        "error_rate_pct": 0.0 if rcv_ok else 100.0,
+        "capacity_usage": f"Compacting: {rcv_details.get('local_compacting_rows', 0)} rows ({rcv_details.get('compaction_percent', 0)}% of 10MB) | Uploaded: {rcv_details.get('total_parquet_files_uploaded', 0)} files" if rcv_ok else "Unreachable",
+        "details": rcv_details
+    })
+
+    # 11. S3 Compatible Storage (Adobe S3Mock)
+    s3_ok = False
+    s3_lat = 0.0
+    s3_details = {}
+    t0 = time.time()
+    try:
+        s3_res = s3_list_buckets()
+        s3_lat = round((time.time() - t0) * 1000, 1)
+        if s3_res.get("status") == "success":
+            s3_ok = True
+            s3_details = {"buckets": s3_res.get("buckets", []), "default_bucket": S3_BUCKET_NAME}
+    except Exception as exc:
+        s3_lat = round((time.time() - t0) * 1000, 1)
+        s3_details = {"error": str(exc)}
+
+    deps.append({
+        "id": "s3-storage",
+        "name": "S3 Data Lake Storage",
+        "role": "Apache 2.0 S3 Storage (Adobe S3Mock)",
+        "endpoint": "s3-storage:9090",
+        "protocol": "AWS S3 REST API (Apache 2.0)",
+        "status": "UP" if s3_ok else "DOWN",
+        "available": s3_ok,
+        "availability_pct": 100.0 if s3_ok else 0.0,
+        "latency_ms": s3_lat,
+        "error_rate_pct": 0.0 if s3_ok else 100.0,
+        "capacity_usage": f"Default Bucket: {S3_BUCKET_NAME} | Total Buckets: {len(s3_details.get('buckets', []))}" if s3_ok else "Unreachable",
+        "details": s3_details
+    })
+
     # Host ports published by docker-compose. The dashboard builds the URL
     # from the browser's hostname so the link works on localhost and on the LAN.
     browser_links = {
@@ -1668,6 +1728,8 @@ def check_dependencies() -> dict:
             "label": "Open",
         },
         "redpanda": {"port": 9644, "path": "/v1/cluster/health_overview", "label": "Open"},
+        "telemetry-receiver": {"port": 4319, "path": "/status", "label": "Status"},
+        "s3-storage": {"port": 9095, "path": "", "label": "Browse"},
     }
     for dep in deps:
         link = browser_links.get(dep["id"])
@@ -3091,6 +3153,17 @@ def render_dashboard_html() -> str:
       scrollbar-gutter: stable;
     }}
     .sql-textarea::placeholder {{ color: #64748b; }}
+    #duckdb-query-input,
+    .duckdb-textarea {{
+      color: #f8fafc !important;
+      background: #090e17 !important;
+      caret-color: #38bdf8 !important;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.85rem;
+      line-height: 1.45;
+    }}
+    #duckdb-query-input::placeholder,
+    .duckdb-textarea::placeholder {{ color: #64748b; }}
     .sql-kw {{ color: #7dd3fc; font-weight: 650; }}
     .sql-fn {{ color: #c4b5fd; }}
     .sql-str {{ color: #86efac; }}
@@ -3607,8 +3680,18 @@ def render_dashboard_html() -> str:
   <div class="container">
     <header>
       <div class="title-group">
-        <h1><span class="pulse" id="live-pulse"></span> Canary Load & Telemetry Control</h1>
-        <span class="badge badge-success" id="overall-status-pill">RUNNING</span>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <h1><span class="pulse" id="live-pulse"></span> Canary Load & Telemetry Control</h1>
+          <span class="badge badge-success" id="overall-status-pill">RUNNING</span>
+        </div>
+        <div class="telemetry-pipeline-strip" style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; font-size: 0.72rem;">
+          <span style="color: var(--accent); font-weight: 700;">📡 Telemetry Pipeline Targets:</span>
+          <span class="badge" style="background:#1e293b; color:#f8fafc; border:1px solid #334155;" title="OpenTelemetry Ingestion Point">OTel Collector: <code style="color:#38bdf8;">otel-collector:4317 / 4318</code></span>
+          <span class="badge" style="background:#1e293b; color:#cbd5e1; border:1px solid #334155;" title="Metrics Target (Grafana Mimir)">📈 Metrics &rarr; <code style="color:#06b6d4;">mimir:9009</code></span>
+          <span class="badge" style="background:#1e293b; color:#cbd5e1; border:1px solid #334155;" title="Traces Target (Grafana Tempo)">⏱️ Traces &rarr; <code style="color:#a855f7;">tempo:4317</code></span>
+          <span class="badge" style="background:#1e293b; color:#cbd5e1; border:1px solid #334155;" title="Logs Target (Grafana Loki)">🪵 Logs &rarr; <code style="color:#f97316;">loki:3100</code></span>
+          <span class="badge" style="background:#1e293b; color:#38bdf8; border:1px solid #0284c7;" title="High-Throughput Parquet S3 Lake">🪣 S3 Lake &rarr; <code style="color:#38bdf8;">custom-telemetry-receiver:4318 &rarr; s3://telemetry-lake</code></span>
+        </div>
       </div>
       <div class="header-controls">
         <div class="view-tabs">
@@ -4271,7 +4354,7 @@ def render_dashboard_html() -> str:
         </div>
 
         <div class="sql-editor-box">
-          <textarea id="duckdb-query-input" class="sql-textarea" spellcheck="false" rows="7" placeholder="Enter DuckDB SQL query here... e.g. SELECT * FROM telemetry ORDER BY timestamp_ns DESC LIMIT 50;"></textarea>
+          <textarea id="duckdb-query-input" class="sql-textarea duckdb-textarea" spellcheck="false" rows="7" placeholder="Enter DuckDB SQL query here... e.g. SELECT * FROM telemetry ORDER BY timestamp_ns DESC LIMIT 50;"></textarea>
         </div>
 
         <div class="sql-meta-bar" id="duckdb-status-bar">

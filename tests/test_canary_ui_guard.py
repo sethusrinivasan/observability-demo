@@ -203,3 +203,25 @@ global.confirm = () => true;
     assert proc.returncode == 0, (
         f"CRITICAL: Client-side JavaScript threw a runtime exception during initialization:\n{proc.stderr}"
     )
+
+
+def test_duckdb_query_editor_text_visibility(dashboard_html):
+    """Guard 7: Ensure Telemetry View query editor textarea text is visible (not transparent)."""
+    assert 'id="duckdb-query-input"' in dashboard_html
+    assert 'class="sql-textarea duckdb-textarea"' in dashboard_html or 'class="duckdb-textarea"' in dashboard_html
+
+    # Ensure CSS defines explicit visible text color rather than inheriting color: transparent
+    assert ".duckdb-textarea" in dashboard_html
+    assert "color: #f8fafc !important" in dashboard_html or "color:#f8fafc !important" in dashboard_html
+
+
+def test_dashboard_telemetry_target_pipeline_strip(dashboard_html):
+    """Guard 8: Ensure the main dashboard displays the active telemetry target pipeline destinations."""
+    assert "telemetry-pipeline-strip" in dashboard_html
+    assert "Telemetry Pipeline Targets:" in dashboard_html
+    assert "otel-collector:4317" in dashboard_html
+    assert "mimir:9009" in dashboard_html
+    assert "tempo:4317" in dashboard_html
+    assert "loki:3100" in dashboard_html
+    assert "s3://telemetry-lake" in dashboard_html
+

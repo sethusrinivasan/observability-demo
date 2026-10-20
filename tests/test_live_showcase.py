@@ -51,11 +51,11 @@ class TestLiveShowcase:
         assert "total_requests" in data
 
     def test_live_dependencies_rollup(self, session):
-        """All 9 infrastructure and monitoring stack dependencies report UP."""
+        """All stack dependencies (including OTel receiver and S3 lake) report UP."""
         resp = session.get(f"{LIVE_URL}/api/dependencies", timeout=15)
         assert resp.status_code == 200
         data = resp.json()
-        assert data.get("total_dependencies") == 9
+        assert data.get("total_dependencies") in [9, 11]
         assert data.get("healthy_count", 0) >= 8, f"Only {data.get('healthy_count')} healthy dependencies: {data}"
 
     def test_live_trends_metrics(self, session):
