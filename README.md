@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Live Showcase](https://img.shields.io/badge/Live%20Showcase-Online%20Demo-00C7B7?style=for-the-badge&logo=cloudflare&logoColor=white)](https://styles-settle-verbal-antique.trycloudflare.com)
+[![Live Showcase](https://img.shields.io/badge/Live%20Showcase-Online%20Demo-00C7B7?style=for-the-badge&logo=cloudflare&logoColor=white)](https://volume-investigation-knife-pros.trycloudflare.com)
 [![Live Verification](https://img.shields.io/github/actions/workflow/status/sethusrinivasan/observability-demo/live-verification.yml?branch=main&label=Live%20Tests&style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/sethusrinivasan/observability-demo/actions/workflows/live-verification.yml)
 [![Built with Google Antigravity](https://img.shields.io/badge/Built%20with-Google%20Antigravity-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://deepmind.google/technologies/)
 [![AI Assisted: Gemini](https://img.shields.io/badge/AI%20Assisted-Gemini%20CLI-8E75C4?style=for-the-badge&logo=google-gemini&logoColor=white)](https://deepmind.google/technologies/gemini/)

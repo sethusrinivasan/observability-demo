@@ -1,0 +1,40 @@
+services:
+  # S3 Compatible Object Storage (Adobe S3Mock)
+  s3-storage:
+    image: adobe/s3mock:latest
+    container_name: s3-storage
+    restart: unless-stopped
+    ports:
+      - "9095:9090"  # HTTP endpoint on host
+    environment:
+      - initialBuckets=telemetry-lake
+    networks:
+      - observability-network
+
+  # Custom OpenTelemetry Receiver with Ephemeral Disk Buffering & Parquet Flusher
+  custom-telemetry-receiver:
+    image: custom-telemetry-receiver:latest
+    container_name: custom-telemetry-receiver
+    restart: unless-stopped
+    ports:
+      - "4319:4318"  # OTLP HTTP receiver on host (4319 avoids conflict with otel-collector 4318)
+    volumes:
+      - ./telemetry-receiver/receiver.py:/app/receiver.py
+    environment:
+      - PORT=4318
+      - S3_ENDPOINT_URL=http://s3-storage:9090
+      - S3_BUCKET_NAME=telemetry-lake
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - FLUSH_COUNT_THRESHOLD=1000
+      - FLUSH_TIME_THRESHOLD_SECONDS=300
+      - BUFFER_DIR=/tmp/telemetry_buffer
+    depends_on:
+      - s3-storage
+    networks:
+      - observability-network
+
+networks:
+  observability-network:
+    external: true
+    name: observability-demo_observability-network

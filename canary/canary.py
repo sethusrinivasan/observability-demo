@@ -46,6 +46,25 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, Resource
 import redis
 import requests
+import io
+
+try:
+    import boto3
+    from botocore.client import Config as BotoConfig
+except ImportError:
+    boto3 = None
+
+try:
+    import pyarrow.parquet as pq
+    import pyarrow as pa
+except ImportError:
+    pq = None
+    pa = None
+
+try:
+    import duckdb
+except ImportError:
+    duckdb = None
 
 from sql_guard import SqlGuardError, guard_readonly_sql
 
@@ -65,6 +84,13 @@ VALKEY_HOST          = os.getenv("VALKEY_HOST",         "valkey")
 CANARY_TPS           = float(os.getenv("CANARY_TPS",    "6"))
 CANARY_PORT          = int(os.getenv("CANARY_PORT",     "8085"))
 REFRESH_INTERVAL_SEC = int(os.getenv("CANARY_REFRESH_INTERVAL", "3"))
+
+S3_ENDPOINT_URL        = os.getenv("S3_ENDPOINT_URL",        "http://s3-storage:9090")
+S3_BUCKET_NAME         = os.getenv("S3_BUCKET_NAME",         "telemetry-lake")
+AWS_ACCESS_KEY_ID      = os.getenv("AWS_ACCESS_KEY_ID",      "test")
+AWS_SECRET_ACCESS_KEY  = os.getenv("AWS_SECRET_ACCESS_KEY",  "test")
+AWS_REGION             = os.getenv("AWS_REGION",             "us-east-1")
+TELEMETRY_RECEIVER_URL = os.getenv("TELEMETRY_RECEIVER_URL", "http://custom-telemetry-receiver:4318")
 
 POSTGRES_HOST        = os.getenv("POSTGRES_HOST",       "postgres")
 POSTGRES_PORT        = int(os.getenv("POSTGRES_PORT",   "5432"))
@@ -976,6 +1002,366 @@ def execute_sql_query(query_str: str, max_rows: int = 100, username: str = "", c
                 conn.close()
             except Exception:
                 pass
+
+# ---------------------------------------------------------------------------
+# S3 Compatible Storage API Helpers (Adobe S3Mock / AWS S3 REST API)
+# ---------------------------------------------------------------------------
+def get_s3_client():
+    if not boto3:
+        raise RuntimeError("boto3 is not installed")
+    return boto3.client(
+        "s3",
+        endpoint_url=S3_ENDPOINT_URL,
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        region_name=AWS_REGION,
+        config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"})
+    )
+
+def s3_list_buckets():
+    try:
+        s3 = get_s3_client()
+        resp = s3.list_buckets()
+        buckets = [b["Name"] for b in resp.get("Buckets", [])]
+        return {
+            "status": "success",
+            "buckets": buckets,
+            "default_bucket": S3_BUCKET_NAME,
+            "endpoint": S3_ENDPOINT_URL,
+            "license": "Apache 2.0 (Open Source, Copyleft-Free)"
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "buckets": []}
+
+def s3_create_bucket(bucket_name: str):
+    try:
+        clean = (bucket_name or "").strip().lower()
+        if not clean:
+            return {"status": "error", "error": "Bucket name is required"}
+        s3 = get_s3_client()
+        try:
+            s3.head_bucket(Bucket=clean)
+            return {"status": "success", "bucket": clean, "note": "Bucket already exists"}
+        except Exception:
+            s3.create_bucket(Bucket=clean)
+            return {"status": "success", "bucket": clean}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+def s3_list_objects(bucket_name: str, prefix: str = ""):
+    try:
+        s3 = get_s3_client()
+        bucket = bucket_name or S3_BUCKET_NAME
+        clean_prefix = (prefix or "").strip()
+        if clean_prefix and not clean_prefix.endswith("/"):
+            clean_prefix += "/"
+
+        resp = s3.list_objects_v2(Bucket=bucket, Prefix=clean_prefix, Delimiter="/")
+
+        folders = []
+        for cp in resp.get("CommonPrefixes", []):
+            pfx = cp.get("Prefix", "")
+            folder_name = pfx.rstrip("/").split("/")[-1] + "/"
+            folders.append({
+                "name": folder_name,
+                "prefix": pfx,
+                "type": "folder"
+            })
+
+        files = []
+        total_size = 0
+        for obj in resp.get("Contents", []):
+            key = obj.get("Key", "")
+            if key == clean_prefix:
+                continue
+            file_name = key.split("/")[-1]
+            size = obj.get("Size", 0)
+            total_size += size
+            last_mod = obj.get("LastModified")
+            mod_str = last_mod.isoformat() if last_mod else ""
+            is_parquet = key.lower().endswith(".parquet")
+
+            if size >= 1024 * 1024:
+                size_fmt = f"{size / (1024 * 1024):.2f} MB"
+            elif size >= 1024:
+                size_fmt = f"{size / 1024:.1f} KB"
+            else:
+                size_fmt = f"{size} B"
+
+            files.append({
+                "name": file_name,
+                "key": key,
+                "size": size,
+                "size_formatted": size_fmt,
+                "last_modified": mod_str,
+                "storage_class": obj.get("StorageClass", "STANDARD"),
+                "is_parquet": is_parquet,
+                "type": "file"
+            })
+
+        parent_prefix = None
+        if clean_prefix:
+            parts = clean_prefix.rstrip("/").split("/")
+            if len(parts) > 1:
+                parent_prefix = "/".join(parts[:-1]) + "/"
+            else:
+                parent_prefix = ""
+
+        return {
+            "status": "success",
+            "bucket": bucket,
+            "prefix": clean_prefix,
+            "parent_prefix": parent_prefix,
+            "folders": folders,
+            "files": files,
+            "total_files": len(files),
+            "total_folders": len(folders),
+            "total_size": total_size
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "folders": [], "files": []}
+
+def s3_preview_object(bucket_name: str, key: str, max_rows: int = 15):
+    try:
+        s3 = get_s3_client()
+        bucket = bucket_name or S3_BUCKET_NAME
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        body = obj["Body"].read()
+        file_size = len(body)
+
+        if key.lower().endswith(".parquet") and pq is not None:
+            table = pq.read_table(io.BytesIO(body))
+            columns = table.column_names
+            total_rows = table.num_rows
+            all_rows = table.to_pylist()
+            sample_rows = all_rows[:max_rows]
+            return {
+                "status": "success",
+                "key": key,
+                "type": "parquet",
+                "file_size": file_size,
+                "total_rows": total_rows,
+                "columns": columns,
+                "rows": sample_rows,
+                "preview_limit": max_rows
+            }
+        else:
+            try:
+                text = body[:10000].decode("utf-8")
+                return {
+                    "status": "success",
+                    "key": key,
+                    "type": "text",
+                    "file_size": file_size,
+                    "content": text
+                }
+            except Exception:
+                return {
+                    "status": "success",
+                    "key": key,
+                    "type": "binary",
+                    "file_size": file_size,
+                    "message": "Binary file preview not available"
+                }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+def s3_delete_object(bucket_name: str, key: str):
+    try:
+        s3 = get_s3_client()
+        bucket = bucket_name or S3_BUCKET_NAME
+        s3.delete_object(Bucket=bucket, Key=key)
+        return {"status": "success", "deleted": key}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+def s3_upload_object(bucket_name: str, key: str, data_bytes: bytes):
+    try:
+        s3 = get_s3_client()
+        bucket = bucket_name or S3_BUCKET_NAME
+        s3.put_object(Bucket=bucket, Key=key, Body=data_bytes)
+        return {"status": "success", "key": key, "size": len(data_bytes)}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+def trigger_telemetry_flush():
+    try:
+        r = requests.post(f"{TELEMETRY_RECEIVER_URL}/flush", timeout=5)
+        return r.json()
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+# ---------------------------------------------------------------------------
+# DuckDB Analytical Query Engine Helpers (Direct S3 Parquet Lake OLAP)
+# ---------------------------------------------------------------------------
+CANNED_DUCKDB_QUERIES = [
+    {
+        "id": "event_breakdown",
+        "name": "📊 Ingestion Breakdown by Service & Type",
+        "description": "Aggregates total record counts and time ranges per service and telemetry type.",
+        "sql": """SELECT
+  telemetry_type,
+  service_name,
+  count(*) AS total_records,
+  min(timestamp_iso) AS earliest_event,
+  max(timestamp_iso) AS latest_event
+FROM telemetry
+GROUP BY telemetry_type, service_name
+ORDER BY total_records DESC;"""
+    },
+    {
+        "id": "nanosecond_traces",
+        "name": "⏱️ Nanosecond Trace Operations (Spans)",
+        "description": "Inspects recent distributed trace spans with nanosecond timestamp precision.",
+        "sql": """SELECT
+  service_name,
+  event_name AS span_name,
+  timestamp_ns,
+  epoch_ms(CAST(timestamp_ns / 1000000 AS BIGINT)) AS event_time,
+  attributes
+FROM telemetry
+WHERE telemetry_type = 'trace'
+ORDER BY timestamp_ns DESC
+LIMIT 50;"""
+    },
+    {
+        "id": "error_warning_logs",
+        "name": "🚨 Application Error & Fault Logs",
+        "description": "Filters logs for errors, failures, and fault-injected exceptions across services.",
+        "sql": """SELECT
+  timestamp_iso,
+  service_name,
+  event_name AS log_message,
+  attributes
+FROM telemetry
+WHERE telemetry_type = 'log'
+  AND (event_name ILIKE '%error%' OR event_name ILIKE '%fault%' OR attributes ILIKE '%error%' OR attributes ILIKE '%500%')
+ORDER BY timestamp_ns DESC
+LIMIT 50;"""
+    },
+    {
+        "id": "throughput_10s_buckets",
+        "name": "📈 Throughput per 10-Second Time Window",
+        "description": "Calculates event arrival rate bucketed into 10-second intervals.",
+        "sql": """SELECT
+  time_bucket(INTERVAL '10 seconds', epoch_ms(CAST(timestamp_ns / 1000000 AS BIGINT))) AS window_start,
+  telemetry_type,
+  count(*) AS events_per_interval
+FROM telemetry
+GROUP BY window_start, telemetry_type
+ORDER BY window_start DESC
+LIMIT 25;"""
+    },
+    {
+        "id": "s3_parquet_files",
+        "name": "🪣 S3 Compacted Parquet Files Metadata",
+        "description": "Direct file-level inspection of compacted Parquet files, row counts, and duration.",
+        "sql": """SELECT
+  filename,
+  count(*) AS rows_in_file,
+  min(timestamp_iso) AS file_start,
+  max(timestamp_iso) AS file_end,
+  round((max(timestamp_ns) - min(timestamp_ns)) / 1e9, 2) AS duration_seconds
+FROM read_parquet('s3://telemetry-lake/**/*.parquet', filename=true)
+GROUP BY filename
+ORDER BY file_end DESC;"""
+    },
+    {
+        "id": "nanosecond_jitter",
+        "name": "🎯 Nanosecond Inter-Span Jitter Analysis",
+        "description": "Computes delta in microseconds between consecutive spans per service using window lag.",
+        "sql": """SELECT
+  service_name,
+  event_name,
+  timestamp_ns,
+  round((timestamp_ns - LAG(timestamp_ns) OVER (PARTITION BY service_name ORDER BY timestamp_ns)) / 1000.0, 2) AS delta_microseconds
+FROM telemetry
+WHERE telemetry_type = 'trace'
+ORDER BY timestamp_ns DESC
+LIMIT 50;"""
+    },
+    {
+        "id": "metric_summary",
+        "name": "📉 Metric Ingestion Summary by Service",
+        "description": "Summarizes all collected metric series names and observation counts.",
+        "sql": """SELECT
+  service_name,
+  event_name AS metric_name,
+  count(*) AS sample_count,
+  min(timestamp_iso) AS first_sampled,
+  max(timestamp_iso) AS last_sampled
+FROM telemetry
+WHERE telemetry_type = 'metric'
+GROUP BY service_name, metric_name
+ORDER BY sample_count DESC
+LIMIT 50;"""
+    }
+]
+
+def execute_duckdb_query(query_str: str, max_rows: int = 500):
+    if duckdb is None:
+        return {"status": "error", "error": "duckdb package is not installed in canary container"}
+
+    clean_query = (query_str or "").strip()
+    if not clean_query:
+        return {"status": "error", "error": "Query cannot be empty"}
+
+    t0 = time.time()
+    try:
+        con = duckdb.connect(database=":memory:")
+        con.execute("INSTALL httpfs; LOAD httpfs;")
+        s3_clean_endpoint = S3_ENDPOINT_URL.replace("http://", "").replace("https://", "")
+        con.execute(f"""
+            SET s3_endpoint = '{s3_clean_endpoint}';
+            SET s3_url_style = 'path';
+            SET s3_use_ssl = false;
+            SET s3_access_key_id = '{AWS_ACCESS_KEY_ID}';
+            SET s3_secret_access_key = '{AWS_SECRET_ACCESS_KEY}';
+            SET s3_region = '{AWS_REGION}';
+        """)
+
+        # Setup telemetry view alias pointing to parquet lake in S3
+        try:
+            con.execute(f"CREATE OR REPLACE VIEW telemetry AS SELECT * FROM read_parquet('s3://{S3_BUCKET_NAME}/**/*.parquet');")
+        except Exception:
+            con.execute("CREATE OR REPLACE VIEW telemetry AS SELECT CAST('' AS VARCHAR) AS event_id, CAST(0 AS BIGINT) AS timestamp_ns, CAST('' AS VARCHAR) AS timestamp_iso, CAST('' AS VARCHAR) AS telemetry_type, CAST('' AS VARCHAR) AS service_name, CAST('' AS VARCHAR) AS event_name, CAST('' AS VARCHAR) AS attributes, CAST('' AS VARCHAR) AS raw_payload WHERE 1=0;")
+
+        cursor = con.execute(clean_query)
+        columns = [d[0] for d in cursor.description] if cursor.description else []
+        raw_rows = cursor.fetchmany(max_rows) if max_rows > 0 else cursor.fetchall()
+
+        serialized_rows = []
+        for row in raw_rows:
+            formatted_row = []
+            for val in row:
+                if val is None:
+                    formatted_row.append(None)
+                elif isinstance(val, (int, float, str, bool)):
+                    formatted_row.append(val)
+                elif hasattr(val, "isoformat"):
+                    formatted_row.append(val.isoformat())
+                else:
+                    formatted_row.append(str(val))
+            serialized_rows.append(formatted_row)
+
+        duration_ms = (time.time() - t0) * 1000.0
+        return {
+            "status": "success",
+            "columns": columns,
+            "rows": serialized_rows,
+            "row_count": len(serialized_rows),
+            "execution_time_ms": round(duration_ms, 2),
+            "bucket": S3_BUCKET_NAME,
+            "endpoint": S3_ENDPOINT_URL
+        }
+    except Exception as exc:
+        duration_ms = (time.time() - t0) * 1000.0
+        return {
+            "status": "error",
+            "error": str(exc),
+            "execution_time_ms": round(duration_ms, 2)
+        }
+
 
 # ---------------------------------------------------------------------------
 # Dependencies Health Prober (9 Stack Components)
@@ -2973,6 +3359,93 @@ def render_dashboard_html() -> str:
       border-top: 1px solid var(--card-border);
     }}
 
+    /* S3 Browser Styles */
+    .s3-browser-container {{
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 14px;
+      margin-bottom: 14px;
+    }}
+    .s3-toolbar {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--card-border);
+      margin-bottom: 12px;
+    }}
+    .s3-breadcrumb-bar {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-family: monospace;
+      color: var(--muted);
+      margin-bottom: 12px;
+      overflow-x: auto;
+    }}
+    .s3-crumb {{
+      color: var(--accent);
+      cursor: pointer;
+      text-decoration: underline;
+    }}
+    .s3-crumb:hover {{
+      color: #93c5fd;
+    }}
+    .s3-crumb.active {{
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 700;
+    }}
+    .s3-table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }}
+    .s3-table th {{
+      text-align: left;
+      padding: 8px 10px;
+      background: #0f172a;
+      color: var(--muted);
+      border-bottom: 1px solid var(--card-border);
+      font-weight: 600;
+    }}
+    .s3-table td {{
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      color: var(--text);
+    }}
+    .s3-table tr:hover td {{
+      background: rgba(255,255,255,0.03);
+    }}
+    .s3-folder-row {{
+      cursor: pointer;
+    }}
+    .s3-folder-name {{
+      color: #38bdf8;
+      font-weight: 600;
+    }}
+    .s3-file-name {{
+      color: #f1f5f9;
+      font-family: monospace;
+    }}
+    .s3-parquet-badge {{
+      display: inline-block;
+      padding: 2px 6px;
+      background: #065f46;
+      color: #34d399;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      margin-left: 6px;
+    }}
+
     /* Dependencies Grid */
     .dep-cards-grid {{
       display: grid;
@@ -3144,6 +3617,8 @@ def render_dashboard_html() -> str:
           <button class="view-tab-btn" onclick="switchView('raw', this)">🔢 Raw Numbers</button>
           <button class="view-tab-btn" onclick="switchView('dependencies', this)">🔌 Dependencies</button>
           <button class="view-tab-btn" onclick="switchView('sql', this)">💾 SQL Editor</button>
+          <button class="view-tab-btn" onclick="switchView('s3', this)">🪣 S3 Lake Browser</button>
+          <button class="view-tab-btn" onclick="switchView('telemetry_query', this)">🔍 Telemetry view - Query editor</button>
         </div>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="openQrModal()" title="Mobile App & QR Code">📱 Connect / QR</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="fetchTrendsAndRefresh()" title="Refresh now">🔄</button>
@@ -3660,6 +4135,165 @@ def render_dashboard_html() -> str:
       </div>
     </div>
 
+    <!-- S3 Compatible Storage Browser & Data Lake Section -->
+    <div id="s3-browser-section" style="display: none;">
+      <div class="section-bar">
+        <div class="section-title">
+          <span>🪣 S3 Data Lake & Object Storage Browser</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="badge" style="background:#1e293b; color:#94a3b8; border:1px solid #334155;">Apache 2.0 Licensed &bull; Copyleft-Free &bull; Adobe S3Mock</span>
+          <span class="badge badge-success" id="s3-endpoint-badge">s3-storage:9090</span>
+        </div>
+      </div>
+
+      <div class="s3-browser-container">
+        <!-- Toolbar -->
+        <div class="s3-toolbar">
+          <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 260px;">
+            <label style="font-size: 0.72rem; font-weight: 700; color: var(--muted);">BUCKET:</label>
+            <select id="s3-bucket-select" class="ctrl-input" style="flex: 1; max-width: 240px;" onchange="onSelectS3Bucket(this.value)">
+              <option value="telemetry-lake">telemetry-lake</option>
+            </select>
+            <button class="btn btn-outline" onclick="promptCreateBucket()" title="Create new S3 bucket">➕ New Bucket</button>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <button class="btn btn-accent" id="s3-flush-btn" onclick="triggerTelemetryFlush()" title="Force OTel receiver to flush buffer to S3">⚡ Flush Receiver Buffer</button>
+            <button class="btn btn-outline" onclick="promptCreateFolder()" title="Create folder in current prefix">📁 New Folder</button>
+            <button class="btn btn-outline" onclick="promptS3Upload()" title="Upload file to current prefix">📤 Upload File</button>
+            <input type="file" id="s3-file-input" style="display: none;" onchange="onS3FileSelected(this)">
+            <button class="btn btn-outline" onclick="refreshS3Objects()" title="Refresh current folder">🔄 Refresh</button>
+          </div>
+        </div>
+
+        <!-- Breadcrumbs bar -->
+        <div class="s3-breadcrumb-bar" id="s3-breadcrumbs">
+          <span class="s3-crumb active">🪣 telemetry-lake</span>
+        </div>
+
+        <!-- Status / Counter bar -->
+        <div class="sql-meta-bar" style="margin-bottom: 10px;">
+          <span id="s3-status-text">Loading objects...</span>
+          <span style="color: #64748b; font-size: 0.72rem;">S3 REST API &bull; Parquet Columnar Lake</span>
+        </div>
+
+        <!-- Objects Table Grid -->
+        <div class="table-card scroll-table-container" style="max-height: 520px; overflow-y: auto;">
+          <table class="s3-table">
+            <thead>
+              <tr>
+                <th style="width: 44px; text-align: center;">Type</th>
+                <th>Name / Key</th>
+                <th style="width: 120px;">Size</th>
+                <th style="width: 190px;">Last Modified</th>
+                <th style="width: 210px; text-align: right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="s3-objects-tbody">
+              <tr><td colspan="5" style="text-align: center; padding: 30px; color: var(--muted);">Loading objects...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Parquet Inspection Modal -->
+    <div id="parquet-modal" class="modal-overlay" style="display: none;">
+      <div class="modal-card cell-modal-box" style="max-width: 960px !important; width: 94% !important;">
+        <div class="modal-header">
+          <h3 id="parquet-modal-title">📊 Parquet Data Inspector</h3>
+          <button class="modal-close" onclick="closeParquetModal()">&times;</button>
+        </div>
+        <div id="parquet-modal-meta" style="font-size: 0.76rem; color: var(--muted); margin: 6px 0 10px 0;">--</div>
+        <div class="table-card scroll-table-container" style="max-height: 56vh; overflow: auto; background: #080d16; border: 1px solid var(--card-border);">
+          <table class="sql-grid-table" id="parquet-modal-table">
+            <thead id="parquet-modal-thead"></thead>
+            <tbody id="parquet-modal-tbody"></tbody>
+          </table>
+        </div>
+        <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px;">
+          <button class="btn btn-outline" onclick="closeParquetModal()">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telemetry view - Query editor (DuckDB S3 Parquet OLAP Engine) -->
+    <div id="telemetry-query-section" style="display: none;">
+      <div class="section-bar">
+        <div class="section-title">
+          <span>🔍 Telemetry view - Query editor</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <span class="badge" style="background:#1e293b; color:#38bdf8; border:1px solid #0284c7;">🦆 DuckDB In-Process OLAP</span>
+          <span class="badge" style="background:#1e293b; color:#a78bfa; border:1px solid #7c3aed;">⚡ S3 httpfs Direct Query</span>
+          <span class="badge" style="background:#1e293b; color:#34d399; border:1px solid #059669;">⏱️ Nanosecond Granularity</span>
+          <span class="badge badge-success" id="duckdb-lake-badge">s3://telemetry-lake</span>
+        </div>
+      </div>
+
+      <!-- Quick Schema Pills Bar -->
+      <div style="background: #0f172a; border: 1px solid var(--card-border); border-radius: 6px; padding: 10px 14px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.74rem;">
+          <span style="font-weight: 700; color: var(--accent);">TABLE:</span>
+          <span class="badge" style="background:#1e293b; color:#f8fafc; font-family: monospace; cursor: pointer; border: 1px solid #334155;" onclick="insertDuckDBSnippet('telemetry')" title="Click to insert into SQL">telemetry</span>
+          <span style="color: var(--muted); margin: 0 4px;">|</span>
+          <span style="font-weight: 700; color: var(--muted);">COLUMNS:</span>
+          <span class="badge" style="background:#090e17; color:#cbd5e1; font-family: monospace; cursor: pointer;" onclick="insertDuckDBSnippet('event_id')" title="Click to insert">event_id</span>
+          <span class="badge" style="background:#090e17; color:#c4b5fd; font-family: monospace; cursor: pointer;" onclick="insertDuckDBSnippet('timestamp_ns')" title="Click to insert">timestamp_ns (int64)</span>
+          <span class="badge" style="background:#090e17; color:#38bdf8; font-family: monospace; cursor: pointer;" onclick="insertDuckDBSnippet('timestamp_iso')" title="Click to insert">timestamp_iso</span>
+          <span class="badge" style="background:#090e17; color:#fdba74; font-family: monospace; cursor: pointer;" onclick="insertDuckDBSnippet('telemetry_type')" title="Click to insert">telemetry_type</span>
+          <span class="badge" style="background:#090e17; color:#67e8f9; font-family: monospace; cursor: pointer;" onclick="insertDuckDBSnippet('service_name')" title="Click to insert">service_name</span>
+          <span class="badge" style="background:#090e17; color:#e2e8f0; font-family: monospace; cursor: pointer;" onclick="insertDuckDBSnippet('event_name')" title="Click to insert">event_name</span>
+          <span class="badge" style="background:#090e17; color:#94a3b8; font-family: monospace; cursor: pointer;" onclick="insertDuckDBSnippet('attributes')" title="Click to insert">attributes</span>
+          <span class="badge" style="background:#090e17; color:#64748b; font-family: monospace; cursor: pointer;" onclick="insertDuckDBSnippet('raw_payload')" title="Click to insert">raw_payload</span>
+        </div>
+        <div style="font-size: 0.72rem; color: var(--muted);">
+          <span>Direct Parquet Scan: </span><code style="color: #38bdf8; font-size: 0.72rem; background:#090e17; padding:2px 6px; border-radius:3px;">read_parquet('s3://telemetry-lake/**/*.parquet')</code>
+        </div>
+      </div>
+
+      <div class="sql-editor-container">
+        <div class="sql-toolbar">
+          <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:320px;">
+            <label style="font-size:0.72rem; font-weight:700; color:var(--accent);">CANNED QUERIES:</label>
+            <select id="duckdb-canned-select" class="ctrl-input" style="flex:1;" onchange="onSelectDuckDBCannedQuery(this.value)">
+              <option value="">-- Choose a canned telemetry query --</option>
+            </select>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap: wrap;">
+            <button class="btn btn-accent" onclick="runDuckDBQuery()">▶ Run Query (Ctrl+Enter)</button>
+            <button class="btn btn-secondary" onclick="clearDuckDBQuery()">🧹 Clear</button>
+            <button class="btn btn-outline" onclick="flushAndRunDuckDBQuery()" title="Flush pending buffer to S3 then run query">⚡ Flush Buffer & Run</button>
+            <button class="btn btn-outline" onclick="exportDuckDBResults('csv')">📥 Export CSV</button>
+            <button class="btn btn-outline" onclick="exportDuckDBResults('json')">📥 Export JSON</button>
+          </div>
+        </div>
+
+        <div class="sql-editor-box">
+          <textarea id="duckdb-query-input" class="sql-textarea" spellcheck="false" rows="7" placeholder="Enter DuckDB SQL query here... e.g. SELECT * FROM telemetry ORDER BY timestamp_ns DESC LIMIT 50;"></textarea>
+        </div>
+
+        <div class="sql-meta-bar" id="duckdb-status-bar">
+          <span id="duckdb-status-text">Ready &bull; DuckDB OLAP engine connected to s3://telemetry-lake</span>
+          <span id="duckdb-timing-text">-- ms</span>
+        </div>
+
+        <!-- DuckDB Tabular Data Grid -->
+        <div class="sql-grid-wrapper" id="duckdb-grid-wrapper">
+          <div id="duckdb-grid-empty" style="padding: 40px; text-align: center; color: var(--muted);">
+            <div style="font-size: 1.1rem; margin-bottom: 6px;">🦆 DuckDB S3 Lake Query Editor</div>
+            <div style="font-size: 0.8rem;">Select a canned query from the dropdown above or enter SQL and press <b>Ctrl+Enter</b>.</div>
+          </div>
+          <div id="duckdb-error-box" style="display: none; padding: 14px 18px; background: rgba(239, 68, 68, 0.12); border: 1px solid #ef4444; border-radius: 4px; color: #fca5a5; font-family: monospace; font-size: 0.82rem; margin: 10px; line-height: 1.5;"></div>
+          <table class="sql-grid-table" id="duckdb-grid-table" style="display: none;">
+            <thead id="duckdb-grid-thead"></thead>
+            <tbody id="duckdb-grid-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <footer>
       <div>Canary Load Generator &bull; Polyglot Telemetry &bull; Color-Coded Fault Injection &bull; Dynamic TPS Override &bull; Container Power Control &bull; SQL Data Grid</div>
       <div>__SHOWCASE_FOOTER__<a href="/stats" target="_blank">JSON Snapshot</a> &bull; <a href="/api/trends?range=5m" target="_blank">Trends API</a> &bull; <a href="/api/dependencies" target="_blank">Dependencies API</a></div>
@@ -3720,6 +4354,8 @@ def render_dashboard_html() -> str:
       const drawerSection = document.getElementById('controls-drawer');
       const depSection = document.getElementById('dependencies-section');
       const sqlSection = document.getElementById('sql-editor-section');
+      const s3Section = document.getElementById('s3-browser-section');
+      const duckdbSection = document.getElementById('telemetry-query-section');
 
       // Reset all display
       graphsSection.style.display = 'none';
@@ -3728,6 +4364,8 @@ def render_dashboard_html() -> str:
       drawerSection.style.display = 'none';
       depSection.style.display = 'none';
       sqlSection.style.display = 'none';
+      if (s3Section) s3Section.style.display = 'none';
+      if (duckdbSection) duckdbSection.style.display = 'none';
 
       if (mode === 'graphs') {{
         graphsSection.style.display = 'block';
@@ -3743,6 +4381,12 @@ def render_dashboard_html() -> str:
       }} else if (mode === 'sql') {{
         sqlSection.style.display = 'block';
         loadSavedQueriesList();
+      }} else if (mode === 's3') {{
+        if (s3Section) s3Section.style.display = 'block';
+        loadS3Buckets();
+      }} else if (mode === 'telemetry_query') {{
+        if (duckdbSection) duckdbSection.style.display = 'block';
+        loadDuckDBCannedQueries();
       }} else {{
         // 'both'
         graphsSection.style.display = 'block';
@@ -3752,6 +4396,618 @@ def render_dashboard_html() -> str:
       }}
       if (latestTrendsData) renderAllCharts(latestTrendsData);
     }}
+
+    // ---------------------------------------------------------------------------
+    // S3 Compatible Storage Browser & Data Lake Logic
+    // ---------------------------------------------------------------------------
+    let currentS3Bucket = 'telemetry-lake';
+    let currentS3Prefix = '';
+
+    async function loadS3Buckets() {{
+      const statusEl = document.getElementById('s3-status-text');
+      if (statusEl) statusEl.innerText = 'Connecting to S3 storage...';
+      try {{
+        const res = await fetch('/api/s3/buckets');
+        const data = await res.json();
+        const select = document.getElementById('s3-bucket-select');
+        select.innerHTML = '';
+        const buckets = data.buckets || ['telemetry-lake'];
+        buckets.forEach(b => {{
+          const opt = document.createElement('option');
+          opt.value = b;
+          opt.textContent = '🪣 ' + b;
+          if (b === currentS3Bucket) opt.selected = true;
+          select.appendChild(opt);
+        }});
+        if (buckets.length > 0 && !buckets.includes(currentS3Bucket)) {{
+          currentS3Bucket = buckets[0];
+        }}
+        if (data.endpoint) {{
+          const epBadge = document.getElementById('s3-endpoint-badge');
+          if (epBadge) epBadge.innerText = data.endpoint.replace('http://', '');
+        }}
+        loadS3Objects(currentS3Bucket, currentS3Prefix);
+      }} catch (err) {{
+        console.error('Failed to load S3 buckets', err);
+        if (statusEl) statusEl.innerText = 'Error connecting to S3: ' + err.message;
+      }}
+    }}
+
+    function onSelectS3Bucket(bkt) {{
+      currentS3Bucket = bkt;
+      currentS3Prefix = '';
+      loadS3Objects(currentS3Bucket, currentS3Prefix);
+    }}
+
+    function refreshS3Objects() {{
+      loadS3Objects(currentS3Bucket, currentS3Prefix);
+    }}
+
+    async function loadS3Objects(bucket, prefix) {{
+      currentS3Bucket = bucket || 'telemetry-lake';
+      currentS3Prefix = prefix || '';
+      const statusEl = document.getElementById('s3-status-text');
+      if (statusEl) statusEl.innerText = 'Loading objects in s3://' + currentS3Bucket + '/' + currentS3Prefix + '...';
+
+      renderS3Breadcrumbs(currentS3Bucket, currentS3Prefix);
+
+      try {{
+        const url = '/api/s3/objects?bucket=' + encodeURIComponent(currentS3Bucket) + '&prefix=' + encodeURIComponent(currentS3Prefix);
+        const res = await fetch(url);
+        const data = await res.json();
+
+        const tbody = document.getElementById('s3-objects-tbody');
+        tbody.innerHTML = '';
+
+        if (data.status === 'error') {{
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:30px; color:#ef4444;">Error: ' + data.error + '</td></tr>';
+          if (statusEl) statusEl.innerText = 'Error: ' + data.error;
+          return;
+        }}
+
+        // Parent directory row
+        if (data.parent_prefix !== null && data.parent_prefix !== undefined) {{
+          const tr = document.createElement('tr');
+          tr.className = 's3-folder-row';
+          tr.onclick = function() {{ loadS3Objects(currentS3Bucket, data.parent_prefix); }};
+          tr.innerHTML = '<td style="width:44px; text-align:center; font-size:1.1rem;">📁</td>' +
+                         '<td class="s3-folder-name" colspan="3">.. [Up to ' + (data.parent_prefix || 'root') + ']</td>' +
+                         '<td></td>';
+          tbody.appendChild(tr);
+        }}
+
+        // Subfolders
+        (data.folders || []).forEach(f => {{
+          const tr = document.createElement('tr');
+          tr.className = 's3-folder-row';
+          tr.onclick = function() {{ loadS3Objects(currentS3Bucket, f.prefix); }};
+          tr.innerHTML = '<td style="width:44px; text-align:center; font-size:1.1rem;">📁</td>' +
+                         '<td class="s3-folder-name">' + f.name + '</td>' +
+                         '<td style="color:var(--muted); font-size:0.75rem;">Folder</td>' +
+                         '<td style="color:var(--muted);">-</td>' +
+                         '<td style="text-align:right;">' +
+                           '<button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); loadS3Objects(\'' + currentS3Bucket + '\', \'' + f.prefix + '\')">Open</button>' +
+                         '</td>';
+          tbody.appendChild(tr);
+        }});
+
+        // Files
+        (data.files || []).forEach(file => {{
+          const tr = document.createElement('tr');
+          const badge = file.is_parquet ? '<span class="s3-parquet-badge">PARQUET</span>' : '';
+          const safeKey = file.key.replace(/'/g, "\\'");
+          let actionBtns = '';
+          if (file.is_parquet) {{
+            actionBtns += '<button class="btn btn-accent btn-sm" onclick="inspectParquetFile(\'' + currentS3Bucket + '\', \'' + safeKey + '\')">📊 Inspect</button> ';
+          }}
+          actionBtns += '<button class="btn btn-outline btn-sm" onclick="downloadS3File(\'' + currentS3Bucket + '\', \'' + safeKey + '\')" title="Download file">⬇️</button> ';
+          actionBtns += '<button class="btn btn-warning btn-sm" onclick="deleteS3File(\'' + currentS3Bucket + '\', \'' + safeKey + '\')" title="Delete object">🗑️</button>';
+
+          tr.innerHTML = '<td style="width:44px; text-align:center; font-size:1.1rem;">' + (file.is_parquet ? '📊' : '📄') + '</td>' +
+                         '<td class="s3-file-name">' + file.name + ' ' + badge + '</td>' +
+                         '<td style="font-family:monospace; color:#93c5fd;">' + file.size_formatted + '</td>' +
+                         '<td style="color:var(--muted); font-size:0.75rem;">' + file.last_modified + '</td>' +
+                         '<td style="text-align:right;">' + actionBtns + '</td>';
+          tbody.appendChild(tr);
+        }});
+
+        if ((data.folders || []).length === 0 && (data.files || []).length === 0) {{
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:35px; color:var(--muted);">' +
+                            'This S3 prefix is currently empty.<br/><span style="font-size:0.74rem;">Click <strong>&quot;⚡ Flush Receiver Buffer&quot;</strong> above to write telemetry from disk to S3, or upload a file.</span></td></tr>';
+        }}
+
+        if (statusEl) {{
+          const sizeKb = ((data.total_size || 0) / 1024).toFixed(1);
+          statusEl.innerHTML = 'Ready &bull; <strong>' + (data.total_folders || 0) + '</strong> Folders, <strong>' +
+                               (data.total_files || 0) + '</strong> Files &bull; Folder Size: ' + sizeKb + ' KB';
+        }}
+      }} catch (err) {{
+        console.error('Failed to load S3 objects', err);
+        if (statusEl) statusEl.innerText = 'Failed to load objects: ' + err.message;
+      }}
+    }}
+
+    function renderS3Breadcrumbs(bucket, prefix) {{
+      const bar = document.getElementById('s3-breadcrumbs');
+      if (!bar) return;
+      bar.innerHTML = '';
+
+      const rootSpan = document.createElement('span');
+      rootSpan.className = (!prefix ? 's3-crumb active' : 's3-crumb');
+      rootSpan.innerHTML = '🪣 ' + bucket;
+      rootSpan.onclick = function() {{ loadS3Objects(bucket, ''); }};
+      bar.appendChild(rootSpan);
+
+      if (!prefix) return;
+
+      const slash = document.createElement('span');
+      slash.innerText = ' / ';
+      bar.appendChild(slash);
+
+      const parts = prefix.split('/').filter(Boolean);
+      let accum = '';
+      parts.forEach((p, idx) => {{
+        accum += p + '/';
+        const isLast = idx === parts.length - 1;
+        const span = document.createElement('span');
+        span.className = isLast ? 's3-crumb active' : 's3-crumb';
+        span.innerText = p;
+        const target = accum;
+        span.onclick = function() {{ loadS3Objects(bucket, target); }};
+        bar.appendChild(span);
+        if (!isLast) {{
+          const sep = document.createElement('span');
+          sep.innerText = ' / ';
+          bar.appendChild(sep);
+        }}
+      }});
+    }}
+
+    function downloadS3File(bucket, key) {{
+      window.open('/api/s3/download?bucket=' + encodeURIComponent(bucket) + '&key=' + encodeURIComponent(key), '_blank');
+    }}
+
+    async function deleteS3File(bucket, key) {{
+      if (!confirm('Are you sure you want to delete object:\\n' + key + '\\nfrom S3 bucket ' + bucket + '?')) return;
+      try {{
+        const res = await fetch('/api/s3/delete', {{
+          method: 'POST',
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{bucket: bucket, key: key}})
+        }});
+        const data = await res.json();
+        loadS3Objects(bucket, currentS3Prefix);
+      }} catch (err) {{
+        alert('Delete failed: ' + err.message);
+      }}
+    }}
+
+    async function triggerTelemetryFlush() {{
+      const btn = document.getElementById('s3-flush-btn');
+      if (btn) btn.innerText = '⏳ Flushing Buffer...';
+      try {{
+        const res = await fetch('/api/s3/flush', {{method: 'POST'}});
+        const data = await res.json();
+        alert('Telemetry Buffer Flushed!\\n\\nEvents written to Parquet: ' + (data.events_flushed || 0) +
+              '\\nTotal Parquet files in lake: ' + (data.total_parquet_files || 0));
+        loadS3Objects(currentS3Bucket, currentS3Prefix);
+      }} catch (err) {{
+        alert('Flush trigger failed: ' + err.message);
+      }} finally {{
+        if (btn) btn.innerText = '⚡ Flush Receiver Buffer';
+      }}
+    }}
+
+    async function inspectParquetFile(bucket, key) {{
+      const modal = document.getElementById('parquet-modal');
+      const title = document.getElementById('parquet-modal-title');
+      const meta = document.getElementById('parquet-modal-meta');
+      const thead = document.getElementById('parquet-modal-thead');
+      const tbody = document.getElementById('parquet-modal-tbody');
+
+      const fileName = key.split('/').pop();
+      title.innerText = '📊 Inspecting Parquet: ' + fileName;
+      meta.innerText = 'Reading Parquet columnar schema & decoding records via PyArrow...';
+      thead.innerHTML = '';
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:30px; color:var(--muted);">Loading Parquet data...</td></tr>';
+      modal.style.display = 'flex';
+
+      try {{
+        const res = await fetch('/api/s3/preview?bucket=' + encodeURIComponent(bucket) + '&key=' + encodeURIComponent(key));
+        const data = await res.json();
+        if (data.status === 'error') {{
+          meta.innerText = 'Error: ' + data.error;
+          tbody.innerHTML = '<tr><td colspan="6" style="color:#ef4444; padding:20px;">' + data.error + '</td></tr>';
+          return;
+        }}
+
+        const kb = ((data.file_size || 0) / 1024).toFixed(1);
+        meta.innerHTML = 'S3 Key: <code>' + data.key + '</code> &bull; Total Rows in File: <strong>' +
+                         (data.total_rows || 0) + '</strong> &bull; Size: <strong>' + kb + ' KB</strong> &bull; Compression: <strong>Snappy Columnar</strong>';
+
+        const cols = data.columns || ['event_id', 'timestamp', 'telemetry_type', 'service_name', 'event_name', 'attributes'];
+        let thHtml = '<tr><th style="width:36px; text-align:center;">#</th>';
+        cols.forEach(c => {{ thHtml += '<th>' + c + '</th>'; }});
+        thHtml += '</tr>';
+        thead.innerHTML = thHtml;
+
+        tbody.innerHTML = '';
+        (data.rows || []).forEach((row, i) => {{
+          const tr = document.createElement('tr');
+          let tdHtml = '<td style="color:var(--muted); text-align:center;">' + (i + 1) + '</td>';
+          cols.forEach(c => {{
+            let val = row[c] !== undefined ? row[c] : '';
+            if (typeof val === 'object') val = JSON.stringify(val);
+            const strVal = String(val);
+            tdHtml += '<td style="font-family:monospace; font-size:0.75rem; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' +
+                      strVal.replace(/"/g, '&quot;') + '">' + strVal + '</td>';
+          }});
+          tr.innerHTML = tdHtml;
+          tbody.appendChild(tr);
+        }});
+      }} catch (err) {{
+        meta.innerText = 'Inspection failed: ' + err.message;
+      }}
+    }}
+
+    function closeParquetModal() {{
+      const modal = document.getElementById('parquet-modal');
+      if (modal) modal.style.display = 'none';
+    }}
+
+    function promptS3Upload() {{
+      const input = document.getElementById('s3-file-input');
+      if (input) input.click();
+    }}
+
+    async function onS3FileSelected(input) {{
+      if (!input.files || input.files.length === 0) return;
+      const file = input.files[0];
+      const targetKey = currentS3Prefix + file.name;
+      if (!confirm('Upload file:\\n' + file.name + ' (' + (file.size/1024).toFixed(1) + ' KB)\\nto s3://' + currentS3Bucket + '/' + targetKey + '?')) {{
+        input.value = '';
+        return;
+      }}
+
+      const statusEl = document.getElementById('s3-status-text');
+      if (statusEl) statusEl.innerText = 'Uploading ' + file.name + '...';
+
+      const reader = new FileReader();
+      reader.onload = async function() {{
+        try {{
+          const bytes = new Uint8Array(reader.result);
+          const uploadUrl = '/api/s3/upload?bucket=' + encodeURIComponent(currentS3Bucket) + '&key=' + encodeURIComponent(targetKey);
+          const res = await fetch(uploadUrl, {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/octet-stream'}},
+            body: bytes
+          }});
+          const data = await res.json();
+          alert('Upload Successful!\\n\\nKey: ' + data.key + '\\nSize: ' + (data.size || file.size) + ' bytes');
+          loadS3Objects(currentS3Bucket, currentS3Prefix);
+        }} catch (err) {{
+          alert('Upload failed: ' + err.message);
+        }} finally {{
+          input.value = '';
+        }}
+      }};
+      reader.readAsArrayBuffer(file);
+    }}
+
+    async function promptCreateFolder() {{
+      const name = prompt('Enter new folder name:');
+      if (!name) return;
+      const clean = name.trim().replace(/\\/+$/, '') + '/';
+      const targetKey = currentS3Prefix + clean;
+      try {{
+        const uploadUrl = '/api/s3/upload?bucket=' + encodeURIComponent(currentS3Bucket) + '&key=' + encodeURIComponent(targetKey);
+        await fetch(uploadUrl, {{
+          method: 'POST',
+          headers: {{'Content-Type': 'application/octet-stream'}},
+          body: new Uint8Array(0)
+        }});
+        loadS3Objects(currentS3Bucket, currentS3Prefix);
+      }} catch (err) {{
+        alert('Create folder failed: ' + err.message);
+      }}
+    }}
+
+    async function promptCreateBucket() {{
+      const name = prompt('Enter new S3 bucket name (lowercase, numbers, hyphens):');
+      if (!name) return;
+      const clean = name.trim().toLowerCase();
+      try {{
+        const res = await fetch('/api/s3/buckets', {{
+          method: 'POST',
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{bucket: clean}})
+        }});
+        const data = await res.json();
+        if (data.status === 'success') {{
+          currentS3Bucket = clean;
+          currentS3Prefix = '';
+          loadS3Buckets();
+        }} else {{
+          alert('Failed to create bucket: ' + (data.error || 'Unknown error'));
+        }}
+      }} catch (err) {{
+        alert('Create bucket failed: ' + err.message);
+      }}
+    }}
+
+    // ---------------------------------------------------------------------------
+    // DuckDB S3 Parquet OLAP Query Editor Logic
+    // ---------------------------------------------------------------------------
+    let duckdbCannedQueries = [];
+    let latestDuckDBResult = null;
+
+    async function loadDuckDBCannedQueries() {{
+      const select = document.getElementById('duckdb-canned-select');
+      if (!select) return;
+      if (duckdbCannedQueries && duckdbCannedQueries.length > 0) return;
+
+      try {{
+        const res = await fetch('/api/duckdb/canned-queries');
+        const data = await res.json();
+        if (data.status === 'success' && data.queries) {{
+          duckdbCannedQueries = data.queries;
+          select.innerHTML = '<option value="">-- Choose a canned telemetry query --</option>';
+          data.queries.forEach(q => {{
+            const opt = document.createElement('option');
+            opt.value = q.id;
+            opt.textContent = q.name;
+            select.appendChild(opt);
+          }});
+
+          const input = document.getElementById('duckdb-query-input');
+          if (input && !input.value.trim() && data.queries.length > 0) {{
+            input.value = data.queries[0].sql;
+            select.value = data.queries[0].id;
+          }}
+        }}
+      }} catch (err) {{
+        console.warn('Failed to load canned queries:', err);
+      }}
+    }}
+
+    function onSelectDuckDBCannedQuery(queryId) {{
+      if (!queryId) return;
+      const found = duckdbCannedQueries.find(q => q.id === queryId);
+      if (found) {{
+        const input = document.getElementById('duckdb-query-input');
+        if (input) {{
+          input.value = found.sql;
+          input.focus();
+        }}
+      }}
+    }}
+
+    function insertDuckDBSnippet(snippet) {{
+      const input = document.getElementById('duckdb-query-input');
+      if (!input) return;
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      const val = input.value;
+      input.value = val.substring(0, start) + snippet + val.substring(end);
+      input.selectionStart = input.selectionEnd = start + snippet.length;
+      input.focus();
+    }}
+
+    async function runDuckDBQuery() {{
+      const input = document.getElementById('duckdb-query-input');
+      const statusText = document.getElementById('duckdb-status-text');
+      const timingText = document.getElementById('duckdb-timing-text');
+      const errorBox = document.getElementById('duckdb-error-box');
+      const emptyBox = document.getElementById('duckdb-grid-empty');
+      const table = document.getElementById('duckdb-grid-table');
+      const thead = document.getElementById('duckdb-grid-thead');
+      const tbody = document.getElementById('duckdb-grid-tbody');
+
+      if (!input) return;
+      const sql = input.value.trim();
+      if (!sql) {{
+        alert('Please enter a SQL query or select a canned query.');
+        return;
+      }}
+
+      statusText.innerHTML = '<span class="pulse"></span> Executing query on S3 Parquet Lake via DuckDB...';
+      timingText.innerText = 'running...';
+      if (errorBox) errorBox.style.display = 'none';
+
+      try {{
+        const res = await fetch('/api/duckdb/query', {{
+          method: 'POST',
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{ query: sql, max_rows: 500 }})
+        }});
+        const data = await res.json();
+
+        if (data.status === 'success') {{
+          latestDuckDBResult = data;
+          statusText.innerText = 'Query completed successfully • ' + data.row_count + ' rows returned from S3 Parquet Lake';
+          timingText.innerText = data.execution_time_ms + ' ms';
+
+          if (emptyBox) emptyBox.style.display = 'none';
+          if (table) table.style.display = 'table';
+
+          thead.innerHTML = '';
+          const trHead = document.createElement('tr');
+          const thNum = document.createElement('th');
+          thNum.style.width = '42px';
+          thNum.textContent = '#';
+          trHead.appendChild(thNum);
+
+          data.columns.forEach(col => {{
+            const th = document.createElement('th');
+            th.textContent = col;
+            trHead.appendChild(th);
+          }});
+          thead.appendChild(trHead);
+
+          tbody.innerHTML = '';
+          if (data.rows.length === 0) {{
+            const emptyTr = document.createElement('tr');
+            const td = document.createElement('td');
+            td.colSpan = data.columns.length + 1;
+            td.style.textAlign = 'center';
+            td.style.padding = '24px';
+            td.style.color = 'var(--muted)';
+            td.textContent = 'Query executed successfully but returned 0 rows.';
+            emptyTr.appendChild(td);
+            tbody.appendChild(emptyTr);
+          }} else {{
+            data.rows.forEach((row, idx) => {{
+              const tr = document.createElement('tr');
+              const tdNum = document.createElement('td');
+              tdNum.style.color = 'var(--muted)';
+              tdNum.style.fontSize = '0.72rem';
+              tdNum.style.textAlign = 'center';
+              tdNum.textContent = String(idx + 1);
+              tr.appendChild(tdNum);
+
+              row.forEach((cellVal, colIdx) => {{
+                const colName = data.columns[colIdx];
+                const td = document.createElement('td');
+                const strVal = (cellVal === null || cellVal === undefined) ? 'NULL' : String(cellVal);
+
+                if (cellVal === null) {{
+                  td.style.color = 'var(--muted)';
+                  td.style.fontStyle = 'italic';
+                  td.textContent = 'NULL';
+                }} else if (colName === 'telemetry_type') {{
+                  let badgeBg = '#334155';
+                  let badgeColor = '#f8fafc';
+                  if (strVal === 'trace') {{ badgeBg = '#4c1d95'; badgeColor = '#c4b5fd'; }}
+                  else if (strVal === 'metric') {{ badgeBg = '#0e7490'; badgeColor = '#67e8f9'; }}
+                  else if (strVal === 'log') {{ badgeBg = '#7c2d12'; badgeColor = '#fdba74'; }}
+                  td.innerHTML = '<span class="badge" style="background:' + badgeBg + '; color:' + badgeColor + ';">' + strVal + '</span>';
+                }} else if (colName === 'timestamp_ns') {{
+                  td.style.fontFamily = 'monospace';
+                  td.style.color = '#c4b5fd';
+                  td.textContent = strVal;
+                }} else if (colName === 'timestamp_iso') {{
+                  td.style.fontFamily = 'monospace';
+                  td.style.color = '#38bdf8';
+                  td.textContent = strVal;
+                }} else if (colName === 'attributes' || colName === 'raw_payload') {{
+                  td.style.fontFamily = 'monospace';
+                  td.style.fontSize = '0.74rem';
+                  td.style.maxWidth = '320px';
+                  td.style.overflow = 'hidden';
+                  td.style.textOverflow = 'ellipsis';
+                  td.style.whiteSpace = 'nowrap';
+                  td.title = strVal;
+                  td.textContent = strVal;
+                }} else {{
+                  td.textContent = strVal;
+                }}
+                tr.appendChild(td);
+              }});
+              tbody.appendChild(tr);
+            }});
+          }}
+        }} else {{
+          statusText.innerText = 'Query error';
+          timingText.innerText = (data.execution_time_ms || 0) + ' ms';
+          if (table) table.style.display = 'none';
+          if (emptyBox) emptyBox.style.display = 'none';
+          if (errorBox) {{
+            errorBox.style.display = 'block';
+            errorBox.innerHTML = '<b>Query Execution Error:</b><br>' + (data.error || 'Unknown DuckDB error');
+          }}
+        }}
+      }} catch (err) {{
+        statusText.innerText = 'Network/Execution error';
+        timingText.innerText = '-- ms';
+        if (errorBox) {{
+          errorBox.style.display = 'block';
+          errorBox.innerText = 'Request failed: ' + err.message;
+        }}
+      }}
+    }}
+
+    function clearDuckDBQuery() {{
+      const input = document.getElementById('duckdb-query-input');
+      const table = document.getElementById('duckdb-grid-table');
+      const emptyBox = document.getElementById('duckdb-grid-empty');
+      const errorBox = document.getElementById('duckdb-error-box');
+      const timingText = document.getElementById('duckdb-timing-text');
+      const statusText = document.getElementById('duckdb-status-text');
+
+      if (input) input.value = '';
+      if (table) table.style.display = 'none';
+      if (emptyBox) emptyBox.style.display = 'block';
+      if (errorBox) errorBox.style.display = 'none';
+      if (timingText) timingText.innerText = '-- ms';
+      if (statusText) statusText.innerText = 'Ready • Enter query or pick a canned query';
+      latestDuckDBResult = null;
+    }}
+
+    async function flushAndRunDuckDBQuery() {{
+      const statusText = document.getElementById('duckdb-status-text');
+      if (statusText) statusText.innerHTML = '<span class="pulse"></span> Flushing in-memory receiver buffer to S3...';
+      try {{
+        await fetch('/api/s3/flush', {{ method: 'POST' }});
+      }} catch (e) {{
+        console.warn('Flush error:', e);
+      }}
+      runDuckDBQuery();
+    }}
+
+    function exportDuckDBResults(format) {{
+      if (!latestDuckDBResult || !latestDuckDBResult.rows || latestDuckDBResult.rows.length === 0) {{
+        alert('No query results available to export.');
+        return;
+      }}
+      let content = '';
+      let mimeType = 'text/plain';
+      let filename = 'telemetry_duckdb_export.' + format;
+
+      if (format === 'csv') {{
+        mimeType = 'text/csv';
+        const cols = latestDuckDBResult.columns.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',');
+        const rowLines = latestDuckDBResult.rows.map(r => {{
+          return r.map(val => {{
+            if (val === null || val === undefined) return '""';
+            return '"' + String(val).replace(/"/g, '""') + '"';
+          }}).join(',');
+        }});
+        content = cols + '\n' + rowLines.join('\n');
+      }} else {{
+        mimeType = 'application/json';
+        const objArray = latestDuckDBResult.rows.map(r => {{
+          const item = {{}};
+          latestDuckDBResult.columns.forEach((col, idx) => {{
+            item[col] = r[idx];
+          }});
+          return item;
+        }});
+        content = JSON.stringify(objArray, null, 2);
+      }}
+
+      const blob = new Blob([content], {{ type: mimeType }});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }}
+
+    // DuckDB Query Editor Keyboard Shortcut (Ctrl+Enter / Cmd+Enter)
+    document.addEventListener('DOMContentLoaded', () => {{
+      const duckdbInput = document.getElementById('duckdb-query-input');
+      if (duckdbInput) {{
+        duckdbInput.addEventListener('keydown', (e) => {{
+          if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
+            e.preventDefault();
+            runDuckDBQuery();
+          }}
+        }});
+      }}
+    }});
 
     function setTimeRange(range, elem) {{
       currentRange = range;
@@ -5696,6 +6952,65 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 self.end_headers()
                 self.wfile.write(data)
 
+            elif path == "/api/s3/buckets":
+                data = json.dumps(s3_list_buckets(), indent=2).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            elif path == "/api/s3/objects":
+                bkt = query.get("bucket", [S3_BUCKET_NAME])[0]
+                pfx = query.get("prefix", [""])[0]
+                data = json.dumps(s3_list_objects(bkt, pfx), indent=2).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            elif path == "/api/s3/preview":
+                bkt = query.get("bucket", [S3_BUCKET_NAME])[0]
+                key = query.get("key", [""])[0]
+                data = json.dumps(s3_preview_object(bkt, key), indent=2).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            elif path == "/api/s3/download":
+                bkt = query.get("bucket", [S3_BUCKET_NAME])[0]
+                key = query.get("key", [""])[0]
+                file_name = key.split("/")[-1] or "download"
+                try:
+                    s3 = get_s3_client()
+                    obj = s3.get_object(Bucket=bkt, Key=key)
+                    body = obj["Body"].read()
+                    self.send_response(200)
+                    self._send_cors_headers()
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Disposition", f'attachment; filename="{file_name}"')
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except Exception as exc:
+                    err_bytes = json.dumps({"error": str(exc)}).encode("utf-8")
+                    self._send_bytes(500, err_bytes, "application/json")
+
+            elif path == "/api/duckdb/canned-queries":
+                data = json.dumps({"status": "success", "queries": CANNED_DUCKDB_QUERIES}, indent=2).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
             elif path == "/api/qrcode":
                 default_host = get_detected_host_ip()
                 is_https = (self.headers.get("X-Forwarded-Proto") == "https" or "trycloudflare.com" in default_host)
@@ -5744,6 +7059,7 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
         def do_POST(self):
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
+            query = urllib.parse.parse_qs(parsed.query)
             content_length = int(self.headers.get("Content-Length", 0))
             raw_body = self.rfile.read(content_length) if content_length > 0 else b""
             if path == "/api/login":
@@ -5910,6 +7226,41 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 self.send_header("Content-Length", str(len(resp)))
                 self.end_headers()
                 self.wfile.write(resp)
+
+            elif path == "/api/s3/buckets":
+                name = body.get("bucket", "").strip() if isinstance(body, dict) else ""
+                res = s3_create_bucket(name)
+                self._send_bytes(200, json.dumps(res).encode("utf-8"), "application/json")
+                return
+
+            elif path == "/api/s3/delete":
+                bkt = body.get("bucket", S3_BUCKET_NAME) if isinstance(body, dict) else S3_BUCKET_NAME
+                key = body.get("key", "") if isinstance(body, dict) else ""
+                res = s3_delete_object(bkt, key)
+                self._send_bytes(200, json.dumps(res).encode("utf-8"), "application/json")
+                return
+
+            elif path == "/api/s3/upload":
+                bkt = query.get("bucket", [S3_BUCKET_NAME])[0]
+                key = query.get("key", [""])[0]
+                if not key:
+                    self._send_bytes(400, b'{"error":"key is required"}', "application/json")
+                    return
+                res = s3_upload_object(bkt, key, raw_body)
+                self._send_bytes(200, json.dumps(res).encode("utf-8"), "application/json")
+                return
+
+            elif path == "/api/s3/flush":
+                res = trigger_telemetry_flush()
+                self._send_bytes(200, json.dumps(res).encode("utf-8"), "application/json")
+                return
+
+            elif path == "/api/duckdb/query":
+                sql = body.get("query", "") if isinstance(body, dict) else ""
+                limit = int(body.get("max_rows", 500)) if isinstance(body, dict) else 500
+                res = execute_duckdb_query(sql, limit)
+                self._send_bytes(200, json.dumps(res).encode("utf-8"), "application/json")
+                return
 
             else:
                 self.send_response(404)

@@ -35,6 +35,10 @@ exporters:
     endpoint: http://loki:3100/otlp
     tls:
       insecure: true
+  otlphttp/s3_lake:
+    endpoint: http://custom-telemetry-receiver:4318
+    tls:
+      insecure: true
   debug:
     verbosity: basic
 
@@ -48,12 +52,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [otlp/tempo, debug]
+      exporters: [otlp/tempo, otlphttp/s3_lake, debug]
     metrics:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [prometheusremotewrite/mimir, debug]
+      exporters: [prometheusremotewrite/mimir, otlphttp/s3_lake, debug]
     logs:
       receivers: [otlp]
       processors: [resource, transform, batch]
-      exporters: [otlphttp/loki, debug]
+      exporters: [otlphttp/loki, otlphttp/s3_lake, debug]

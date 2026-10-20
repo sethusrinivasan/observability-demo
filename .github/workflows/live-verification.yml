@@ -14,7 +14,7 @@ jobs:
     name: Verify Live Showcase
     runs-on: ubuntu-latest
     env:
-      LIVE_URL: ${{ vars.LIVE_SHOWCASE_URL || 'https://styles-settle-verbal-antique.trycloudflare.com' }}
+      LIVE_URL: ${{ vars.LIVE_SHOWCASE_URL || 'https://volume-investigation-knife-pros.trycloudflare.com' }}
 
     steps:
       - name: Checkout repository
