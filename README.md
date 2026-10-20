@@ -47,6 +47,52 @@ Consolidated distributed tracing (Tempo), metrics (Mimir/Prometheus), logs (Loki
 
 ---
 
+## Ultra-Frugal AWS Lambda MicroVM & Telemetry Lake Deployment
+
+The entire polyglot stack can be deployed to **AWS Lambda Firecracker MicroVMs** on **AWS Graviton (`arm64`)** with maximum frugality (**$0.00 on AWS Free Tier / < $4.00/month at scale**).
+
+### Architectural Highlights
+- **128 MB Graviton MicroVMs**: All 7 services and the custom collector run in 128 MB MicroVMs using the AWS Lambda Web Adapter (LWA), leveraging the permanent monthly Free Tier of **400,000 GB-seconds** (3.2 million compute seconds free every month).
+- **Zero API Gateway Fees**: All ingress uses **Lambda Function URLs** with built-in HTTPS and CORS ($0.00).
+- **Shared Aurora Serverless**: Reuses your existing Aurora Serverless cluster via bounded connection pools (1–2 per MicroVM) without incurring new baseline costs.
+- **Custom S3 Parquet Lake**: Telemetry is buffered in `/tmp` and compacted into **>= 10 MB Snappy Parquet files** before uploading to S3, reducing S3 PUT API costs by **99.7%**.
+- **DuckDB Serverless OLAP**: Runs in-process inside the Canary Lambda function, querying `s3://telemetry-lake/**/*.parquet` directly via IAM execution roles in 20–80 ms without Athena or Redshift fees.
+- **Mandatory Resource Tagging**: All AWS resources created for this project are automatically tagged with `ApplicationName = "Observability-Demo"`.
+
+### One-Click AWS Deployment Script (`deploy_aws.sh`)
+
+Infrastructure is managed as code via **Terraform** (`terraform/`) and automated through the `./deploy_aws.sh` orchestration script:
+
+```bash
+# 1. Initialize Terraform
+./deploy_aws.sh init
+
+# 2. Review planned changes (enforces ApplicationName="Observability-Demo" tag)
+./deploy_aws.sh plan
+
+# 3. Provision S3 lake, ECR repos, IAM roles, and Lambda Function URLs
+./deploy_aws.sh apply
+
+# 4. Build arm64 Graviton container images and push to Amazon ECR
+./deploy_aws.sh build-push all          # Build and push all 9 containers
+./deploy_aws.sh build-push observability-rust-app  # Or push a single service
+
+# 5. Update Lambda function code
+./deploy_aws.sh deploy all
+
+# 6. Display live HTTPS Function URLs and deployment status
+./deploy_aws.sh status
+
+# 7. Safe teardown
+./deploy_aws.sh destroy
+```
+
+For complete architectural documentation, cost formulas, and runtime sizing tables, see:
+- [`docs/aws_lambda_telemetry_lake_frugal_plan.md`](./docs/aws_lambda_telemetry_lake_frugal_plan.md)
+- [`docs/frugal_lambda_telemetry_one_pager.md`](./docs/frugal_lambda_telemetry_one_pager.md)
+
+---
+
 ## Features
 
 * **Multi-Language Telemetry Parity**: Identical endpoint semantics, custom OTel histograms/counters, and tracing context across Python, Java, Rust, Node.js, Go, C# .NET, and C (POSIX).
