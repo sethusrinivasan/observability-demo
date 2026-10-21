@@ -74,7 +74,7 @@ resource "aws_iam_role_policy_attachment" "canary_basic" {
 
 resource "aws_iam_policy" "canary_s3_duckdb" {
   name        = "observability-demo-canary-duckdb-s3-policy"
-  description = "Allows Canary DuckDB engine to scan telemetry Parquet files in S3"
+  description = "Allows Canary DuckDB engine and S3 Browser to scan and manage telemetry Parquet files in S3"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -82,7 +82,16 @@ resource "aws_iam_policy" "canary_s3_duckdb" {
       {
         Effect = "Allow"
         Action = [
+          "s3:ListAllMyBuckets"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
           "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
           "s3:ListBucket",
           "s3:GetBucketLocation"
         ]
@@ -98,4 +107,35 @@ resource "aws_iam_policy" "canary_s3_duckdb" {
 resource "aws_iam_role_policy_attachment" "canary_s3_attach" {
   role       = aws_iam_role.canary_role.name
   policy_arn = aws_iam_policy.canary_s3_duckdb.arn
+}
+
+# 4. IAM DB Authentication Policy for Aurora PostgreSQL
+resource "aws_iam_policy" "rds_iam_auth" {
+  name        = "observability-demo-rds-iam-auth-policy"
+  description = "Allows Lambda microVMs and Canary to connect to Aurora PostgreSQL using IAM DB authentication tokens"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "rds-db:connect"
+        ]
+        Resource = [
+          "arn:aws:rds-db:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:dbuser:*/${var.aurora_db_user}"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "canary_rds_attach" {
+  role       = aws_iam_role.canary_role.name
+  policy_arn = aws_iam_policy.rds_iam_auth.arn
+}
+
+resource "aws_iam_role_policy_attachment" "microservice_rds_attach" {
+  role       = aws_iam_role.microservice_role.name
+  policy_arn = aws_iam_policy.rds_iam_auth.arn
 }

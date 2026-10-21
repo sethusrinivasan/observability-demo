@@ -56,6 +56,7 @@ resource "aws_lambda_function" "apps" {
       PORT                         = tostring(each.value.port)
       AWS_LWA_READINESS_CHECK_PATH = "/version"
       AWS_LWA_INVOKE_MODE          = "buffered"
+      AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS = "0"
       POSTGRES_HOST                = var.aurora_db_host
       POSTGRES_PORT                = tostring(var.aurora_db_port)
       POSTGRES_DB                  = var.aurora_db_name
@@ -89,21 +90,22 @@ resource "aws_lambda_function_url" "apps_url" {
 # 2. Custom High-Throughput Telemetry Receiver (Lambda MicroVM)
 # ---------------------------------------------------------------------------
 resource "aws_lambda_function" "collector" {
-  function_name                  = "observability-telemetry-collector"
-  role                           = aws_iam_role.collector_role.arn
-  package_type                   = "Image"
-  image_uri                      = "${aws_ecr_repository.services["custom-telemetry-receiver"].repository_url}:latest"
-  architectures                  = ["arm64"]
-  memory_size                    = 128
-  timeout                        = 30
-  reserved_concurrent_executions = var.collector_reserved_concurrency # Set to 1 to maximize 10MB Parquet compaction
+  function_name = "observability-telemetry-collector"
+  role          = aws_iam_role.collector_role.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.services["custom-telemetry-receiver"].repository_url}:latest"
+  architectures = ["arm64"]
+  memory_size   = 256
+  timeout       = 30
 
   environment {
     variables = {
       PORT                         = "4318"
       AWS_LWA_READINESS_CHECK_PATH = "/health"
       AWS_LWA_INVOKE_MODE          = "buffered"
+      AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS = "0"
       S3_BUCKET_NAME               = aws_s3_bucket.telemetry_lake.id
+      S3_ENDPOINT_URL              = "https://s3.${var.aws_region}.amazonaws.com"
       BUFFER_DIR                   = "/tmp/telemetry_buffer"
       MAX_PARQUET_FILE_SIZE_BYTES  = "10485760" # 10 MB Compaction limit
       DRAIN_BATCH_SIZE             = "1000"
@@ -145,6 +147,7 @@ resource "aws_lambda_function" "canary" {
       PORT                         = "8085"
       AWS_LWA_READINESS_CHECK_PATH = "/health"
       AWS_LWA_INVOKE_MODE          = "buffered"
+      AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS = "0"
       S3_BUCKET_NAME               = aws_s3_bucket.telemetry_lake.id
       S3_ENDPOINT_URL              = "https://s3.${var.aws_region}.amazonaws.com"
       TELEMETRY_RECEIVER_URL       = aws_lambda_function_url.collector_url.function_url
@@ -208,5 +211,13 @@ resource "aws_lambda_permission" "collector_url_invoke" {
   statement_id  = "FunctionURLInvokeFunction"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.collector.function_name
+  principal     = "*"
+}
+
+resource "aws_lambda_permission" "apps_url_invoke" {
+  for_each      = aws_lambda_function.apps
+  statement_id  = "FunctionURLInvokeFunction"
+  action        = "lambda:InvokeFunction"
+  function_name = each.value.function_name
   principal     = "*"
 }

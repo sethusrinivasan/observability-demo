@@ -71,16 +71,22 @@ PARQUET_SCHEMA = pa.schema([
 s3_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="S3AsyncUploader")
 
 def get_s3_client():
-    return boto3.client(
-        "s3",
-        endpoint_url=S3_ENDPOINT_URL,
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_REGION,
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"})
-    )
+    kwargs = {"region_name": AWS_REGION}
+    is_aws = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("AWS_SESSION_TOKEN") or (S3_ENDPOINT_URL and "amazonaws.com" in S3_ENDPOINT_URL))
+    if is_aws:
+        if S3_ENDPOINT_URL and "amazonaws.com" not in S3_ENDPOINT_URL and "s3-storage" not in S3_ENDPOINT_URL:
+            kwargs["endpoint_url"] = S3_ENDPOINT_URL
+    else:
+        kwargs["endpoint_url"] = S3_ENDPOINT_URL
+        kwargs["aws_access_key_id"] = AWS_ACCESS_KEY_ID
+        kwargs["aws_secret_access_key"] = AWS_SECRET_ACCESS_KEY
+        kwargs["config"] = Config(signature_version="s3v4", s3={"addressing_style": "path"})
+    return boto3.client("s3", **kwargs)
 
 def ensure_bucket_exists():
+    if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        logger.info("Running in AWS Lambda - S3 bucket '%s' managed by Terraform.", S3_BUCKET_NAME)
+        return
     s3 = get_s3_client()
     try:
         s3.head_bucket(Bucket=S3_BUCKET_NAME)
@@ -201,10 +207,13 @@ class HighThroughputCompactor:
         )
 
         logger.info(
-            "Submitting async upload to S3: s3://%s/%s (Size: %.1f KB, Rows: %d)",
+            "Submitting upload to S3: s3://%s/%s (Size: %.1f KB, Rows: %d)",
             S3_BUCKET_NAME, s3_key, file_size / 1024.0, rows
         )
-        s3_executor.submit(self._async_upload_task, rotate_path, s3_key, file_size, rows)
+        if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+            self._async_upload_task(rotate_path, s3_key, file_size, rows)
+        else:
+            s3_executor.submit(self._async_upload_task, rotate_path, s3_key, file_size, rows)
 
     def _async_upload_task(self, local_path, s3_key, file_size, rows):
         """Background worker thread: uploads Parquet file to S3 and purges from disk."""
@@ -243,8 +252,17 @@ class HighThroughputCompactor:
             rows_flushed = self.current_rows_in_file
             if rows_flushed > 0 or (COMPACTING_PATH.exists() and COMPACTING_PATH.stat().st_size > 0):
                 self._rotate_and_upload_async()
-                return rows_flushed or drained_count or 1
-        return 0
+
+        # 3. Ensure any pending or leftover parquet files in buffer dir are pushed to S3
+        for p in list(BUFFER_DIR.glob("telemetry_*.parquet")):
+            try:
+                now = datetime.now(timezone.utc)
+                s3_key = f"telemetry/year={now.year:04d}/month={now.month:02d}/day={now.day:02d}/hour={now.hour:02d}/{p.name}"
+                self._async_upload_task(p, s3_key, p.stat().st_size, 1)
+            except Exception as e:
+                logger.warning("Leftover parquet upload failed: %s", e)
+
+        return rows_flushed or drained_count or self.total_compacted_rows
 
     def background_loop(self):
         """Continuous compactor daemon."""

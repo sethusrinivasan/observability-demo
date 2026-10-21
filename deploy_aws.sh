@@ -106,10 +106,6 @@ build_and_push_service() {
 
   local context_dir
   context_dir="$(dirname "${SCRIPT_DIR}/${dockerfile}")"
-  # For apps that share common scripts or root context
-  if [ "${svc_name}" = "observability-canary" ] || [ "${svc_name}" = "custom-telemetry-receiver" ]; then
-    context_dir="${SCRIPT_DIR}"
-  fi
 
   log_info "Building arm64 Graviton image for ${BOLD}${svc_name}${NC} (Tagged: ApplicationName=${APP_TAG})..."
   docker buildx build \

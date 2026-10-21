@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# Include AWS Lambda Web Adapter for serverless microVM execution
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 /lambda-adapter /opt/extensions/lambda-adapter
+
 WORKDIR /app
 
 COPY requirements.txt .
@@ -14,4 +17,4 @@ ENV FLUSH_TIME_THRESHOLD_SECONDS=300
 
 EXPOSE 4318
 
-CMD ["gunicorn", "--workers=1", "--threads=8", "--bind=0.0.0.0:4318", "--timeout=60", "receiver:app"]
+CMD ["python", "receiver.py"]
