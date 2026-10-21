@@ -25,7 +25,7 @@ variable "s3_bucket_name" {
 variable "aurora_db_host" {
   description = "Endpoint of existing shared Aurora Serverless PostgreSQL cluster"
   type        = string
-  default     = ""
+  default     = "reality-check-cost-tracker.cluster-c52ymc6u0ruy.us-east-2.rds.amazonaws.com"
 }
 
 variable "aurora_db_port" {

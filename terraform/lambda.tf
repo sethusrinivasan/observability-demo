@@ -143,7 +143,7 @@ resource "aws_lambda_function" "canary" {
   environment {
     variables = {
       PORT                         = "8085"
-      AWS_LWA_READINESS_CHECK_PATH = "/stats"
+      AWS_LWA_READINESS_CHECK_PATH = "/health"
       AWS_LWA_INVOKE_MODE          = "buffered"
       S3_BUCKET_NAME               = aws_s3_bucket.telemetry_lake.id
       S3_ENDPOINT_URL              = "https://s3.${var.aws_region}.amazonaws.com"
@@ -179,4 +179,34 @@ resource "aws_lambda_function_url" "canary_url" {
     allow_headers     = ["*"]
     max_age           = 86400
   }
+}
+
+resource "aws_lambda_permission" "canary_url_allow" {
+  statement_id           = "FunctionURLAllowPublicAccess"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.canary.function_name
+  principal              = "*"
+  function_url_auth_type = "NONE"
+}
+
+resource "aws_lambda_permission" "canary_url_invoke" {
+  statement_id  = "FunctionURLInvokeFunction"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.canary.function_name
+  principal     = "*"
+}
+
+resource "aws_lambda_permission" "collector_url_allow" {
+  statement_id           = "FunctionURLAllowPublicAccess"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.collector.function_name
+  principal              = "*"
+  function_url_auth_type = "NONE"
+}
+
+resource "aws_lambda_permission" "collector_url_invoke" {
+  statement_id  = "FunctionURLInvokeFunction"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.collector.function_name
+  principal     = "*"
 }
