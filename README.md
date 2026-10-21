@@ -59,6 +59,20 @@ The entire polyglot stack can be deployed to **AWS Lambda Firecracker MicroVMs**
 - **DuckDB Serverless OLAP**: Runs in-process inside the Canary Lambda function, querying `s3://telemetry-lake/**/*.parquet` directly via IAM execution roles in 20–80 ms without Athena or Redshift fees.
 - **Mandatory Resource Tagging**: All AWS resources created for this project are automatically tagged with `ApplicationName = "Observability-Demo"`.
 
+### Live AWS Deployment Endpoints (us-east-2)
+
+| Component | Architecture / Runtime | Public Function URL | Status |
+|:---|:---|:---|:---:|
+| **Canary Web Dashboard** | Lambda Web Adapter / Python 3.11 | [Canary Dashboard](https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws/) | `200 OK` (Green) |
+| **Telemetry Collector & Lake** | LWA / Snappy Parquet Compactor | [OTLP Ingest](https://67lv2o2bb26q6thqvfcep2re3i0sjrom.lambda-url.us-east-2.on.aws/) | `200 OK` (Green) |
+| **Python App** | 128 MB Graviton MicroVM / Flask | [Python App URL](https://2lwrbu2cc7bx7ay2ojapxsbqtq0andff.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Go App** | 128 MB Graviton MicroVM / Go 1.25 | [Go App URL](https://vnh6kor267jkevye5uvvhcqfu40sffvo.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Node.js App** | 128 MB Graviton MicroVM / Express | [Node App URL](https://7i7ewi4cvrpdzneou5qamrajsm0nwwkm.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **C App** | 128 MB Graviton MicroVM / POSIX C99 | [C App URL](https://daglnsziyvvlt572qmkzr2xmjm0unpef.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **.NET App** | 128 MB Graviton MicroVM / ASP.NET 8 | [.NET App URL](https://xppqo7vskzfjddbotn2mcaqgpe0wywzp.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Rust App** | 128 MB Graviton MicroVM / Axum | [Rust App URL](https://rq6puxwjoxx2sp5eeg3g4duy4i0bdjzs.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Java App** | 1024 MB Graviton MicroVM / Spring Boot | [Java App URL](https://2sqsnt447ofmtmjkdpoo36itlm0tifhq.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+
 ### One-Click AWS Deployment Script (`deploy_aws.sh`)
 
 Infrastructure is managed as code via **Terraform** (`terraform/`) and automated through the `./deploy_aws.sh` orchestration script:

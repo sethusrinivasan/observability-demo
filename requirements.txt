@@ -7,3 +7,4 @@ requests==2.33.0
 psycopg2-binary==2.9.10
 gunicorn==22.0.0
 setuptools
+boto3

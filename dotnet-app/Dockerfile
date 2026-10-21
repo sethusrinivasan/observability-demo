@@ -9,6 +9,11 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS runtime
 RUN apk add --no-cache curl wget
 WORKDIR /app
 COPY --from=build /app/publish ./
+
+# Include AWS Lambda Web Adapter for serverless microVM execution
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 /lambda-adapter /opt/extensions/lambda-adapter
+
+ENV PORT=8080
 ENV ASPNETCORE_HTTP_PORTS=8080
 ENV ASPNETCORE_ENVIRONMENT=Production
 EXPOSE 8080

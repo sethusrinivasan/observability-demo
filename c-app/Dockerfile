@@ -25,5 +25,9 @@ RUN apk --no-cache add \
 WORKDIR /app
 COPY --from=builder /app/server /app/server
 
+# Include AWS Lambda Web Adapter for serverless microVM execution
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 /lambda-adapter /opt/extensions/lambda-adapter
+
+ENV PORT=8080
 EXPOSE 8080
 ENTRYPOINT ["/app/server"]

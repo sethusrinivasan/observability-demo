@@ -71,7 +71,7 @@ get_ecr_login() {
 }
 
 SERVICES=(
-  "observability-python-app:python-app/Dockerfile"
+  "observability-python-app:Dockerfile"
   "observability-java-app:java-app/Dockerfile"
   "observability-rust-app:rust-app/Dockerfile"
   "observability-node-app:node-app/Dockerfile"

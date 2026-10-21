@@ -175,3 +175,54 @@ def test_aws_canary_all_seven_canned_duckdb_queries():
         assert q_data["status"] == "success", f"Query '{q['id']}' returned error: {q_data.get('error')}"
         assert "columns" in q_data
         assert "rows" in q_data
+
+
+def test_aws_all_seven_microservices_live_endpoints():
+    """Verify all 7 Graviton ARM64 polyglot microservices are live and healthy."""
+    microservices = {
+        "python": "https://2lwrbu2cc7bx7ay2ojapxsbqtq0andff.lambda-url.us-east-2.on.aws",
+        "go": "https://vnh6kor267jkevye5uvvhcqfu40sffvo.lambda-url.us-east-2.on.aws",
+        "node": "https://7i7ewi4cvrpdzneou5qamrajsm0nwwkm.lambda-url.us-east-2.on.aws",
+        "c": "https://daglnsziyvvlt572qmkzr2xmjm0unpef.lambda-url.us-east-2.on.aws",
+        "dotnet": "https://xppqo7vskzfjddbotn2mcaqgpe0wywzp.lambda-url.us-east-2.on.aws",
+        "rust": "https://rq6puxwjoxx2sp5eeg3g4duy4i0bdjzs.lambda-url.us-east-2.on.aws",
+        "java": "https://2sqsnt447ofmtmjkdpoo36itlm0tifhq.lambda-url.us-east-2.on.aws",
+    }
+
+    for lang, base_url in microservices.items():
+        # Check /version
+        v_resp = requests.get(f"{base_url}/version", timeout=10)
+        assert v_resp.status_code == 200, f"{lang} /version failed with {v_resp.status_code}"
+        v_data = v_resp.json()
+        assert "app_name" in v_data
+        assert "version" in v_data
+
+        # Check /compute/5
+        c_resp = requests.get(f"{base_url}/compute/5", timeout=10)
+        assert c_resp.status_code == 200, f"{lang} /compute/5 failed with {c_resp.status_code}"
+        c_data = c_resp.json()
+        assert c_data.get("result") == 5, f"{lang} expected fib(5)=5, got {c_data.get('result')}"
+
+
+def test_aws_canary_synthetic_traffic_stream_health():
+    """Verify live synthetic traffic stream on Canary dashboard is healthy and active."""
+    resp = requests.get(f"{AWS_CANARY_URL}/stats", timeout=10)
+    assert resp.status_code == 200, f"Stats endpoint failed with {resp.status_code}"
+    stats = resp.json()
+
+    assert stats["status"] == "Running", f"Expected Canary to be Running, got {stats['status']}"
+    assert stats["total_requests"] >= 10, f"Expected active requests stream, got {stats['total_requests']}"
+    assert stats["availability_pct"] >= 80.0, f"Availability dropped to {stats['availability_pct']}%"
+
+    # Verify all 7 microservices are marked reachable by Canary
+    apps = stats.get("apps", {})
+    expected_langs = ["python", "go", "node", "c", "dotnet", "rust", "java"]
+    for lang in expected_langs:
+        assert lang in apps, f"Language '{lang}' missing from Canary apps dict"
+        assert apps[lang]["reachable"] is True, f"Language '{lang}' marked unreachable: {apps[lang]}"
+
+    # Verify recent requests stream is active and healthy
+    recent = stats.get("recent_requests", [])
+    assert len(recent) >= 5, "Expected recent requests history"
+    recent_successes = sum(1 for r in recent[-5:] if r.get("status") == "success")
+    assert recent_successes >= 4, f"Recent stream has too many failures: {recent[-5:]}"

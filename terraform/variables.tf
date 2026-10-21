@@ -66,7 +66,7 @@ variable "collector_reserved_concurrency" {
 }
 
 variable "java_memory_size" {
-  description = "Memory allocation for Java service (128 MB for GraalVM Native AOT, 256/384 MB for JVM)"
+  description = "Memory allocation for Java service (1024 MB provides 1.0 full Graviton vCPU for fast Spring Boot cold start)"
   type        = number
-  default     = 128
+  default     = 1024
 }

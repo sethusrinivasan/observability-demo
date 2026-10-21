@@ -20,8 +20,14 @@ DB_PORT = int(os.getenv('POSTGRES_PORT', 5432))
 DB_NAME = os.getenv('POSTGRES_DB', 'observability')
 DB_USER = os.getenv('POSTGRES_USER', 'observability')
 DB_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'observability')
+AWS_REGION = os.getenv('AWS_REGION', 'us-east-2')
 DB_RETRY_COUNT = int(os.getenv('DB_RETRY_COUNT', 10))
 DB_RETRY_DELAY = float(os.getenv('DB_RETRY_DELAY', 1.0))
+
+try:
+    import boto3
+except ImportError:
+    boto3 = None
 
 # OpenTelemetry imports
 from opentelemetry import trace, metrics
@@ -52,6 +58,33 @@ def jsonify(data, *args, **kwargs):
     return original_jsonify(data, *args, **kwargs)
 
 
+def get_db_credentials():
+    host = DB_HOST
+    port = DB_PORT
+    dbname = DB_NAME
+    user = DB_USER
+    password = DB_PASSWORD
+    sslmode = "prefer"
+    if ("rds.amazonaws.com" in host or not password) and boto3:
+        try:
+            rds_client = boto3.client("rds", region_name=AWS_REGION)
+            password = rds_client.generate_db_auth_token(
+                DBHostname=host, Port=port, DBUsername=user, Region=AWS_REGION
+            )
+            sslmode = "require"
+        except Exception as e:
+            logging.getLogger(__name__).warning("Failed generating RDS IAM DB auth token: %s", e)
+    return {
+        "host": host,
+        "port": port,
+        "dbname": dbname,
+        "user": user,
+        "password": password,
+        "sslmode": sslmode,
+        "connect_timeout": 5,
+    }
+
+
 def get_db_connection():
     """
     Open and return a new Postgres connection.
@@ -61,28 +94,25 @@ def get_db_connection():
     with_db() context manager below to ensure the connection
     is always closed even if an exception is raised.
     """
-    return psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-    )
+    creds = get_db_credentials()
+    return psycopg2.connect(**creds)
 
 
 db_pool = None
+_db_initialized = False
 
 def get_pool():
-    global db_pool
+    global db_pool, _db_initialized
     if db_pool is None:
+        creds = get_db_credentials()
+        max_conn = int(os.getenv("MAX_DB_CONNECTIONS", "5"))
         db_pool = pool.ThreadedConnectionPool(
-            1, 20,
-            host=DB_HOST,
-            port=DB_PORT,
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
+            1, max_conn,
+            **creds
         )
+        if not _db_initialized:
+            _db_initialized = True
+            threading.Thread(target=ensure_audit_table, daemon=True).start()
     return db_pool
 
 @contextmanager
@@ -104,8 +134,8 @@ def ensure_audit_table():
                     CREATE TABLE IF NOT EXISTS audit_logs (
                         id SERIAL PRIMARY KEY,
                         created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-                        endpoint TEXT NOT NULL,
-                        status_code INTEGER NOT NULL,
+                        endpoint TEXT NOT NULL DEFAULT '/',
+                        status_code INTEGER NOT NULL DEFAULT 200,
                         response_time_seconds DOUBLE PRECISION,
                         process_memory_rss BIGINT,
                         process_cpu_seconds DOUBLE PRECISION,
@@ -116,24 +146,37 @@ def ensure_audit_table():
                         container_cpu_usage_ns BIGINT,
                         details JSONB
                     );
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS endpoint TEXT DEFAULT '/';
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS status_code INTEGER DEFAULT 200;
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS response_time_seconds DOUBLE PRECISION;
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS process_memory_rss BIGINT;
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS process_cpu_seconds DOUBLE PRECISION;
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS system_loadavg_1m DOUBLE PRECISION;
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS container_memory_current BIGINT;
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS container_memory_limit BIGINT;
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS container_memory_percent DOUBLE PRECISION;
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS container_cpu_usage_ns BIGINT;
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+                    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS details JSONB;
                     """
                 )
                 conn.commit()
     except Exception as e:
-        logging.getLogger(__name__).warning("ensure_audit_table skipped due to concurrency: %s", e)
+        logging.getLogger(__name__).warning("ensure_audit_table skipped: %s", e)
 
 
 def wait_for_postgres():
     logger = logging.getLogger(__name__)
-    for attempt in range(1, DB_RETRY_COUNT + 1):
+    max_retries = min(DB_RETRY_COUNT, 3)
+    for attempt in range(1, max_retries + 1):
         try:
             conn = get_db_connection()
             conn.close()
             logger.info("Connected to Postgres on attempt %d", attempt)
             return
         except Exception as exc:
-            logger.warning("Postgres connection attempt %d/%d failed: %s", attempt, DB_RETRY_COUNT, exc)
-            if attempt == DB_RETRY_COUNT:
+            logger.warning("Postgres connection attempt %d/%d failed: %s", attempt, max_retries, exc)
+            if attempt == max_retries:
                 raise
             time.sleep(DB_RETRY_DELAY)
 
@@ -715,8 +758,11 @@ def fibonacci(n):
 
 
 # Initialize database
-wait_for_postgres()
-ensure_audit_table()
+try:
+    wait_for_postgres()
+    ensure_audit_table()
+except Exception as exc:
+    logging.getLogger(__name__).warning("Non-blocking DB initialization skipped: %s", exc)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, threaded=True, use_reloader=False)

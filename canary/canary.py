@@ -71,13 +71,13 @@ from sql_guard import SqlGuardError, guard_readonly_sql
 # ---------------------------------------------------------------------------
 # Configuration from environment variables
 # ---------------------------------------------------------------------------
-APP_BASE_URL         = os.getenv("APP_BASE_URL",        "http://observability-python-app:5000")
-JAVA_APP_BASE_URL    = os.getenv("JAVA_APP_BASE_URL",   "http://observability-java-app:8080")
-RUST_APP_BASE_URL    = os.getenv("RUST_APP_BASE_URL",   "http://observability-rust-app:8081")
-NODE_APP_BASE_URL    = os.getenv("NODE_APP_BASE_URL",   "http://observability-node-app:8080")
-GO_APP_BASE_URL      = os.getenv("GO_APP_BASE_URL",     "http://observability-go-app:8080")
-DOTNET_APP_BASE_URL  = os.getenv("DOTNET_APP_BASE_URL", "http://observability-dotnet-app:8080")
-C_APP_BASE_URL       = os.getenv("C_APP_BASE_URL",      "http://observability-c-app:8080")
+APP_BASE_URL         = (os.getenv("APP_BASE_URL") or os.getenv("PYTHON_APP_BASE_URL") or "http://observability-python-app:5000").rstrip("/")
+JAVA_APP_BASE_URL    = (os.getenv("JAVA_APP_BASE_URL") or "http://observability-java-app:8080").rstrip("/")
+RUST_APP_BASE_URL    = (os.getenv("RUST_APP_BASE_URL") or "http://observability-rust-app:8081").rstrip("/")
+NODE_APP_BASE_URL    = (os.getenv("NODE_APP_BASE_URL") or "http://observability-node-app:8080").rstrip("/")
+GO_APP_BASE_URL      = (os.getenv("GO_APP_BASE_URL") or "http://observability-go-app:8080").rstrip("/")
+DOTNET_APP_BASE_URL  = (os.getenv("DOTNET_APP_BASE_URL") or "http://observability-dotnet-app:8080").rstrip("/")
+C_APP_BASE_URL       = (os.getenv("C_APP_BASE_URL") or "http://observability-c-app:8080").rstrip("/")
 OTLP_ENDPOINT        = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
 MIMIR_URL            = os.getenv("MIMIR_URL",           "http://mimir:9009")
 VALKEY_HOST          = os.getenv("VALKEY_HOST",         "valkey")
@@ -554,6 +554,37 @@ def ensure_sql_editor_schema() -> None:
                 execution_time_ms DOUBLE PRECISION,
                 client_addr TEXT
             )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id SERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                endpoint TEXT NOT NULL DEFAULT '/',
+                status_code INTEGER NOT NULL DEFAULT 200,
+                response_time_seconds DOUBLE PRECISION,
+                process_memory_rss BIGINT,
+                process_cpu_seconds DOUBLE PRECISION,
+                system_loadavg_1m DOUBLE PRECISION,
+                container_memory_current BIGINT,
+                container_memory_limit BIGINT,
+                container_memory_percent DOUBLE PRECISION,
+                container_cpu_usage_ns BIGINT,
+                details JSONB
+            );
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS endpoint TEXT DEFAULT '/';
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS status_code INTEGER DEFAULT 200;
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS response_time_seconds DOUBLE PRECISION;
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS process_memory_rss BIGINT;
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS process_cpu_seconds DOUBLE PRECISION;
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS system_loadavg_1m DOUBLE PRECISION;
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS container_memory_current BIGINT;
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS container_memory_limit BIGINT;
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS container_memory_percent DOUBLE PRECISION;
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS container_cpu_usage_ns BIGINT;
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+            ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS details JSONB;
             """
         )
         for query in SAVED_QUERIES:
