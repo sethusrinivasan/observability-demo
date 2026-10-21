@@ -74,6 +74,7 @@ def get_db_credentials():
             sslmode = "require"
         except Exception as e:
             logging.getLogger(__name__).warning("Failed generating RDS IAM DB auth token: %s", e)
+    app_name = os.getenv("APPLICATION_NAME", "observability-python-app")
     return {
         "host": host,
         "port": port,
@@ -82,6 +83,7 @@ def get_db_credentials():
         "password": password,
         "sslmode": sslmode,
         "connect_timeout": 5,
+        "application_name": app_name,
     }
 
 

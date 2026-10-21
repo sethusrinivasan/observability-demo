@@ -62,8 +62,9 @@ resource "aws_lambda_function" "apps" {
       POSTGRES_DB                       = var.aurora_db_name
       POSTGRES_USER                     = var.aurora_db_user
       POSTGRES_PASSWORD                 = var.aurora_db_password
-      DATABASE_URL                      = "postgres://${var.aurora_db_user}:${var.aurora_db_password}@${var.aurora_db_host}:${var.aurora_db_port}/${var.aurora_db_name}"
-      SPRING_DATASOURCE_URL             = "jdbc:postgresql://${var.aurora_db_host}:${var.aurora_db_port}/${var.aurora_db_name}?sslmode=prefer"
+      APPLICATION_NAME                  = "observability-${each.key}-app"
+      DATABASE_URL                      = "postgres://${var.aurora_db_user}:${var.aurora_db_password}@${var.aurora_db_host}:${var.aurora_db_port}/${var.aurora_db_name}?application_name=observability-${each.key}-app"
+      SPRING_DATASOURCE_URL             = "jdbc:postgresql://${var.aurora_db_host}:${var.aurora_db_port}/${var.aurora_db_name}?sslmode=prefer&ApplicationName=observability-${each.key}-app"
       SPRING_DATASOURCE_USERNAME        = var.aurora_db_user
       SPRING_DATASOURCE_PASSWORD        = var.aurora_db_password
       MAX_DB_CONNECTIONS                = "2" # Frugal pool cap per MicroVM
@@ -161,6 +162,7 @@ resource "aws_lambda_function" "canary" {
       POSTGRES_DB                       = var.aurora_db_name
       POSTGRES_USER                     = var.aurora_db_user
       POSTGRES_PASSWORD                 = var.aurora_db_password
+      APPLICATION_NAME                  = "observability-canary-dashboard"
       C_APP_BASE_URL                    = aws_lambda_function_url.apps_url["c"].function_url
       RUST_APP_BASE_URL                 = aws_lambda_function_url.apps_url["rust"].function_url
       GO_APP_BASE_URL                   = aws_lambda_function_url.apps_url["go"].function_url

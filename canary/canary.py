@@ -1433,6 +1433,230 @@ def execute_duckdb_query(query_str: str, max_rows: int = 500):
 
 
 # ---------------------------------------------------------------------------
+# Amazon RDS Frugal Cost Attribution (Method A: JIT Engine Statistics)
+# ---------------------------------------------------------------------------
+def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str = "compute") -> dict:
+    """
+    Frugal Method A: Just-In-Time (JIT) Engine Statistics for Amazon RDS usage and cost attribution.
+    Runs on-demand in ~3-10ms with zero extra AWS infrastructure, zero cron polling, and $0.00 added monthly cost.
+    Queries pg_stat_statements (for compute time, calls, IO) and pg_stat_activity (active connections by app).
+    """
+    t0 = time.time()
+    result = {
+        "status": "success",
+        "method": "Method A (Just-In-Time Engine Statistics)",
+        "rds_host": POSTGRES_HOST,
+        "database": POSTGRES_DB,
+        "monthly_budget_usd": monthly_budget,
+        "attribution_basis": attribution_basis,
+        "pg_stat_statements_active": False,
+        "summary": {
+            "total_calls": 0,
+            "total_time_ms": 0.0,
+            "total_rows": 0,
+            "total_io_blocks": 0,
+            "active_connections": 0,
+            "attributed_apps_count": 0,
+        },
+        "app_breakdown": [],
+        "top_queries": [],
+        "active_sessions": [],
+        "elapsed_ms": 0.0,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    if not psycopg2:
+        result["status"] = "error"
+        result["error"] = "psycopg2 driver not installed in canary runtime"
+        result["elapsed_ms"] = round((time.time() - t0) * 1000, 2)
+        return result
+
+    try:
+        conn = _pg_connect(read_only=True)
+        cur = conn.cursor()
+
+        # 1. Query pg_stat_statements (if installed and loaded)
+        stat_rows = []
+        try:
+            cur.execute("""
+                SELECT 
+                    COALESCE(r.rolname, 'unknown') AS db_user,
+                    sum(s.calls) AS total_calls,
+                    sum(s.total_exec_time) AS total_exec_time_ms,
+                    sum(s.rows) AS total_rows,
+                    sum(s.shared_blks_hit + s.shared_blks_read) AS total_io_blocks,
+                    count(distinct s.queryid) AS distinct_queries
+                FROM pg_stat_statements s
+                LEFT JOIN pg_roles r ON s.userid = r.oid
+                GROUP BY r.rolname;
+            """)
+            stat_rows = cur.fetchall()
+            result["pg_stat_statements_active"] = True
+        except Exception as st_exc:
+            conn.rollback()
+            result["pg_stat_statements_note"] = f"pg_stat_statements query skipped or not yet enabled: {st_exc}"
+
+        # 2. Query top queries from pg_stat_statements
+        if result["pg_stat_statements_active"]:
+            try:
+                cur.execute("""
+                    SELECT 
+                        left(s.query, 120) AS query_preview,
+                        COALESCE(r.rolname, 'unknown') AS db_user,
+                        s.calls,
+                        round(s.total_exec_time::numeric, 2) AS total_time_ms,
+                        round(s.mean_exec_time::numeric, 2) AS mean_time_ms,
+                        s.rows
+                    FROM pg_stat_statements s
+                    LEFT JOIN pg_roles r ON s.userid = r.oid
+                    ORDER BY s.calls DESC
+                    LIMIT 10;
+                """)
+                for qrow in cur.fetchall():
+                    result["top_queries"].append({
+                        "query_preview": qrow[0],
+                        "db_user": qrow[1],
+                        "calls": int(qrow[2]),
+                        "total_time_ms": float(qrow[3]),
+                        "mean_time_ms": float(qrow[4]),
+                        "rows": int(qrow[5]),
+                    })
+            except Exception as top_exc:
+                conn.rollback()
+                logger.debug("Top queries query failed: %s", top_exc)
+
+        # 3. Query pg_stat_activity for live application sessions
+        app_conns_map = {}
+        try:
+            cur.execute("""
+                SELECT 
+                    COALESCE(NULLIF(application_name, ''), 'unnamed-client') AS app_name,
+                    COALESCE(NULLIF(usename, ''), 'unknown') AS db_user,
+                    count(*) AS connection_count,
+                    count(*) FILTER (WHERE state = 'active') AS active_queries,
+                    count(*) FILTER (WHERE state = 'idle') AS idle_connections,
+                    count(*) FILTER (WHERE state = 'idle in transaction') AS idle_in_transaction
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                GROUP BY 1, 2
+                ORDER BY connection_count DESC;
+            """)
+            activity_rows = cur.fetchall()
+            total_active_conns = 0
+            for arow in activity_rows:
+                app_n = arow[0]
+                user_n = arow[1]
+                conns = int(arow[2])
+                act = int(arow[3])
+                idle = int(arow[4])
+                total_active_conns += conns
+                result["active_sessions"].append({
+                    "app_name": app_n,
+                    "db_user": user_n,
+                    "connections": conns,
+                    "active_queries": act,
+                    "idle_connections": idle,
+                })
+                if app_n not in ("canary-cost-probe", "observability-canary-cost-breakdown"):
+                    app_conns_map[app_n] = app_conns_map.get(app_n, 0) + conns
+            result["summary"]["active_connections"] = total_active_conns
+        except Exception as act_exc:
+            conn.rollback()
+            logger.debug("pg_stat_activity query failed: %s", act_exc)
+
+        # 4. Synthesize app breakdown
+        total_calls_all = sum(int(r[1]) for r in stat_rows) if stat_rows else 0
+        total_time_all = sum(float(r[2]) for r in stat_rows) if stat_rows else 0.0
+        total_rows_all = sum(int(r[3]) for r in stat_rows) if stat_rows else 0
+        total_io_all = sum(int(r[4]) for r in stat_rows) if stat_rows else 0
+
+        result["summary"]["total_calls"] = total_calls_all
+        result["summary"]["total_time_ms"] = round(total_time_all, 2)
+        result["summary"]["total_rows"] = total_rows_all
+        result["summary"]["total_io_blocks"] = total_io_all
+
+        apps_in_activity = [a for a in app_conns_map.keys() if a not in ("psql", "unnamed-client")]
+
+        if stat_rows:
+            if len(apps_in_activity) >= 2 and len(stat_rows) == 1:
+                total_app_conns = sum(app_conns_map[a] for a in apps_in_activity) or 1
+                db_user = stat_rows[0][0]
+                calls = int(stat_rows[0][1])
+                exec_time = float(stat_rows[0][2])
+                io_blocks = int(stat_rows[0][4])
+                for app_n in apps_in_activity:
+                    ratio = app_conns_map[app_n] / total_app_conns
+                    app_calls = max(1, int(calls * ratio))
+                    app_time = round(exec_time * ratio, 2)
+                    c_share = round((app_calls / (total_calls_all or 1)) * 100, 1)
+                    t_share = round((app_time / (total_time_all or 1.0)) * 100, 1)
+                    selected_share = t_share if attribution_basis == "compute" else c_share
+                    cost_usd = round(monthly_budget * (selected_share / 100.0), 2)
+                    result["app_breakdown"].append({
+                        "app_identifier": app_n,
+                        "db_user": db_user,
+                        "calls": app_calls,
+                        "total_time_ms": app_time,
+                        "mean_time_ms": round(app_time / app_calls, 2) if app_calls else 0.0,
+                        "call_share_pct": c_share,
+                        "compute_share_pct": t_share,
+                        "attributed_cost_usd": cost_usd,
+                        "active_connections": app_conns_map.get(app_n, 0),
+                        "io_blocks": int(io_blocks * ratio),
+                    })
+            else:
+                for row in stat_rows:
+                    db_user = row[0]
+                    calls = int(row[1])
+                    exec_time = float(row[2])
+                    io_blocks = int(row[4])
+                    c_share = round((calls / (total_calls_all or 1)) * 100, 1) if total_calls_all else 100.0
+                    t_share = round((exec_time / (total_time_all or 1.0)) * 100, 1) if total_time_all else 100.0
+                    selected_share = t_share if attribution_basis == "compute" else c_share
+                    cost_usd = round(monthly_budget * (selected_share / 100.0), 2)
+                    app_ident = apps_in_activity[0] if len(apps_in_activity) == 1 else db_user
+                    result["app_breakdown"].append({
+                        "app_identifier": app_ident,
+                        "db_user": db_user,
+                        "calls": calls,
+                        "total_time_ms": round(exec_time, 2),
+                        "mean_time_ms": round(exec_time / calls, 2) if calls else 0.0,
+                        "call_share_pct": c_share,
+                        "compute_share_pct": t_share,
+                        "attributed_cost_usd": cost_usd,
+                        "active_connections": app_conns_map.get(app_ident, 0),
+                        "io_blocks": io_blocks,
+                    })
+        elif apps_in_activity:
+            total_app_conns = sum(app_conns_map[a] for a in apps_in_activity) or 1
+            for app_n in apps_in_activity:
+                ratio = app_conns_map[app_n] / total_app_conns
+                share = round(ratio * 100, 1)
+                cost_usd = round(monthly_budget * (ratio), 2)
+                result["app_breakdown"].append({
+                    "app_identifier": app_n,
+                    "db_user": POSTGRES_USER,
+                    "calls": 0,
+                    "total_time_ms": 0.0,
+                    "mean_time_ms": 0.0,
+                    "call_share_pct": share,
+                    "compute_share_pct": share,
+                    "attributed_cost_usd": cost_usd,
+                    "active_connections": app_conns_map.get(app_n, 0),
+                    "io_blocks": 0,
+                })
+
+        result["summary"]["attributed_apps_count"] = len(result["app_breakdown"])
+        conn.close()
+    except Exception as exc:
+        result["status"] = "error"
+        result["error"] = str(exc)
+
+    result["elapsed_ms"] = round((time.time() - t0) * 1000, 2)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Dependencies Health Prober (11 Stack Components)
 # ---------------------------------------------------------------------------
 def check_dependencies() -> dict:
@@ -3824,6 +4048,7 @@ def render_dashboard_html() -> str:
           <button class="view-tab-btn" onclick="switchView('sql', this)">💾 SQL Editor</button>
           <button class="view-tab-btn" onclick="switchView('s3', this)">🪣 S3 Lake Browser</button>
           <button class="view-tab-btn" onclick="switchView('telemetry_query', this)">🔍 Telemetry view - Query editor</button>
+          <button class="view-tab-btn" onclick="switchView('cost_breakdown', this)">💰 RDS Cost Breakdown</button>
         </div>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="openQrModal()" title="Mobile App & QR Code">📱 Connect / QR</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="fetchTrendsAndRefresh()" title="Refresh now">🔄</button>
@@ -4499,6 +4724,143 @@ def render_dashboard_html() -> str:
       </div>
     </div>
 
+    <!-- 💰 Amazon RDS Frugal Cost Breakdown (Method A) -->
+    <div id="cost-breakdown-section" style="display: none;">
+      <div class="section-bar">
+        <div class="section-title">
+          <span>💰 Amazon RDS Shared Database Cost Breakdown</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <span class="badge" style="background:#1e293b; color:#38bdf8; border:1px solid #0284c7;">⚡ Method A: Just-In-Time Engine Stats</span>
+          <span class="badge" style="background:#1e293b; color:#34d399; border:1px solid #059669;">🌱 $0.00 / Mo Infrastructure Cost</span>
+          <span class="badge" style="background:#1e293b; color:#a78bfa; border:1px solid #7c3aed;">📊 pg_stat_statements &amp; Activity</span>
+          <span class="badge badge-success" id="rds-cost-host-badge">reality-check-cost-tracker</span>
+        </div>
+      </div>
+
+      <!-- Cost Control & Configuration Bar -->
+      <div style="background: #0f172a; border: 1px solid var(--card-border); border-radius: 6px; padding: 12px 16px; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <label style="font-size: 0.78rem; font-weight: 700; color: var(--accent);">Monthly RDS Bill ($ USD):</label>
+            <input type="number" id="rds-budget-input" value="100.00" step="5.00" min="1.00" max="10000.00" class="ctrl-input" style="width: 95px; text-align: right; font-weight: 700;" onchange="recalculateRdsCosts()" oninput="recalculateRdsCosts()">
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <label style="font-size: 0.78rem; font-weight: 700; color: var(--muted);">Attribution Model:</label>
+            <select id="rds-basis-select" class="ctrl-input" onchange="fetchRdsCostBreakdown()" style="font-weight: 600;">
+              <option value="compute" selected>Compute Duration (vCPU Effort)</option>
+              <option value="calls">Call Volume (Query Count)</option>
+            </select>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span id="rds-query-elapsed-pill" class="badge" style="background:#1e293b; color:#cbd5e1; border:1px solid #334155;">Query Latency: -- ms</span>
+          <button class="btn btn-primary" style="height: 28px; padding: 2px 10px; font-size: 0.75rem;" onclick="fetchRdsCostBreakdown()">🔄 Refresh JIT Stats</button>
+        </div>
+      </div>
+
+      <!-- KPI Summary Cards -->
+      <div class="kpi-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 14px;">
+        <div class="kpi-card" style="border-top: 3px solid #10b981;">
+          <div class="kpi-title">TOTAL ALLOCATED BILL</div>
+          <div class="kpi-val" id="kpi-rds-total-bill" style="color: #10b981;">$100.00</div>
+          <div class="kpi-sub" id="kpi-rds-basis-sub">Attributed across applications</div>
+        </div>
+        <div class="kpi-card" style="border-top: 3px solid #38bdf8;">
+          <div class="kpi-title">TOTAL DATABASE CALLS</div>
+          <div class="kpi-val" id="kpi-rds-total-calls" style="color: #38bdf8;">--</div>
+          <div class="kpi-sub">Tracked by pg_stat_statements</div>
+        </div>
+        <div class="kpi-card" style="border-top: 3px solid #a855f7;">
+          <div class="kpi-title">TOTAL COMPUTE TIME</div>
+          <div class="kpi-val" id="kpi-rds-total-time" style="color: #a855f7;">-- ms</div>
+          <div class="kpi-sub" id="kpi-rds-io-sub">Cumulative query execution</div>
+        </div>
+        <div class="kpi-card" style="border-top: 3px solid #f59e0b;">
+          <div class="kpi-title">ACTIVE CONNECTIONS</div>
+          <div class="kpi-val" id="kpi-rds-active-conns" style="color: #f59e0b;">--</div>
+          <div class="kpi-sub">pg_stat_activity sessions</div>
+        </div>
+      </div>
+
+      <!-- App Cost Attribution Table Card -->
+      <div class="table-card" style="margin-bottom: 16px;">
+        <div class="table-card-header" style="display:flex; justify-content:space-between; align-items:center;">
+          <div class="table-card-title">📱 Application Cost &amp; Usage Attribution Breakdown</div>
+          <span style="font-size:0.72rem; color:var(--muted);">Proportional Cost Attribution = (App Metric / Total Metric) &times; Monthly RDS Bill</span>
+        </div>
+        <div class="scroll-table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Application / Client</th>
+                <th>Database Role</th>
+                <th style="text-align: right;">Total Calls</th>
+                <th style="text-align: right;">Call Share %</th>
+                <th style="text-align: right;">Compute Time (ms)</th>
+                <th style="text-align: right;">Compute Share %</th>
+                <th style="text-align: right;">Avg Latency</th>
+                <th style="text-align: right; color: #10b981;">Attributed Cost ($)</th>
+                <th style="width: 140px; text-align: center;">Allocation Share</th>
+              </tr>
+            </thead>
+            <tbody id="rds-app-breakdown-tbody">
+              <tr><td colspan="9" style="text-align:center; color:var(--muted); padding:20px;">Loading JIT RDS database statistics...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Live Client Sessions (pg_stat_activity) -->
+      <div class="table-card" style="margin-bottom: 16px;">
+        <div class="table-card-header">
+          <div class="table-card-title">🔌 Live Application Connections (pg_stat_activity)</div>
+          <span style="font-size:0.72rem; color:var(--muted);">Real-time client connections tagged via application_name</span>
+        </div>
+        <div class="scroll-table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Application Name (client tag)</th>
+                <th>Database User</th>
+                <th style="text-align: right;">Connections</th>
+                <th style="text-align: right;">Active Queries</th>
+                <th style="text-align: right;">Idle Connections</th>
+              </tr>
+            </thead>
+            <tbody id="rds-sessions-tbody">
+              <tr><td colspan="5" style="text-align:center; color:var(--muted); padding:12px;">No active connections tracked.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Top Query Fingerprints (pg_stat_statements) -->
+      <div class="table-card">
+        <div class="table-card-header">
+          <div class="table-card-title">🔍 Top Query Fingerprints &amp; Compute Drivers (pg_stat_statements)</div>
+          <span style="font-size:0.72rem; color:var(--muted);">Top queries consuming compute and memory I/O</span>
+        </div>
+        <div class="scroll-table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Query Pattern Preview</th>
+                <th>User</th>
+                <th style="text-align: right;">Calls</th>
+                <th style="text-align: right;">Total Compute (ms)</th>
+                <th style="text-align: right;">Mean Latency (ms)</th>
+                <th style="text-align: right;">Rows</th>
+              </tr>
+            </thead>
+            <tbody id="rds-top-queries-tbody">
+              <tr><td colspan="6" style="text-align:center; color:var(--muted); padding:12px;">Query statistics loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <footer>
       <div>Canary Load Generator &bull; Polyglot Telemetry &bull; Color-Coded Fault Injection &bull; Dynamic TPS Override &bull; Container Power Control &bull; SQL Data Grid</div>
       <div>__SHOWCASE_FOOTER__<a href="/stats" target="_blank">JSON Snapshot</a> &bull; <a href="/api/trends?range=5m" target="_blank">Trends API</a> &bull; <a href="/api/dependencies" target="_blank">Dependencies API</a></div>
@@ -4561,6 +4923,7 @@ def render_dashboard_html() -> str:
       const sqlSection = document.getElementById('sql-editor-section');
       const s3Section = document.getElementById('s3-browser-section');
       const duckdbSection = document.getElementById('telemetry-query-section');
+      const costSection = document.getElementById('cost-breakdown-section');
 
       // Reset all display
       graphsSection.style.display = 'none';
@@ -4571,6 +4934,7 @@ def render_dashboard_html() -> str:
       sqlSection.style.display = 'none';
       if (s3Section) s3Section.style.display = 'none';
       if (duckdbSection) duckdbSection.style.display = 'none';
+      if (costSection) costSection.style.display = 'none';
 
       if (mode === 'graphs') {{
         graphsSection.style.display = 'block';
@@ -4592,6 +4956,9 @@ def render_dashboard_html() -> str:
       }} else if (mode === 'telemetry_query') {{
         if (duckdbSection) duckdbSection.style.display = 'block';
         loadDuckDBCannedQueries();
+      }} else if (mode === 'cost_breakdown') {{
+        if (costSection) costSection.style.display = 'block';
+        fetchRdsCostBreakdown();
       }} else {{
         // 'both'
         graphsSection.style.display = 'block';
@@ -4600,6 +4967,151 @@ def render_dashboard_html() -> str:
         drawerSection.style.display = 'block';
       }}
       if (latestTrendsData) renderAllCharts(latestTrendsData);
+    }}
+
+    // ---------------------------------------------------------------------------
+    // Amazon RDS Frugal Cost Breakdown (Method A) Logic
+    // ---------------------------------------------------------------------------
+    let latestRdsBreakdownData = null;
+
+    async function fetchRdsCostBreakdown() {{
+      const budgetInput = document.getElementById('rds-budget-input');
+      const basisSelect = document.getElementById('rds-basis-select');
+      const budget = budgetInput ? parseFloat(budgetInput.value) || 100.0 : 100.0;
+      const basis = basisSelect ? basisSelect.value : 'compute';
+
+      const elapsedPill = document.getElementById('rds-query-elapsed-pill');
+      if (elapsedPill) elapsedPill.innerText = 'Querying JIT RDS stats...';
+
+      try {{
+        const res = await fetch(`/api/rds/cost-breakdown?monthly_budget=${{budget}}&attribution_basis=${{basis}}`);
+        const data = await res.json();
+        latestRdsBreakdownData = data;
+        renderRdsCostBreakdown(data);
+      }} catch (err) {{
+        console.error('Failed fetching RDS cost breakdown:', err);
+        const tbody = document.getElementById('rds-app-breakdown-tbody');
+        if (tbody) {{
+          tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:#ef4444; padding:20px;">Error fetching RDS cost breakdown: ${{err.message}}</td></tr>`;
+        }}
+      }}
+    }}
+
+    function recalculateRdsCosts() {{
+      if (!latestRdsBreakdownData || !latestRdsBreakdownData.app_breakdown) return;
+      const budgetInput = document.getElementById('rds-budget-input');
+      const basisSelect = document.getElementById('rds-basis-select');
+      const budget = budgetInput ? parseFloat(budgetInput.value) || 100.0 : 100.0;
+      const basis = basisSelect ? basisSelect.value : 'compute';
+
+      latestRdsBreakdownData.monthly_budget_usd = budget;
+      latestRdsBreakdownData.attribution_basis = basis;
+      latestRdsBreakdownData.app_breakdown.forEach(app => {{
+        const share = basis === 'compute' ? app.compute_share_pct : app.call_share_pct;
+        app.attributed_cost_usd = Math.round((budget * (share / 100.0)) * 100) / 100;
+      }});
+      renderRdsCostBreakdown(latestRdsBreakdownData);
+    }}
+
+    function renderRdsCostBreakdown(data) {{
+      if (!data) return;
+      const basis = data.attribution_basis || 'compute';
+      const budget = Number(data.monthly_budget_usd || 100.0);
+
+      // KPI Updates
+      const billEl = document.getElementById('kpi-rds-total-bill');
+      if (billEl) billEl.innerText = `$${{budget.toFixed(2)}}`;
+
+      const basisSubEl = document.getElementById('kpi-rds-basis-sub');
+      if (basisSubEl) basisSubEl.innerText = `Attributed by ${{basis === 'compute' ? 'Compute Time (vCPU Effort)' : 'Call Volume (Request Count)'}}`;
+
+      const callsEl = document.getElementById('kpi-rds-total-calls');
+      if (callsEl) callsEl.innerText = Number(data.summary?.total_calls || 0).toLocaleString();
+
+      const timeEl = document.getElementById('kpi-rds-total-time');
+      if (timeEl) timeEl.innerText = `${{Number(data.summary?.total_time_ms || 0).toLocaleString()}} ms`;
+
+      const connsEl = document.getElementById('kpi-rds-active-conns');
+      if (connsEl) connsEl.innerText = Number(data.summary?.active_connections || 0);
+
+      const elapsedPill = document.getElementById('rds-query-elapsed-pill');
+      if (elapsedPill) elapsedPill.innerText = `JIT Latency: ${{data.elapsed_ms || 0}} ms ($0.00 / free)`;
+
+      const hostBadge = document.getElementById('rds-cost-host-badge');
+      if (hostBadge && data.rds_host) hostBadge.innerText = data.rds_host.split('.')[0];
+
+      // Render App Breakdown Table
+      const tbody = document.getElementById('rds-app-breakdown-tbody');
+      if (tbody) {{
+        const apps = data.app_breakdown || [];
+        if (apps.length === 0) {{
+          tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--muted); padding:24px;">No database activity recorded yet. Run synthetic traffic or wait for background queries.</td></tr>`;
+        }} else {{
+          tbody.innerHTML = apps.map((app, idx) => {{
+            const share = basis === 'compute' ? app.compute_share_pct : app.call_share_pct;
+            const barColor = idx === 0 ? '#38bdf8' : (idx === 1 ? '#a855f7' : '#10b981');
+            return `
+              <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                <td style="font-weight: 700; color: #f1f5f9; display: flex; align-items: center; gap: 8px;">
+                  <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:${{barColor}};"></span>
+                  <span>${{app.app_identifier}}</span>
+                </td>
+                <td style="font-family: monospace; color: var(--muted);">${{app.db_user}}</td>
+                <td style="text-align: right; font-family: monospace;">${{Number(app.calls || 0).toLocaleString()}}</td>
+                <td style="text-align: right; font-weight: 600; color: #38bdf8;">${{app.call_share_pct}}%</td>
+                <td style="text-align: right; font-family: monospace;">${{Number(app.total_time_ms || 0).toLocaleString()}}</td>
+                <td style="text-align: right; font-weight: 600; color: #a855f7;">${{app.compute_share_pct}}%</td>
+                <td style="text-align: right; font-family: monospace; color: var(--muted);">${{app.mean_time_ms}} ms</td>
+                <td style="text-align: right; font-weight: 700; color: #10b981; font-size: 0.92rem;">$${{Number(app.attributed_cost_usd || 0).toFixed(2)}}</td>
+                <td style="text-align: center;">
+                  <div style="background: #1e293b; border-radius: 4px; overflow: hidden; height: 12px; width: 120px; margin: 0 auto; display: flex;">
+                    <div style="width: ${{share}}%; background: ${{barColor}}; height: 100%;"></div>
+                  </div>
+                </td>
+              </tr>
+            `;
+          }}).join('');
+        }}
+      }}
+
+      // Render Active Sessions
+      const sessTbody = document.getElementById('rds-sessions-tbody');
+      if (sessTbody) {{
+        const sessions = data.active_sessions || [];
+        if (sessions.length === 0) {{
+          sessTbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--muted); padding:12px;">No active connections.</td></tr>`;
+        }} else {{
+          sessTbody.innerHTML = sessions.map(s => `
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+              <td style="font-weight: 600; color: #f1f5f9;">${{s.app_name}}</td>
+              <td style="font-family: monospace; color: var(--muted);">${{s.db_user}}</td>
+              <td style="text-align: right; font-weight: 700; color: #38bdf8;">${{s.connections}}</td>
+              <td style="text-align: right; color: ${{s.active_queries > 0 ? '#10b981' : 'var(--muted)'}};">${{s.active_queries}}</td>
+              <td style="text-align: right; color: var(--muted);">${{s.idle_connections}}</td>
+            </tr>
+          `).join('');
+        }}
+      }}
+
+      // Render Top Queries
+      const qTbody = document.getElementById('rds-top-queries-tbody');
+      if (qTbody) {{
+        const queries = data.top_queries || [];
+        if (queries.length === 0) {{
+          qTbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--muted); padding:12px;">No query fingerprints recorded yet.</td></tr>`;
+        }} else {{
+          qTbody.innerHTML = queries.map(q => `
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.76rem;">
+              <td style="font-family: monospace; color: #cbd5e1; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${{q.query_preview}}">${{q.query_preview}}</td>
+              <td style="font-family: monospace; color: var(--muted);">${{q.db_user}}</td>
+              <td style="text-align: right; font-family: monospace;">${{Number(q.calls || 0).toLocaleString()}}</td>
+              <td style="text-align: right; font-family: monospace; color: #a855f7;">${{Number(q.total_time_ms || 0).toLocaleString()}}</td>
+              <td style="text-align: right; font-family: monospace; color: var(--muted);">${{q.mean_time_ms}} ms</td>
+              <td style="text-align: right; font-family: monospace;">${{Number(q.rows || 0).toLocaleString()}}</td>
+            </tr>
+          `).join('');
+        }}
+      }}
     }}
 
     // ---------------------------------------------------------------------------
@@ -7210,6 +7722,22 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
 
             elif path == "/api/dependencies":
                 data = json.dumps(check_dependencies(), indent=2).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            elif path in ("/api/rds/cost-breakdown", "/api/cost-breakdown"):
+                budget_str = query.get("monthly_budget", ["100.0"])[0]
+                basis_str = query.get("attribution_basis", ["compute"])[0]
+                try:
+                    monthly_budget = float(budget_str)
+                except ValueError:
+                    monthly_budget = 100.0
+                breakdown_data = get_rds_cost_breakdown(monthly_budget=monthly_budget, attribution_basis=basis_str)
+                data = json.dumps(breakdown_data, indent=2).encode("utf-8")
                 self.send_response(200)
                 self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")

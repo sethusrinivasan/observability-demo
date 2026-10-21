@@ -143,6 +143,7 @@ services:
       start_period: 10s
     container_name: postgres
     restart: unless-stopped
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"]
     environment:
       - POSTGRES_USER=observability
       - POSTGRES_PASSWORD=observability
@@ -210,6 +211,7 @@ services:
       - POSTGRES_DB=observability
       - POSTGRES_USER=observability
       - POSTGRES_PASSWORD=observability
+      - APPLICATION_NAME=observability-python-app
     depends_on:
       - otel-collector
       - tempo
@@ -234,7 +236,7 @@ services:
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_SERVICE_NAME=observability-java-app
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/observability
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/observability?ApplicationName=observability-java-app
       - SPRING_DATASOURCE_USERNAME=observability
       - SPRING_DATASOURCE_PASSWORD=observability
       - OTEL_RESOURCE_ATTRIBUTES=language=java,service.name=observability-java-app
@@ -265,7 +267,7 @@ services:
           memory: 256M
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability
+      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?application_name=observability-rust-app
     depends_on:
       - otel-collector
       - postgres
@@ -292,6 +294,7 @@ services:
       - POSTGRES_DB=observability
       - POSTGRES_USER=observability
       - POSTGRES_PASSWORD=observability
+      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?application_name=observability-node-app
       - OTEL_RESOURCE_ATTRIBUTES=language=nodejs,service.name=observability-node-app
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health/liveness"]
@@ -325,6 +328,7 @@ services:
       - POSTGRES_DB=observability
       - POSTGRES_USER=observability
       - POSTGRES_PASSWORD=observability
+      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?application_name=observability-go-app
       - OTEL_RESOURCE_ATTRIBUTES=language=golang,service.name=observability-go-app
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health/liveness"]
@@ -353,7 +357,7 @@ services:
       - POSTGRES_DB=observability
       - POSTGRES_USER=observability
       - POSTGRES_PASSWORD=observability
-      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability
+      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?application_name=observability-dotnet-app
       - OTEL_RESOURCE_ATTRIBUTES=language=csharp,service.name=observability-dotnet-app
       - ASPNETCORE_HTTP_PORTS=8080
       - ASPNETCORE_ENVIRONMENT=Production
@@ -388,6 +392,7 @@ services:
       - POSTGRES_DB=observability
       - POSTGRES_USER=observability
       - POSTGRES_PASSWORD=observability
+      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?application_name=observability-c-app
       - PORT=8080
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health/liveness"]
@@ -426,6 +431,7 @@ services:
       - POSTGRES_DB=observability
       - POSTGRES_USER=observability
       - POSTGRES_PASSWORD=observability
+      - APPLICATION_NAME=observability-canary-dashboard
       - TEMPO_URL=http://tempo:3200
       - LOKI_URL=http://loki:3100
       - PROMETHEUS_URL=http://prometheus:9090
