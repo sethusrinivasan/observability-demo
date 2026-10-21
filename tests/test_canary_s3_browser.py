@@ -70,3 +70,16 @@ def test_s3_crud_operations():
     )
     assert del_res.status_code == 200
     assert del_res.json()["status"] == "success"
+
+
+def test_s3_foreign_bucket_access_denied_recovery():
+    """Verify querying an unauthorized/foreign bucket returns a clean error and suggested_bucket."""
+    res = requests.get(
+        f"{CANARY_URL}/api/s3/objects?bucket=cdk-hnb659fds-assets-596090776030-us-east-2",
+        timeout=5,
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "error"
+    assert "suggested_bucket" in data
+    assert data["suggested_bucket"] == "telemetry-lake"

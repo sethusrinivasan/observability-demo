@@ -1070,7 +1070,23 @@ def s3_list_buckets():
     try:
         s3 = get_s3_client()
         resp = s3.list_buckets()
-        buckets = [b["Name"] for b in resp.get("Buckets", [])]
+        raw_buckets = [b["Name"] for b in resp.get("Buckets", [])]
+
+        # Scope buckets to the observability project (prioritize S3_BUCKET_NAME)
+        # Avoid surfacing unrelated AWS account buckets (e.g. cdk-*, cf-templates-*) that
+        # the granular IAM execution role intentionally does not have s3:ListBucket permissions for.
+        filtered = []
+        if S3_BUCKET_NAME:
+            filtered.append(S3_BUCKET_NAME)
+
+        for b in raw_buckets:
+            if b == S3_BUCKET_NAME:
+                continue
+            if "observability" in b or "telemetry" in b:
+                filtered.append(b)
+
+        buckets = filtered if filtered else (raw_buckets or [S3_BUCKET_NAME])
+
         return {
             "status": "success",
             "buckets": buckets,
@@ -1079,7 +1095,14 @@ def s3_list_buckets():
             "license": "Apache 2.0 (Open Source, Copyleft-Free)"
         }
     except Exception as exc:
-        return {"status": "error", "error": str(exc), "buckets": []}
+        logger.warning("s3_list_buckets exception (falling back to %s): %s", S3_BUCKET_NAME, exc)
+        return {
+            "status": "success",
+            "buckets": [S3_BUCKET_NAME] if S3_BUCKET_NAME else ["telemetry-lake"],
+            "default_bucket": S3_BUCKET_NAME,
+            "endpoint": S3_ENDPOINT_URL,
+            "license": "Apache 2.0 (Open Source, Copyleft-Free)"
+        }
 
 def s3_create_bucket(bucket_name: str):
     try:
@@ -1167,7 +1190,18 @@ def s3_list_objects(bucket_name: str, prefix: str = ""):
             "total_size": total_size
         }
     except Exception as exc:
-        return {"status": "error", "error": str(exc), "folders": [], "files": []}
+        err_msg = str(exc)
+        if "AccessDenied" in err_msg and bucket != S3_BUCKET_NAME:
+            err_msg = f"Access denied to bucket '{bucket}'. Your IAM execution role has granular least-privilege permissions scoped to '{S3_BUCKET_NAME}'."
+        return {
+            "status": "error",
+            "error": err_msg,
+            "suggested_bucket": S3_BUCKET_NAME,
+            "bucket": bucket,
+            "prefix": clean_prefix if 'clean_prefix' in locals() else prefix,
+            "folders": [],
+            "files": []
+        }
 
 def s3_preview_object(bucket_name: str, key: str, max_rows: int = 15):
     try:
@@ -4583,7 +4617,7 @@ def render_dashboard_html() -> str:
           <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 260px;">
             <label style="font-size: 0.72rem; font-weight: 700; color: var(--muted);">BUCKET:</label>
             <select id="s3-bucket-select" class="ctrl-input" style="flex: 1; max-width: 240px;" onchange="onSelectS3Bucket(this.value)">
-              <option value="telemetry-lake">telemetry-lake</option>
+              <option value="{S3_BUCKET_NAME}">{S3_BUCKET_NAME}</option>
             </select>
             <button class="btn btn-outline" onclick="promptCreateBucket()" title="Create new S3 bucket">➕ New Bucket</button>
           </div>
@@ -4599,7 +4633,7 @@ def render_dashboard_html() -> str:
 
         <!-- Breadcrumbs bar -->
         <div class="s3-breadcrumb-bar" id="s3-breadcrumbs">
-          <span class="s3-crumb active">🪣 telemetry-lake</span>
+          <span class="s3-crumb active">🪣 {S3_BUCKET_NAME}</span>
         </div>
 
         <!-- Status / Counter bar -->
@@ -4658,7 +4692,7 @@ def render_dashboard_html() -> str:
           <span class="badge" style="background:#1e293b; color:#38bdf8; border:1px solid #0284c7;">🦆 DuckDB In-Process OLAP</span>
           <span class="badge" style="background:#1e293b; color:#a78bfa; border:1px solid #7c3aed;">⚡ S3 httpfs Direct Query</span>
           <span class="badge" style="background:#1e293b; color:#34d399; border:1px solid #059669;">⏱️ Nanosecond Granularity</span>
-          <span class="badge badge-success" id="duckdb-lake-badge">s3://telemetry-lake</span>
+          <span class="badge badge-success" id="duckdb-lake-badge">s3://{S3_BUCKET_NAME}</span>
         </div>
       </div>
 
@@ -4679,7 +4713,7 @@ def render_dashboard_html() -> str:
           <span class="badge" style="background:#090e17; color:#64748b; font-family: monospace; cursor: pointer;" onclick="insertDuckDBSnippet('raw_payload')" title="Click to insert">raw_payload</span>
         </div>
         <div style="font-size: 0.72rem; color: var(--muted);">
-          <span>Direct Parquet Scan: </span><code style="color: #38bdf8; font-size: 0.72rem; background:#090e17; padding:2px 6px; border-radius:3px;">read_parquet('s3://telemetry-lake/**/*.parquet')</code>
+          <span>Direct Parquet Scan: </span><code style="color: #38bdf8; font-size: 0.72rem; background:#090e17; padding:2px 6px; border-radius:3px;">read_parquet('s3://{S3_BUCKET_NAME}/**/*.parquet')</code>
         </div>
       </div>
 
@@ -4705,7 +4739,7 @@ def render_dashboard_html() -> str:
         </div>
 
         <div class="sql-meta-bar" id="duckdb-status-bar">
-          <span id="duckdb-status-text">Ready &bull; DuckDB OLAP engine connected to s3://telemetry-lake</span>
+          <span id="duckdb-status-text">Ready &bull; DuckDB OLAP engine connected to s3://{S3_BUCKET_NAME}</span>
           <span id="duckdb-timing-text">-- ms</span>
         </div>
 
@@ -5117,7 +5151,7 @@ def render_dashboard_html() -> str:
     // ---------------------------------------------------------------------------
     // S3 Compatible Storage Browser & Data Lake Logic
     // ---------------------------------------------------------------------------
-    let currentS3Bucket = 'telemetry-lake';
+    let currentS3Bucket = '{S3_BUCKET_NAME}';
     let currentS3Prefix = '';
 
     async function loadS3Buckets() {{
@@ -5128,7 +5162,15 @@ def render_dashboard_html() -> str:
         const data = await res.json();
         const select = document.getElementById('s3-bucket-select');
         select.innerHTML = '';
-        const buckets = data.buckets || ['telemetry-lake'];
+        const buckets = data.buckets || ['{S3_BUCKET_NAME}'];
+
+        // Priority: Always default to server-configured default_bucket (S3 Telemetry Lake)
+        if (data.default_bucket && buckets.includes(data.default_bucket)) {{
+          currentS3Bucket = data.default_bucket;
+        }} else if (buckets.length > 0 && (!currentS3Bucket || !buckets.includes(currentS3Bucket))) {{
+          currentS3Bucket = buckets[0];
+        }}
+
         buckets.forEach(b => {{
           const opt = document.createElement('option');
           opt.value = b;
@@ -5136,9 +5178,6 @@ def render_dashboard_html() -> str:
           if (b === currentS3Bucket) opt.selected = true;
           select.appendChild(opt);
         }});
-        if (buckets.length > 0 && !buckets.includes(currentS3Bucket)) {{
-          currentS3Bucket = buckets[0];
-        }}
         if (data.endpoint) {{
           const epBadge = document.getElementById('s3-endpoint-badge');
           if (epBadge) epBadge.innerText = data.endpoint.replace('http://', '');
@@ -5153,6 +5192,8 @@ def render_dashboard_html() -> str:
     function onSelectS3Bucket(bkt) {{
       currentS3Bucket = bkt;
       currentS3Prefix = '';
+      const select = document.getElementById('s3-bucket-select');
+      if (select) select.value = bkt;
       loadS3Objects(currentS3Bucket, currentS3Prefix);
     }}
 
@@ -5161,7 +5202,7 @@ def render_dashboard_html() -> str:
     }}
 
     async function loadS3Objects(bucket, prefix) {{
-      currentS3Bucket = bucket || 'telemetry-lake';
+      currentS3Bucket = bucket || '{S3_BUCKET_NAME}';
       currentS3Prefix = prefix || '';
       const statusEl = document.getElementById('s3-status-text');
       if (statusEl) statusEl.innerText = 'Loading objects in s3://' + currentS3Bucket + '/' + currentS3Prefix + '...';
@@ -5177,7 +5218,12 @@ def render_dashboard_html() -> str:
         tbody.innerHTML = '';
 
         if (data.status === 'error') {{
-          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:30px; color:#ef4444;">Error: ' + data.error + '</td></tr>';
+          let errMsg = data.error || 'Access Denied';
+          let recoverHtml = '';
+          if (data.suggested_bucket && data.suggested_bucket !== currentS3Bucket) {{
+            recoverHtml = `<div style="margin-top:14px;"><button class="btn btn-primary" onclick="onSelectS3Bucket('${{data.suggested_bucket}}')">🪣 Switch to Telemetry Lake (${{data.suggested_bucket}})</button></div>`;
+          }}
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:30px; color:#ef4444;"><div style="font-weight:700; font-size:0.95rem; margin-bottom:8px;">⚠️ S3 Bucket Access Restricted</div><div style="font-family:monospace; font-size:0.82rem; color:#fca5a5; max-width:650px; margin:0 auto; line-height:1.5;">' + errMsg + '</div>' + recoverHtml + '</td></tr>';
           if (statusEl) statusEl.innerText = 'Error: ' + data.error;
           return;
         }}
