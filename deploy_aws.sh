@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF_DIR="${SCRIPT_DIR}/terraform"
 
 APP_TAG="Observability-Demo"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_REGION="${AWS_REGION:-us-east-2}"
 
 # ANSI Colors
 RED='\033[0;31m'
@@ -49,6 +49,9 @@ check_prereqs() {
     done
     exit 1
   fi
+
+  # Auto-export credentials if using AWS CLI v2 login session
+  eval $(aws configure export-credentials --format env 2>/dev/null || true)
 }
 
 get_aws_account_id() {
@@ -111,6 +114,7 @@ build_and_push_service() {
   log_info "Building arm64 Graviton image for ${BOLD}${svc_name}${NC} (Tagged: ApplicationName=${APP_TAG})..."
   docker buildx build \
     --platform linux/arm64 \
+    --provenance=false \
     --build-arg APPLICATION_NAME="${APP_TAG}" \
     -t "${repo_url}:latest" \
     -f "${SCRIPT_DIR}/${dockerfile}" \
