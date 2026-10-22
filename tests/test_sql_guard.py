@@ -5,9 +5,10 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "canary"))
-
-from sql_guard import SqlGuardError, guard_readonly_sql
+try:
+    from canary.sql_guard import SqlGuardError, guard_readonly_sql
+except ImportError:
+    from sql_guard import SqlGuardError, guard_readonly_sql
 
 
 def _ok(sql: str) -> None:

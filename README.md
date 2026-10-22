@@ -84,7 +84,7 @@ The entire polyglot stack can be deployed to **AWS Lambda Firecracker MicroVMs**
 
 ### Deploying to AWS via Terraform & Automation Scripts
 
-The entire cloud architecture is codified in **Terraform** (`terraform/`) and orchestrated via the `./deploy_aws.sh` CLI wrapper.
+The entire cloud architecture is codified in **Terraform** (`deployment/terraform/`) and orchestrated via the `./deploy_aws.sh` CLI wrapper.
 
 #### Prerequisites
 - **AWS CLI v2** configured with active credentials (`aws sts get-caller-identity`).
@@ -123,7 +123,7 @@ export AWS_REGION="us-east-2"
 If you prefer operating Terraform directly without the wrapper script:
 
 ```bash
-cd terraform
+cd deployment/terraform
 
 # 1. Initialize providers
 terraform init
@@ -153,7 +153,7 @@ To avoid incurring ongoing charges when testing is completed:
 ./deploy_aws.sh destroy
 
 # Or direct Terraform teardown
-cd terraform && terraform destroy -var="aws_region=us-east-2" -auto-approve
+cd deployment/terraform && terraform destroy -var="aws_region=us-east-2" -auto-approve
 ```
 
 For complete architectural documentation, cost formulas, and runtime sizing tables, see:
@@ -280,20 +280,61 @@ For detailed architecture diagrams, 24/7 power outage recovery, and systemd auto
 
 ---
 
+## Project Structure
+
+The repository is cleanly organized into root functional groups:
+
+```text
+observability-demo/
+├── apps/                         # Polyglot microservices (8 runtimes + mobile)
+│   ├── c/                        # POSIX C99 multi-threaded socket service
+│   ├── dotnet/                   # C# .NET 8 ASP.NET Core service
+│   ├── go/                       # Go 1.25 concurrent service
+│   ├── java/                     # Java 21 / Spring Boot 3.2 service
+│   ├── mobile/                   # React Native mobile client
+│   ├── node/                     # Node.js 22 LTS Express service
+│   ├── php/                      # PHP 8.3 CLI multi-worker service
+│   ├── python/                   # Python 3.11 Flask service
+│   ├── rust/                     # Rust 1.77 Axum asynchronous service
+│   └── telemetry-receiver/       # Ephemeral disk buffering OTLP receiver
+├── canary/                       # Synthetic traffic injector & DuckDB OLAP dashboard
+├── config/                       # Grafana LGTM, OTel collector, and DB configurations
+├── deployment/                   # Cloud & container deployment orchestration
+│   ├── docker/                   # Supplementary compose manifests
+│   ├── k8s/                      # Kubernetes manifests and Kind deployment scripts
+│   ├── terraform/                # AWS Lambda MicroVM & S3 telemetry lake IaC
+│   ├── deploy_aws.sh             # AWS deployment orchestration CLI
+│   ├── deploy_demo.sh            # Live showcase deployment & verification bridge
+│   ├── launch_docker.sh          # Full Docker teardown & fresh deployment engine
+│   └── launch_k8s.sh             # Kind cluster creation & manifest deployer
+├── docs/                         # Architecture guides, cost plans, and screenshots
+├── sbom/                         # CycloneDX Software Bill of Materials
+├── scripts/                      # Cloudflare showcase tunnel & automation helpers
+├── tests/                        # Unit, smoke, UI guard, and Terraform IaC test suites
+├── docker-compose.yaml           # Primary Docker Compose configuration
+├── deploy_aws.sh                 # Root convenience wrapper -> deployment/deploy_aws.sh
+├── launch_docker.sh              # Root convenience wrapper -> deployment/launch_docker.sh
+├── launch_k8s.sh                 # Root convenience wrapper -> deployment/launch_k8s.sh
+├── start.sh / stop.sh / test.sh  # Developer shortcuts for local run & smoke test
+└── README.md                     # Documentation & live deployment showcase
+```
+
+---
+
 ## Stack Components
 
 | Component | Port | Purpose | Version |
 |---|---|---|---|
-| [Python Service](./app.py) | `5000` | Flask WSGI service, DB connection pool, Shunting-Yard evaluator | `1.0.1` |
-| [Java Service](./java-app) | `8080` | Spring Boot service, Spring Data JDBC, Actuator health probes | `1.0.1` |
-| [Rust Service](./rust-app) | `8083` (Docker) / `8081` (Kind) | Axum asynchronous service, SQLx Postgres pool, tokenizer evaluator | `1.0.1` |
-| [Node.js Service](./node-app) | `8084` (Docker) / `30007` (Kind) | Express asynchronous service, pg connection pool, recursive-descent evaluator | `1.0.1` |
-| [Go Service](./go-app) | `8086` (Docker) / `30008` (Kind) | Go net/http service, lib/pq connection pool, recursive-descent evaluator | `1.0.1` |
-| [.NET Service](./dotnet-app) | `8087` (Docker) / `30009` (Kind) | C# .NET 8 ASP.NET Core service, Npgsql connection pool, recursive-descent evaluator | `1.0.1` |
-| [C Service](./c-app) | `8088` (Docker) / `30010` (Kind) | POSIX C99 multi-threaded socket service, libpq, zero-dependency evaluator | `1.0.1` |
-| [PHP Service](./php-app) | `8089` (Docker) / `30011` (Kind) | PHP 8.3 CLI multi-worker server, PDO pgsql, recursive-descent evaluator | `1.0.1` |
+| [Python Service](./apps/python) | `5000` | Flask WSGI service, DB connection pool, Shunting-Yard evaluator | `1.0.1` |
+| [Java Service](./apps/java) | `8080` | Spring Boot service, Spring Data JDBC, Actuator health probes | `1.0.1` |
+| [Rust Service](./apps/rust) | `8083` (Docker) / `8081` (Kind) | Axum asynchronous service, SQLx Postgres pool, tokenizer evaluator | `1.0.1` |
+| [Node.js Service](./apps/node) | `8084` (Docker) / `30007` (Kind) | Express asynchronous service, pg connection pool, recursive-descent evaluator | `1.0.1` |
+| [Go Service](./apps/go) | `8086` (Docker) / `30008` (Kind) | Go net/http service, lib/pq connection pool, recursive-descent evaluator | `1.0.1` |
+| [.NET Service](./apps/dotnet) | `8087` (Docker) / `30009` (Kind) | C# .NET 8 ASP.NET Core service, Npgsql connection pool, recursive-descent evaluator | `1.0.1` |
+| [C Service](./apps/c) | `8088` (Docker) / `30010` (Kind) | POSIX C99 multi-threaded socket service, libpq, zero-dependency evaluator | `1.0.1` |
+| [PHP Service](./apps/php) | `8089` (Docker) / `30011` (Kind) | PHP 8.3 CLI multi-worker server, PDO pgsql, recursive-descent evaluator | `1.0.1` |
 | [Canary Dashboard](./canary) | `8085` | Synthetic traffic generator, historical trend graphs, chaos fault injection | `1.0.1` |
-| [Canary Mobile App](./mobile) | — | Cross-platform React Native client for Android, iOS, Windows, Web | `1.0.0` |
+| [Canary Mobile App](./apps/mobile) | — | Cross-platform React Native client for Android, iOS, Windows, Web | `1.0.0` |
 | [CycloneDX SBOM](./sbom/sbom-cyclonedx.json) | — | Software Bill of Materials & architectural acknowledgments | `1.5` |
 | Grafana | `3000` | Provisioned dashboards and data source integration (`admin`/`admin`) | `13.2.2` |
 | Grafana Image Renderer | `8081` | Headless Chromium sidecar for automated PNG panel rendering | pinned digest |

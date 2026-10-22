@@ -15,15 +15,19 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TF_DIR = REPO_ROOT / "terraform"
-DEPLOY_SCRIPT = REPO_ROOT / "deploy_aws.sh"
+TF_DIR = (REPO_ROOT / "deployment" / "terraform") if (REPO_ROOT / "deployment" / "terraform").exists() else (REPO_ROOT / "terraform")
+ROOT_DEPLOY_SCRIPT = REPO_ROOT / "deploy_aws.sh"
+DEPLOY_SCRIPT = (REPO_ROOT / "deployment" / "deploy_aws.sh") if (REPO_ROOT / "deployment" / "deploy_aws.sh").exists() else ROOT_DEPLOY_SCRIPT
 
 
 def test_deploy_script_exists_and_executable():
     """Verify deploy_aws.sh exists and has execute permissions."""
-    assert DEPLOY_SCRIPT.exists(), "deploy_aws.sh does not exist at repo root"
-    mode = os.stat(DEPLOY_SCRIPT).st_mode
+    assert ROOT_DEPLOY_SCRIPT.exists(), "deploy_aws.sh does not exist at repo root"
+    assert DEPLOY_SCRIPT.exists(), "deployment/deploy_aws.sh does not exist"
+    mode = os.stat(ROOT_DEPLOY_SCRIPT).st_mode
     assert bool(mode & stat.S_IXUSR), "deploy_aws.sh is not executable"
+    mode_deploy = os.stat(DEPLOY_SCRIPT).st_mode
+    assert bool(mode_deploy & stat.S_IXUSR), "deployment/deploy_aws.sh is not executable"
 
 
 def test_deploy_script_help_command():

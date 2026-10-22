@@ -10,8 +10,14 @@ so the already-published port 5432 is used instead.
 """
 import os
 import sys
+from pathlib import Path
 import types
 import unittest.mock as mock
+
+# Ensure apps/python directory is on sys.path
+_repo_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_repo_root / "apps" / "python"))
+sys.path.insert(0, str(_repo_root))
 
 # ---------------------------------------------------------------------------
 # Resolve Postgres host for tests running outside Docker

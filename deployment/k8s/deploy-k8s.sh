@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # k8s/deploy-k8s.sh - Setup Kind cluster and deploy the observability stack
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 set -euo pipefail
 
@@ -97,15 +97,15 @@ else
 fi
 
 echo "=== Building Docker Images ==="
-docker build -t observability-python-app:latest .
+docker build -t observability-python-app:latest ./apps/python
 docker build -t observability-canary:latest ./canary
-docker build -t observability-java-app:latest ./java-app
-docker build -t observability-rust-app:latest ./rust-app
-docker build -t observability-node-app:latest ./node-app
-docker build -t observability-go-app:latest ./go-app
-docker build -t observability-dotnet-app:latest ./dotnet-app
-docker build -t observability-c-app:latest ./c-app
-docker build -t observability-php-app:latest ./php-app
+docker build -t observability-java-app:latest ./apps/java
+docker build -t observability-rust-app:latest ./apps/rust
+docker build -t observability-node-app:latest ./apps/node
+docker build -t observability-go-app:latest ./apps/go
+docker build -t observability-dotnet-app:latest ./apps/dotnet
+docker build -t observability-c-app:latest ./apps/c
+docker build -t observability-php-app:latest ./apps/php
 
 echo "=== Loading Images into Kind ==="
 kind load docker-image observability-python-app:latest --name "$CLUSTER_NAME"
@@ -131,7 +131,7 @@ kubectl create configmap grafana-provisioning \
 kubectl create configmap grafana-dashboards --from-file=./config/dashboards/ -o yaml --dry-run=client | kubectl apply -f -
 
 echo "=== Applying Kubernetes Manifests ==="
-kubectl apply -f k8s/manifests/
+kubectl apply -f deployment/k8s/manifests/
 
 echo "=== deployment complete ==="
 

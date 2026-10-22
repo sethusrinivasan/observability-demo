@@ -19,7 +19,7 @@ services:
     ports:
       - "4319:4318"  # OTLP HTTP receiver on host (4319 avoids conflict with otel-collector 4318)
     volumes:
-      - ./telemetry-receiver/receiver.py:/app/receiver.py
+      - ../../apps/telemetry-receiver/receiver.py:/app/receiver.py
     environment:
       - PORT=4318
       - S3_ENDPOINT_URL=http://s3-storage:9090

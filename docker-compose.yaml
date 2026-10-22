@@ -193,7 +193,7 @@ services:
 
   # Python observability app
   observability-python-app:
-    build: .
+    build: ./apps/python
     container_name: observability-python-app
     restart: unless-stopped
     ports:
@@ -223,7 +223,7 @@ services:
 
   # Java observability app
   observability-java-app:
-    build: ./java-app
+    build: ./apps/java
     container_name: observability-java-app
     restart: unless-stopped
     ports:
@@ -255,7 +255,7 @@ services:
 
   # Rust observability app
   observability-rust-app:
-    build: ./rust-app
+    build: ./apps/rust
     container_name: observability-rust-app
     restart: unless-stopped
     ports:
@@ -276,7 +276,7 @@ services:
 
   # Node.js observability app
   observability-node-app:
-    build: ./node-app
+    build: ./apps/node
     container_name: observability-node-app
     restart: unless-stopped
     ports:
@@ -310,7 +310,7 @@ services:
 
   # Go observability app
   observability-go-app:
-    build: ./go-app
+    build: ./apps/go
     container_name: observability-go-app
     restart: unless-stopped
     ports:
@@ -344,7 +344,7 @@ services:
 
   observability-dotnet-app:
     build:
-      context: ./dotnet-app
+      context: ./apps/dotnet
       dockerfile: Dockerfile
     container_name: observability-dotnet-app
     restart: unless-stopped
@@ -375,7 +375,7 @@ services:
 
   # C observability app
   observability-c-app:
-    build: ./c-app
+    build: ./apps/c
     container_name: observability-c-app
     restart: unless-stopped
     ports:
@@ -408,7 +408,7 @@ services:
 
   # PHP observability app
   observability-php-app:
-    build: ./php-app
+    build: ./apps/php
     container_name: observability-php-app
     restart: unless-stopped
     ports:
