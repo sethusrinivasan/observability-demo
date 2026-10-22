@@ -12,6 +12,9 @@ RUN swift build -c release --static-swift-stdlib
 
 FROM swift:6.0-slim
 
+# Install curl for health probes and diagnostic inspection
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+
 # Copy AWS Lambda Web Adapter for serverless Graviton MicroVM execution
 COPY --from=lambda-adapter /lambda-adapter /opt/extensions/lambda-adapter
 

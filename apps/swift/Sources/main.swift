@@ -213,10 +213,35 @@ struct HTTPResponse {
 // Request Router & Handler
 // ---------------------------------------------------------------------------
 
-func handleRequest(method: String, path: String, body: String) -> HTTPResponse {
+// ---------------------------------------------------------------------------
+// Request Router & Handler
+// ---------------------------------------------------------------------------
+
+func parseQueryString(_ query: String) -> [String: String] {
+    var params: [String: String] = [:]
+    guard !query.isEmpty else { return params }
+    for pair in query.components(separatedBy: "&") {
+        let parts = pair.components(separatedBy: "=")
+        if parts.count >= 2 {
+            let key = parts[0]
+            let rawVal = parts.dropFirst().joined(separator: "=")
+            // Decode percent encoding while preserving literal '+' if not encoded
+            let decoded = rawVal.removingPercentEncoding ?? rawVal
+            params[key] = decoded
+        }
+    }
+    return params
+}
+
+func handleRequest(method: String, fullPath: String, body: String) -> HTTPResponse {
     if method == "OPTIONS" {
         return HTTPResponse(statusCode: 200, statusText: "OK", contentType: "text/plain", text: "")
     }
+
+    let urlParts = fullPath.components(separatedBy: "?")
+    let path = urlParts.first ?? fullPath
+    let queryString = urlParts.count > 1 ? urlParts.dropFirst().joined(separator: "?") : ""
+    let queryParams = parseQueryString(queryString)
 
     if path == "/" {
         let html = """
@@ -234,10 +259,11 @@ func handleRequest(method: String, path: String, body: String) -> HTTPResponse {
           </ul>
           <h3>Features:</h3>
           <ul>
-            <li><code>POST /eval</code> - Math expression evaluation</li>
+            <li><code>GET /eval?expr=...</code> & <code>POST /eval</code> - Math expression evaluation</li>
             <li><code>GET /version</code> - Service runtime metadata</li>
-            <li><code>GET /health</code> - Liveness probe</li>
+            <li><code>GET /health</code> & Actuator probes - Liveness & readiness probes</li>
             <li><code>GET /auditlog/stats</code> - Database audit statistics</li>
+            <li><code>POST /crash</code> - Fault injection chaos probe</li>
           </ul>
         </body>
         </html>
@@ -247,6 +273,7 @@ func handleRequest(method: String, path: String, body: String) -> HTTPResponse {
 
     if path == "/version" {
         return HTTPResponse(json: [
+            "app_name": "observability-swift-app",
             "version": appVersion,
             "language": appLanguage,
             "framework": "swift-standard-library",
@@ -254,12 +281,22 @@ func handleRequest(method: String, path: String, body: String) -> HTTPResponse {
         ])
     }
 
-    if path == "/health" || path == "/actuator/health" {
+    if path == "/health" || path == "/actuator/health" || path == "/actuator/health/liveness" || path == "/actuator/health/readiness" {
         let uptime = Date().timeIntervalSince(startTime)
         return HTTPResponse(json: [
             "status": "UP",
             "language": appLanguage,
             "uptime_seconds": round(uptime * 10.0) / 10.0
+        ])
+    }
+
+    if path == "/actuator/info" {
+        return HTTPResponse(json: [
+            "app": [
+                "name": "observability-swift-app",
+                "version": appVersion,
+                "language": appLanguage
+            ]
         ])
     }
 
@@ -279,23 +316,26 @@ func handleRequest(method: String, path: String, body: String) -> HTTPResponse {
         return HTTPResponse(json: [
             "input": n,
             "result": res,
+            "app_name": "observability-swift-app",
             "language": appLanguage
         ])
     }
 
     if path == "/eval" {
-        var exprStr = ""
-        if let bodyData = body.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
-           let expr = json["expr"] as? String {
-            exprStr = expr
-        } else {
-            exprStr = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        var exprStr = (queryParams["expr"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if exprStr.isEmpty {
+            if let bodyData = body.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+               let expr = json["expr"] as? String {
+                exprStr = expr.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                exprStr = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
         }
 
         if exprStr.isEmpty {
             return HTTPResponse(statusCode: 400, statusText: "Bad Request", contentType: "application/json", json: [
-                "error": "Missing 'expr' in request body."
+                "error": "Missing 'expr' in request."
             ])
         }
 
@@ -304,13 +344,19 @@ func handleRequest(method: String, path: String, body: String) -> HTTPResponse {
             let result = try evaluator.parse()
             return HTTPResponse(json: [
                 "expr": exprStr,
+                "expression": exprStr,
                 "result": result,
-                "language": appLanguage
+                "app_name": "observability-swift-app",
+                "language": appLanguage,
+                "version": appVersion
             ])
         } catch {
             return HTTPResponse(statusCode: 400, statusText: "Bad Request", contentType: "application/json", json: [
                 "error": "\(error)",
-                "expr": exprStr
+                "expr": exprStr,
+                "expression": exprStr,
+                "app_name": "observability-swift-app",
+                "language": appLanguage
             ])
         }
     }
@@ -333,6 +379,7 @@ func handleRequest(method: String, path: String, body: String) -> HTTPResponse {
                 "max_seconds": 5.0,
                 "buckets": []
             ],
+            "app_name": "observability-swift-app",
             "language": appLanguage
         ])
     }
@@ -343,9 +390,44 @@ func handleRequest(method: String, path: String, body: String) -> HTTPResponse {
             "status": "ok",
             "audit_id": auditId,
             "response_time_seconds": 0.0018,
+            "app_name": "observability-swift-app",
             "language": appLanguage,
             "details": ["application_name": "observability-swift-app"]
         ])
+    }
+
+    if path == "/crash" || path == "/chaos/crash" {
+        var crashType = (queryParams["type"] ?? "").lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if crashType.isEmpty,
+           let bodyData = body.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+           let type = json["type"] as? String {
+            crashType = type.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if crashType.isEmpty {
+            crashType = "process"
+        }
+
+        if crashType == "thread" {
+            return HTTPResponse(statusCode: 500, statusText: "Internal Server Error", contentType: "application/json", json: [
+                "status": "crashed",
+                "type": "thread",
+                "message": "Worker thread crashed with simulated exception",
+                "app_name": "observability-swift-app",
+                "language": appLanguage
+            ])
+        } else {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+                exit(1)
+            }
+            return HTTPResponse(statusCode: 500, statusText: "Internal Server Error", contentType: "application/json", json: [
+                "status": "crashed",
+                "type": "process",
+                "message": "Process terminating via exit(1)",
+                "app_name": "observability-swift-app",
+                "language": appLanguage
+            ])
+        }
     }
 
     if path == "/metrics" {
@@ -451,7 +533,7 @@ while true {
             body = bodyLines.joined(separator: "\r\n")
         }
 
-        let response = handleRequest(method: method, path: path, body: body)
+        let response = handleRequest(method: method, fullPath: fullPath, body: body)
         let resData = response.toData()
 
         _ = resData.withUnsafeBytes { ptr in

@@ -463,7 +463,7 @@ services:
       - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?sslmode=disable&application_name=observability-swift-app
       - PORT=8080
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || bash -c 'echo > /dev/tcp/127.0.0.1/8080' || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5

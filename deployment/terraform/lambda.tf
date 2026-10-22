@@ -151,8 +151,8 @@ resource "aws_lambda_function" "canary" {
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.services["observability-canary"].repository_url}:latest"
   architectures = ["arm64"]
-  memory_size   = 256 # 256 MB accommodates DuckDB in-process OLAP execution
-  timeout       = 30
+  memory_size   = 512 # 512 MB accommodates DuckDB in-process OLAP execution
+  timeout       = 60
 
   environment {
     variables = {
