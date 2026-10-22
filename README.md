@@ -29,7 +29,7 @@
 
 ---
 
-An end-to-end polyglot observability playground demonstrating production-grade telemetry across **Python (Flask)**, **Java (Spring Boot)**, **Rust (Axum)**, **Node.js (Express)**, **Go (net/http)**, **C# .NET (ASP.NET Core)**, **C (POSIX C99)**, and **PHP (CLI Server)** microservices. Telemetry (traces, metrics, logs) is collected via OpenTelemetry Collector and exported to the **Grafana LGTM stack** (Loki, Grafana, Tempo, Mimir), alongside a PostgreSQL audit layer and an interactive synthetic **Canary Traffic & Fault Injection Dashboard**.
+An end-to-end polyglot observability demo playground across **Python (Flask)**, **Java (Spring Boot)**, **Rust (Axum)**, **Node.js (Express)**, **Go (net/http)**, **C# .NET (ASP.NET Core)**, **C (POSIX C99)**, and **PHP (CLI Server)** microservices. Telemetry (traces, metrics, logs) is collected via OpenTelemetry Collector and exported to the **Grafana LGTM stack** (Loki, Grafana, Tempo, Mimir), alongside a PostgreSQL audit layer and an interactive synthetic **Canary Traffic & Fault Injection Dashboard**.
 
 Deployable locally via **Docker Compose** or **Kubernetes (Kind)**, and to AWS via **Terraform-managed Graviton MicroVMs & S3 Telemetry Lake**.
 
