@@ -14,6 +14,7 @@ ALLOWED_TABLES = frozenset({
     # System catalog & statistics views
     "pg_database",
     "pg_stat_activity",
+    "pg_stat_statements",
     "pg_stat_database",
     "pg_stat_user_tables",
     "pg_stat_user_indexes",
