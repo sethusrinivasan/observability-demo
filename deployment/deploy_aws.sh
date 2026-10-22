@@ -183,6 +183,7 @@ cmd_deploy() {
     "observability-dotnet-app:observability-dotnet-app"
     "observability-c-app:observability-c-app"
     "observability-php-app:observability-php-app"
+    "observability-swift-app:observability-swift-app"
     "observability-canary:observability-canary-dashboard"
     "custom-telemetry-receiver:observability-telemetry-collector"
   )
@@ -260,6 +261,7 @@ Available Services:
   - observability-dotnet-app
   - observability-c-app
   - observability-php-app
+  - observability-swift-app
   - observability-canary
   - custom-telemetry-receiver
   - all (default)
