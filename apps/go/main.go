@@ -377,9 +377,9 @@ func handleSelfTest(w http.ResponseWriter, r *http.Request) {
 func handleCompute(w http.ResponseWriter, r *http.Request) {
 	paramStr := strings.TrimPrefix(r.URL.Path, "/compute/")
 	n, err := strconv.Atoi(paramStr)
-	if err != nil || n > 25 || n < 0 {
+	if err != nil || n > 92 || n < 0 {
 		writeJSON(w, http.StatusBadRequest, withContextMap(map[string]interface{}{
-			"error": "Value too large, Max is 25 to prevent DoS",
+			"error": "Value out of range, supported 0-92",
 		}))
 		return
 	}

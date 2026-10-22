@@ -186,8 +186,8 @@ try {
             jsonResponse(400, ['error' => 'Invalid number'], $startTime, $uri, $method);
         }
         $n = (int)$nStr;
-        if ($n < 0 || $n > 25) {
-            jsonResponse(400, ['error' => 'Value too large, Max is 25 to prevent DoS'], $startTime, $uri, $method);
+        if ($n < 0 || $n > 92) {
+            jsonResponse(400, ['error' => 'Value out of range, supported 0-92'], $startTime, $uri, $method);
         }
 
         $res = fibonacci($n);

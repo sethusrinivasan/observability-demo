@@ -11,5 +11,12 @@ function fibonacci(int $n): int {
     if ($n === 1) {
         return 1;
     }
-    return fibonacci($n - 1) + fibonacci($n - 2);
+    $a = 0;
+    $b = 1;
+    for ($i = 2; $i <= $n; $i++) {
+        $temp = $a + $b;
+        $a = $b;
+        $b = $temp;
+    }
+    return $b;
 }

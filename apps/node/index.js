@@ -320,10 +320,10 @@ app.get("/selftest", (req, res) => {
 // 4. Fibonacci Compute endpoint
 app.get("/compute/:n", (req, res) => {
   const n = parseInt(req.params.n, 10);
-  if (isNaN(n) || n > 25) {
+  if (isNaN(n) || n < 0 || n > 92) {
     return res.status(400).json(
       withContext({
-        error: "Value too large, Max is 25 to prevent DoS",
+        error: "Value out of range, supported 0-92",
       })
     );
   }

@@ -502,11 +502,16 @@ def selftest():
         "output": stream.getvalue()
     }), 200 if result.wasSuccessful() else 500
 
+@app.route('/health')
+def health():
+    """Liveness & readiness probe"""
+    return jsonify({"status": "UP", "language": "python", "app": "observability-python-app"}), 200
+
 @app.route('/compute/<int:n>')
 def compute(n):
     """Endpoint that does some CPU work"""
-    if n > 25:
-        return jsonify({"error": "Value too large, Max is 25 to prevent DoS"}), 400
+    if n < 0 or n > 92:
+        return jsonify({"error": "Value out of range, supported 0-92"}), 400
 
     with tracer.start_as_current_span("compute-endpoint") as span:
         span.set_attribute("compute.value", n)
@@ -779,10 +784,15 @@ def chaos_crash():
 
 
 def fibonacci(n):
-    """Recursive Fibonacci (inefficient on purpose)"""
-    if n <= 1:
-        return n
-    return fibonacci(n-1) + fibonacci(n-2)
+    """Iterative Fibonacci (supports up to n=92 without overflow)"""
+    if n <= 0:
+        return 0
+    if n == 1:
+        return 1
+    a, b = 0, 1
+    for _ in range(2, n + 1):
+        a, b = b, a + b
+    return b
 
 
 # Initialize database

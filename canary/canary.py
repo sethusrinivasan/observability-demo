@@ -231,6 +231,7 @@ class DockerManager:
         "dotnet": "observability-dotnet-app",
         "c":      "observability-c-app",
         "php":    "observability-php-app",
+        "swift":  "observability-swift-app",
     }
 
     def __init__(self, socket_path: str = DOCKER_SOCKET_PATH):
@@ -2880,7 +2881,7 @@ class FaultManager:
 
             clean_tag = tag.strip() if tag and tag.strip() else f"DRILL-{int(now)}"
             target_clean = target.lower().strip()
-            if target_clean not in ("all", "python", "java", "rust", "node", "go", "dotnet", "c", "php"):
+            if target_clean not in ("all", "python", "java", "rust", "node", "go", "dotnet", "c", "php", "swift"):
                 target_clean = "all"
 
             fault = {
@@ -2892,6 +2893,7 @@ class FaultManager:
                 "delay_ms": max(100, int(delay_ms)),
                 "duration_sec": max(0, int(duration_sec)),
                 "start_time": now,
+                "timestamp": datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "end_time": (now + duration_sec) if duration_sec > 0 else None,
                 "status": "active",
                 "affected_requests": 0,
@@ -4219,6 +4221,7 @@ def render_dashboard_html() -> str:
     .badge-dotnet {{ background: #2e1065; color: #c4b5fd; }}
     .badge-c      {{ background: #1e293b; color: #94a3b8; }}
     .badge-php    {{ background: #282a36; color: #c7d2fe; }}
+    .badge-swift  {{ background: #431407; color: #fed7aa; }}
 
     /* Language-specific Fault Badges */
     .badge-fault-java   {{ background: #7c2d12; color: #fed7aa; border: 1px solid #f97316; }}
@@ -4229,6 +4232,7 @@ def render_dashboard_html() -> str:
     .badge-fault-dotnet {{ background: #2e1065; color: #ddd6fe; border: 1px solid #8b5cf6; }}
     .badge-fault-c      {{ background: #1e293b; color: #cbd5e1; border: 1px solid #64748b; }}
     .badge-fault-php    {{ background: #282a36; color: #c7d2fe; border: 1px solid #777bb4; }}
+    .badge-fault-swift  {{ background: #431407; color: #ffedd5; border: 1px solid #f97316; }}
     .badge-fault-all    {{ background: #7f1d1d; color: #fecaca; border: 1px solid #ef4444; }}
 
     code {{
@@ -4913,12 +4917,15 @@ def render_dashboard_html() -> str:
         <label for="ondemand-api-select" style="font-size:0.75rem; font-weight:700; color:#38bdf8; white-space:nowrap;">🎯 Benchmark Target API:</label>
         <select id="ondemand-api-select" style="font-size:0.75rem; flex:1; background:#1e293b; color:#f8fafc; border:1px solid #475569; padding:4px 8px; border-radius:4px; font-family:monospace;" onchange="onSelectOnDemandApi(this.value)">
           <option value="eval" selected>POST /eval • {{"expr":"(10+5)*2^2-3"}} (Math Expression AST)</option>
-          <option value="compute_10">GET /compute/10 • Fibonacci Sequence (n=10)</option>
-          <option value="compute_20">GET /compute/20 • Fibonacci Sequence (n=20)</option>
+          <option value="compute">GET /compute • Fibonacci Sequence (/compute/&lt;number&gt;)</option>
           <option value="version">GET /version • Runtime Metadata</option>
           <option value="health">GET /health • Liveness / Readiness Check</option>
           <option value="audit_stats">GET /auditlog/stats • Catalog Statistics</option>
         </select>
+        <div id="ondemand-compute-input-wrapper" style="display:none; align-items:center; gap:6px;">
+          <label for="ondemand-compute-n" style="font-size:0.72rem; color:#94a3b8; white-space:nowrap;">number:</label>
+          <input type="number" id="ondemand-compute-n" value="50" min="0" max="92" style="width:58px; font-size:0.75rem; background:#1e293b; color:#38bdf8; border:1px solid #38bdf8; padding:3px 6px; border-radius:4px; font-family:monospace;" placeholder="50" />
+        </div>
         <button class="btn btn-primary btn-sm" onclick="triggerOnDemandPulse()" id="btn-ondemand-run">▶️ Run API</button>
       </div>
 
@@ -5076,7 +5083,7 @@ def render_dashboard_html() -> str:
         <div class="drawer-badges">
           <span id="drawer-tps-chip" class="badge badge-success">6 TPS (Default)</span>
           <span id="drawer-fault-chip" class="badge badge-secondary">No Active Fault</span>
-          <span id="drawer-power-chip" class="badge badge-secondary">7/7 Containers Active</span>
+          <span id="drawer-power-chip" class="badge badge-secondary">9/9 Containers Active</span>
           <button class="btn btn-outline btn-sm" id="drawer-toggle-btn" style="pointer-events: none;">▶ Expand</button>
         </div>
       </div>
@@ -5118,6 +5125,7 @@ def render_dashboard_html() -> str:
                   <option value="dotnet">💜 .NET (C#)</option>
                   <option value="c">⚙️ C (POSIX)</option>
                   <option value="php">🐘 PHP</option>
+                  <option value="swift">🕊️ Swift</option>
                 </select>
               </div>
               <div class="form-field">
@@ -5144,6 +5152,7 @@ def render_dashboard_html() -> str:
               <button class="chip-btn chip-dotnet" onclick="quickDrill('DOTNET-ERR-SPIKE', 'error_spike', 'dotnet', 60)">💜 .NET Errors (60s)</button>
               <button class="chip-btn chip-c" onclick="quickDrill('C-ERR-SPIKE', 'error_spike', 'c', 60)">⚙️ C Errors (60s)</button>
               <button class="chip-btn chip-php" onclick="quickDrill('PHP-ERR-SPIKE', 'error_spike', 'php', 60)">🐘 PHP Errors (60s)</button>
+              <button class="chip-btn" style="border-color:#f97316; color:#fed7aa;" onclick="quickDrill('SWIFT-ERR-SPIKE', 'error_spike', 'swift', 60)">🕊️ Swift Errors (60s)</button>
               <button class="chip-btn" onclick="quickDrill('ALL-OUTAGE-DRILL', 'service_outage', 'all', 30)">🔴 Full Outage (30s)</button>
             </div>
           </div>
@@ -5166,6 +5175,7 @@ def render_dashboard_html() -> str:
                   <option value="dotnet">💜 .NET (C#)</option>
                   <option value="c">⚙️ C (POSIX)</option>
                   <option value="php">🐘 PHP</option>
+                  <option value="swift">🕊️ Swift</option>
                   <option value="all">🔴 All Environments</option>
                 </select>
               </div>
@@ -5195,6 +5205,7 @@ def render_dashboard_html() -> str:
               <button class="chip-btn chip-dotnet" onclick="quickCrash('dotnet', 'process', 'CRASH-DOTNET-PROC')">💜 .NET Proc</button>
               <button class="chip-btn chip-c" onclick="quickCrash('c', 'process', 'CRASH-C-PROC')">⚙️ C Proc</button>
               <button class="chip-btn chip-php" onclick="quickCrash('php', 'process', 'CRASH-PHP-PROC')">🐘 PHP Proc</button>
+              <button class="chip-btn" style="border-color:#f97316; color:#fed7aa;" onclick="quickCrash('swift', 'process', 'CRASH-SWIFT-PROC')">🕊️ Swift Proc</button>
             </div>
           </div>
 
@@ -5397,6 +5408,7 @@ def render_dashboard_html() -> str:
             <table>
               <thead>
                 <tr>
+                  <th style="white-space:nowrap;">Timestamp</th>
                   <th>Tag</th>
                   <th>Target</th>
                   <th>Mode</th>
@@ -5406,7 +5418,7 @@ def render_dashboard_html() -> str:
                 </tr>
               </thead>
               <tbody id="fault-history-table-body">
-                <tr><td colspan="6" style="text-align:center; color:var(--muted);">No fault drills logged yet.</td></tr>
+                <tr><td colspan="7" style="text-align:center; color:var(--muted);">No fault drills logged yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -5911,6 +5923,7 @@ def render_dashboard_html() -> str:
       'dotnet': {{ stroke: '#8b5cf6', fill: 'rgba(139, 92, 246, 0.22)', badge: '#7c3aed', border: '#8b5cf6', text: '#fff' }},
       'c':      {{ stroke: '#64748b', fill: 'rgba(100, 116, 139, 0.22)', badge: '#475569', border: '#64748b', text: '#fff' }},
       'php':    {{ stroke: '#777bb4', fill: 'rgba(119, 123, 180, 0.22)', badge: '#6366f1', border: '#777bb4', text: '#fff' }},
+      'swift':  {{ stroke: '#f97316', fill: 'rgba(249, 115, 22, 0.22)', badge: '#c2410c', border: '#ea580c', text: '#fff' }},
       'all':    {{ stroke: '#ef4444', fill: 'rgba(239, 68, 68, 0.22)', badge: '#dc2626', border: '#ef4444', text: '#fff' }}
     }};
 
@@ -7213,10 +7226,11 @@ def render_dashboard_html() -> str:
       }}
       tbody.innerHTML = appRows;
 
+      const totalContainers = Object.keys(data.apps || {{}}).length || 9;
       const drawerPowerChip = document.getElementById('drawer-power-chip');
       if (drawerPowerChip) {{
-        drawerPowerChip.innerText = `${{activeContainerCount}}/7 Containers Active`;
-        drawerPowerChip.className = (activeContainerCount === 7) ? 'badge badge-secondary' : 'badge badge-warning';
+        drawerPowerChip.innerText = `${{activeContainerCount}}/${{totalContainers}} Containers Active`;
+        drawerPowerChip.className = (activeContainerCount === totalContainers) ? 'badge badge-secondary' : 'badge badge-warning';
       }}
 
       // Endpoints table
@@ -7234,12 +7248,15 @@ def render_dashboard_html() -> str:
       }}
       epBody.innerHTML = epRows || '<tr><td colspan="5" style="text-align:center;">No data</td></tr>';
 
-      // Fault history table
+      // Fault history table (sorted by timestamp desc)
       const fBody = document.getElementById('fault-history-table-body');
       let fRows = '';
       const historyList = [];
       if (activeFault) historyList.push(activeFault);
       historyList.push(...(fSnap.history || []));
+
+      // Sort by start_time descending (newest first)
+      historyList.sort((a, b) => (b.start_time || 0) - (a.start_time || 0));
 
       for (const f of historyList) {{
         const tgt = (f.target || 'all').toLowerCase();
@@ -7248,7 +7265,10 @@ def render_dashboard_html() -> str:
         const stBadge = isAct ? '<span class="badge badge-error">RUNNING</span>' : '<span class="badge badge-success">DONE</span>';
         const dur = f.actual_duration_sec ? `${{f.actual_duration_sec}}s` : (f.duration_sec ? `${{f.duration_sec}}s` : 'manual');
         const impact = `${{f.affected_requests || 0}} reqs (${{f.induced_errors || 0}} err)`;
+        const timeStr = f.timestamp ? f.timestamp.split(' ')[1] : (f.start_time ? new Date(f.start_time * 1000).toLocaleTimeString() : '--');
+        const fullTime = f.timestamp || (f.start_time ? new Date(f.start_time * 1000).toISOString() : '');
         fRows += `<tr>
+          <td style="font-family:monospace; font-size:0.73rem; color:var(--muted); white-space:nowrap;" title="${{fullTime}}">⏱️ ${{timeStr}}</td>
           <td><span class="badge ${{badgeCls}}">🏷️ ${{f.tag}}</span></td>
           <td><span class="badge badge-${{tgt}}">${{tgt.toUpperCase()}}</span></td>
           <td><code>${{f.fault_type}}</code></td>
@@ -7257,7 +7277,7 @@ def render_dashboard_html() -> str:
           <td>${{stBadge}}</td>
         </tr>`;
       }}
-      fBody.innerHTML = fRows || '<tr><td colspan="6" style="text-align:center; color:var(--muted);">No fault drills logged yet.</td></tr>';
+      fBody.innerHTML = fRows || '<tr><td colspan="7" style="text-align:center; color:var(--muted);">No fault drills logged yet.</td></tr>';
 
       // Recent requests
       const recBody = document.getElementById('recent-table-body');
@@ -8770,7 +8790,10 @@ def render_dashboard_html() -> str:
     }}
 
     function onSelectOnDemandApi(val) {{
-      // Pre-selection handler ready for custom targets
+      const computeWrap = document.getElementById('ondemand-compute-input-wrapper');
+      if (computeWrap) {{
+        computeWrap.style.display = (val === 'compute' || val.startsWith('compute')) ? 'inline-flex' : 'none';
+      }}
     }}
 
     function copyOnDemandResults() {{
@@ -8839,11 +8862,23 @@ def render_dashboard_html() -> str:
       // Determine benchmark target from select dropdown
       const apiType = (document.getElementById('ondemand-api-select') || {{}}).value || 'eval';
       let targetPayload = {{ path: '/eval', method: 'POST', json: {{ expr: '(10+5)*2^2-3' }} }};
-      if (apiType === 'compute_10') targetPayload = {{ path: '/compute/10', method: 'GET' }};
-      else if (apiType === 'compute_20') targetPayload = {{ path: '/compute/20', method: 'GET' }};
-      else if (apiType === 'version') targetPayload = {{ path: '/version', method: 'GET' }};
-      else if (apiType === 'health') targetPayload = {{ path: '/health', method: 'GET' }};
-      else if (apiType === 'audit_stats') targetPayload = {{ path: '/auditlog/stats', method: 'GET' }};
+      if (apiType === 'compute' || apiType.startsWith('compute')) {{
+        const nInput = document.getElementById('ondemand-compute-n');
+        let n = 50;
+        if (nInput && nInput.value !== '') {{
+          const parsed = parseInt(nInput.value, 10);
+          if (!isNaN(parsed) && parsed >= 0) {{
+            n = parsed;
+          }}
+        }}
+        targetPayload = {{ path: `/compute/${{n}}`, method: 'GET' }};
+      }} else if (apiType === 'version') {{
+        targetPayload = {{ path: '/version', method: 'GET' }};
+      }} else if (apiType === 'health') {{
+        targetPayload = {{ path: '/health', method: 'GET' }};
+      }} else if (apiType === 'audit_stats') {{
+        targetPayload = {{ path: '/auditlog/stats', method: 'GET' }};
+      }}
 
       try {{
         const res = await fetch('/api/trigger-cycle', {{

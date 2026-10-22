@@ -114,9 +114,14 @@ build_and_push_service() {
   local context_dir
   context_dir="$(dirname "${REPO_ROOT}/${dockerfile}")"
 
-  log_info "Building arm64 Graviton image for ${BOLD}${svc_name}${NC} (Tagged: ApplicationName=${APP_TAG})..."
+  local platform="linux/arm64"
+  if [ "${svc_name}" = "observability-swift-app" ]; then
+    platform="linux/amd64"
+  fi
+
+  log_info "Building ${platform} image for ${BOLD}${svc_name}${NC} (Tagged: ApplicationName=${APP_TAG})..."
   docker buildx build \
-    --platform linux/arm64 \
+    --platform "${platform}" \
     --provenance=false \
     --build-arg APPLICATION_NAME="${APP_TAG}" \
     -t "${repo_url}:latest" \

@@ -492,10 +492,10 @@ static void *handle_client_connection(void *arg) {
     // 4. GET /compute/:n
     else if (strncmp(path, "/compute/", 9) == 0 && strcmp(method, "GET") == 0) {
         int n = atoi(path + 9);
-        if (n > 25 || n < 0) {
+        if (n > 92 || n < 0) {
             cJSON *res = cJSON_CreateObject();
             attach_context(res);
-            cJSON_AddStringToObject(res, "error", "Value too large, Max is 25 to prevent DoS");
+            cJSON_AddStringToObject(res, "error", "Value out of range, supported 0-92");
             send_json_response(fd, 400, res);
             status_code = 400;
             is_error = 1;

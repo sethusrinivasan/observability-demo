@@ -335,11 +335,16 @@ class AppController {
             )));
     }
 
+    @GetMapping(value = {"/health", "/livez"})
+    public ResponseEntity<?> health() {
+        return ResponseEntity.ok(withContext(Map.of("status", "UP", "language", "java", "app", "observability-java-app")));
+    }
+
     @GetMapping("/compute/{n}")
     public ResponseEntity<?> compute(@PathVariable int n) {
-        if (n > 25) {
+        if (n < 0 || n > 92) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(withContext(Map.of("error", "Value too large, Max is 25 to prevent DoS")));
+                    .body(withContext(Map.of("error", "Value out of range, supported 0-92")));
         }
         Span span = tracer.spanBuilder("compute-endpoint").startSpan();
         span.setAttribute("compute.value", n);
@@ -462,8 +467,15 @@ class AppController {
     }
 
     public long fibonacci(int n) {
-        if (n <= 1) return n;
-        return fibonacci(n - 1) + fibonacci(n - 2);
+        if (n <= 0) return 0;
+        if (n == 1) return 1;
+        long a = 0, b = 1;
+        for (int i = 2; i <= n; i++) {
+            long temp = a + b;
+            a = b;
+            b = temp;
+        }
+        return b;
     }
 
     // Simplified recursive descent parser for expression evaluation (no external libs)

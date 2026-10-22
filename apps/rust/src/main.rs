@@ -255,6 +255,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(home))
+        .route("/health", get(health_handler))
         .route("/version", get(version))
         .route("/selftest", get(selftest))
         .route("/compute/:n", get(compute))
@@ -316,15 +317,23 @@ async fn home(State(state): State<AppState>) -> impl IntoResponse {
     resp
 }
 
+async fn health_handler() -> impl IntoResponse {
+    Json(attach_context(serde_json::json!({
+        "status": "UP",
+        "language": "rust",
+        "app": "observability-rust-app"
+    }))).into_response()
+}
+
 async fn version() -> impl IntoResponse {
     Json(attach_context(serde_json::json!({}))).into_response()
 }
 
 async fn compute(State(state): State<AppState>, Path(n): Path<usize>) -> impl IntoResponse {
     let t = Instant::now();
-    if n > 25 {
+    if n > 92 {
         record_metrics(&state, "/compute", "compute", "error", "compute", t.elapsed().as_secs_f64());
-        return (StatusCode::BAD_REQUEST, Json(attach_context(serde_json::json!({"error": "Too large"})))).into_response();
+        return (StatusCode::BAD_REQUEST, Json(attach_context(serde_json::json!({"error": "Value out of range, supported 0-92"})))).into_response();
     }
     let res = fibonacci(n);
     record_metrics(&state, "/compute", "compute", "success", "compute", t.elapsed().as_secs_f64());
@@ -457,8 +466,16 @@ fn handle_crash(crash_type_opt: Option<String>) -> Response {
 // ── fibonacci ─────────────────────────────────────────────────────────────────
 
 fn fibonacci(n: usize) -> usize {
-    if n <= 1 { return n; }
-    fibonacci(n - 1) + fibonacci(n - 2)
+    if n == 0 { return 0; }
+    if n == 1 { return 1; }
+    let mut a: usize = 0;
+    let mut b: usize = 1;
+    for _ in 2..=n {
+        let temp = a.wrapping_add(b);
+        a = b;
+        b = temp;
+    }
+    b
 }
 
 // ── expression evaluator ──────────────────────────────────────────────────────

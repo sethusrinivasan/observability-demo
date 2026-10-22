@@ -385,11 +385,11 @@ app.MapGet("/selftest", () =>
 // 4. GET /compute/{n}
 app.MapGet("/compute/{n}", (string n) =>
 {
-    if (!int.TryParse(n, out var num) || num < 0 || num > 25)
+    if (!int.TryParse(n, out var num) || num < 0 || num > 92)
     {
         return Results.Json(WithContext(new Dictionary<string, object?>
         {
-            ["error"] = "Value too large, Max is 25 to prevent DoS"
+            ["error"] = "Value out of range, supported 0-92"
         }), statusCode: 400);
     }
 
@@ -602,6 +602,7 @@ app.MapPost("/chaos/crash", handleCrash);
 // ---------------------------------------------------------------------------
 // Actuator Probes
 // ---------------------------------------------------------------------------
+app.MapGet("/health", () => Results.Ok(new { status = "UP", language = Language, app = AppName }));
 app.MapGet("/actuator/health", () => Results.Ok(new { status = "UP" }));
 app.MapGet("/actuator/health/liveness", () => Results.Ok(new { status = "UP" }));
 app.MapGet("/actuator/health/readiness", () =>

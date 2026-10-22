@@ -277,16 +277,66 @@ def test_ondemand_custom_target_and_swift_service():
     assert "python" in apps_tested
     assert "java" in apps_tested
 
-    # Verify UI contains API selector dropdown, copy button, and p50/p95/p99/p100 latencies
+    # Verify UI contains API selector dropdown, copy button, compute edit box (default 50), and p50/p95/p99/p100 latencies
     html = render_dashboard_html()
     assert 'id="ondemand-api-select"' in html
     assert 'POST /eval' in html
-    assert 'GET /compute/10' in html
-    assert 'GET /compute/20' in html
+    assert 'GET /compute' in html
+    assert 'id="ondemand-compute-input-wrapper"' in html
+    assert 'id="ondemand-compute-n"' in html
+    assert 'value="50"' in html
     assert 'GET /version' in html
+    assert 'GET /health' in html
     assert 'ondemand-p50' in html
     assert 'ondemand-p95' in html
     assert 'ondemand-p99' in html
     assert 'ondemand-p100' in html
     assert 'copyOnDemandResults()' in html
     assert 'resetOnDemandMetrics()' in html
+
+
+def test_fault_ledger_timestamp_and_sort_desc():
+    """Verify Fault Injection Event Ledger keeps timestamps and sorts drills by timestamp descending."""
+    from canary.canary import fault_manager, render_dashboard_html
+    import time
+
+    # Start and stop 2 distinct drills
+    f1 = fault_manager.start_fault(tag="DRILL-EARLIER", fault_type="error_spike", target="swift", duration_sec=10)
+    assert "timestamp" in f1
+    assert "start_time" in f1
+    assert f1["target"] == "swift"
+    time.sleep(0.05)
+    fault_manager.stop_fault()
+
+    f2 = fault_manager.start_fault(tag="DRILL-LATER", fault_type="high_latency", target="python", duration_sec=10)
+    assert "timestamp" in f2
+    assert "start_time" in f2
+    assert f2["start_time"] >= f1["start_time"]
+    fault_manager.stop_fault()
+
+    # Check that UI renders Timestamp column and sort desc logic
+    html = render_dashboard_html()
+    assert 'Timestamp</th>' in html
+    assert 'Fault Injection Event Ledger' in html
+    assert '(b.start_time || 0) - (a.start_time || 0)' in html
+
+
+def test_container_power_manager_includes_swift():
+    """Verify Container Power & Resource Manager includes Swift across container map, status, and controls."""
+    from canary.canary import DockerManager, docker_manager, render_dashboard_html
+
+    # Check CONTAINER_MAP has Swift
+    assert "swift" in DockerManager.CONTAINER_MAP
+    assert DockerManager.CONTAINER_MAP["swift"] == "observability-swift-app"
+
+    # Check get_containers_status includes swift
+    statuses = docker_manager.get_containers_status()
+    assert "swift" in statuses
+    assert statuses["swift"]["name"] == "observability-swift-app"
+
+    # Check HTML has swift badge, fault target option, and crash target option
+    html = render_dashboard_html()
+    assert '.badge-swift' in html
+    assert '.badge-fault-swift' in html
+    assert '<option value="swift">🕊️ Swift</option>' in html
+    assert "CRASH-SWIFT-PROC" in html

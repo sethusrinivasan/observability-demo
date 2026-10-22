@@ -1,6 +1,6 @@
 package main
 
-// fibonacci calculates the nth Fibonacci number recursively.
+// fibonacci calculates the nth Fibonacci number iteratively.
 func fibonacci(n int) int {
 	if n <= 0 {
 		return 0
@@ -8,5 +8,9 @@ func fibonacci(n int) int {
 	if n == 1 {
 		return 1
 	}
-	return fibonacci(n-1) + fibonacci(n-2)
+	a, b := 0, 1
+	for i := 2; i <= n; i++ {
+		a, b = b, a+b
+	}
+	return b
 }

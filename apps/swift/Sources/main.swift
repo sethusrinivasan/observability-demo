@@ -304,12 +304,12 @@ func handleRequest(method: String, fullPath: String, body: String) -> HTTPRespon
         let nStr = String(path.dropFirst("/compute/".count))
         guard let n = Int(nStr), n >= 0 else {
             return HTTPResponse(statusCode: 400, statusText: "Bad Request", contentType: "application/json", json: [
-                "error": "Invalid input. 'n' must be a non-negative integer <= 25."
+                "error": "Invalid input. 'n' must be a non-negative integer <= 92."
             ])
         }
-        if n > 25 {
+        if n > 92 {
             return HTTPResponse(statusCode: 400, statusText: "Bad Request", contentType: "application/json", json: [
-                "error": "Input too large. Maximum supported n is 25."
+                "error": "Input too large. Maximum supported n is 92."
             ])
         }
         let res = fibonacci(n)
