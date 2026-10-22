@@ -82,6 +82,29 @@ def test_polyglot_eval_error_handling(app_name, base_url):
     assert resp_empty.status_code == 400, f"{app_name} expected 400 for missing expr, got {resp_empty.status_code}"
 
 
+@pytest.mark.parametrize("app_name,base_url", list(POLYGLOT_APPS.items()))
+def test_polyglot_health_endpoint(app_name, base_url):
+    """Ensure all 9 microservices expose GET /health with 200 status."""
+    resp = requests.get(f"{base_url}/health", timeout=3)
+    assert resp.status_code == 200, f"{app_name} /health failed: {resp.status_code}"
+    try:
+        data = resp.json()
+        status_val = str(data.get("status", "")).upper()
+        assert status_val in ("UP", "OK", "HEALTHY") or "status" in data
+    except Exception:
+        assert resp.text.strip().upper() in ("OK", "UP", "HEALTHY")
+
+
+@pytest.mark.parametrize("app_name,base_url", list(POLYGLOT_APPS.items()))
+def test_polyglot_compute_endpoint(app_name, base_url):
+    """Ensure all 9 microservices calculate iterative Fibonacci without overflow up to n=50."""
+    resp = requests.get(f"{base_url}/compute/50", timeout=5)
+    assert resp.status_code == 200, f"{app_name} /compute/50 failed with {resp.status_code}: {resp.text}"
+    data = resp.json()
+    assert "result" in data, f"{app_name} missing 'result' in /compute/50 response"
+    assert int(data["result"]) == 12586269025, f"{app_name} fib(50) expected 12586269025, got {data['result']}"
+
+
 def test_canary_synthetic_cycle_zero_errors():
     """Verify Canary synthetic cycle executes cleanly with 0 errors across all services."""
     resp = requests.get(f"{CANARY_URL}/api/trigger-cycle", timeout=15)
