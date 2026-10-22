@@ -154,6 +154,24 @@
     },
     {
       "type": "application",
+      "name": "observability-php-app",
+      "version": "1.0.1",
+      "description": "Lightweight PHP 8.3 microservice implementing built-in multi-worker HTTP server, recursive descent evaluator, PDO PostgreSQL persistence, and OTLP telemetry.",
+      "purl": "pkg:generic/observability-php-app@1.0.1",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "properties": [
+        {
+          "name": "implementation",
+          "value": "Implemented in PHP 8.3 CLI with multi-worker server, zero third-party dependencies, native PDO PostgreSQL client, and native OTLP JSON telemetry exporter."
+        },
+        {
+          "name": "inspiration",
+          "value": "Inspired by Rasmus Lerdorf's lightweight request-per-process paradigm and serverless PHP architectures with AWS Lambda Web Adapter."
+        }
+      ]
+    },
+    {
+      "type": "application",
       "name": "observability-canary",
       "version": "1.0.1",
       "description": "Synthetic traffic generator, Chaos Fault Injection coordinator, Docker lifecycle controller, PostgreSQL query engine, and real-time operations dashboard.",

@@ -81,10 +81,12 @@ def test_empty_and_non_select():
 
 def test_stacked_statements_and_catalogs():
     _bad("SELECT id FROM audit_logs; DROP TABLE audit_logs")
-    _bad("SELECT * FROM pg_stat_activity")
-    _bad("SELECT table_name FROM information_schema.tables")
+    _ok("SELECT * FROM pg_stat_activity")
+    _ok("SELECT table_name FROM information_schema.tables")
+    _ok("SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database")
     _bad("SELECT id FROM audit_logs UNION SELECT usename FROM pg_user")
     _bad("SELECT pg_read_file('/etc/passwd') FROM audit_logs")
+    _bad("SELECT pg_sleep(10) FROM audit_logs")
     _bad("SELECT 1")
 
 

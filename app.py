@@ -35,12 +35,9 @@ from opentelemetry.metrics import Observation
 from opentelemetry.sdk.resources import SERVICE_NAME, DEPLOYMENT_ENVIRONMENT, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
@@ -191,16 +188,45 @@ service_resource = Resource(attributes={
     "language": "python"
 })
 
+use_http_otlp = bool(
+    os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+    or os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL") == "http/protobuf"
+    or "lambda-url" in OTLP_ENDPOINT
+    or ":4318" in OTLP_ENDPOINT
+)
+clean_otlp = OTLP_ENDPOINT.rstrip("/")
+
+if use_http_otlp:
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter as HttpSpanExporter
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter as HttpMetricExporter
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter as HttpLogExporter
+
+    trace_url = f"{clean_otlp}/v1/traces" if not clean_otlp.endswith("/v1/traces") else clean_otlp
+    metric_url = f"{clean_otlp}/v1/metrics" if not clean_otlp.endswith("/v1/metrics") else clean_otlp
+    log_url = f"{clean_otlp}/v1/logs" if not clean_otlp.endswith("/v1/logs") else clean_otlp
+
+    trace_exp = HttpSpanExporter(endpoint=trace_url)
+    metric_exp = HttpMetricExporter(endpoint=metric_url)
+    log_exp = HttpLogExporter(endpoint=log_url)
+else:
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter as GrpcSpanExporter
+    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter as GrpcMetricExporter
+    from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter as GrpcLogExporter
+
+    trace_exp = GrpcSpanExporter(endpoint=clean_otlp, insecure=True)
+    metric_exp = GrpcMetricExporter(endpoint=clean_otlp, insecure=True)
+    log_exp = GrpcLogExporter(endpoint=clean_otlp, insecure=True)
+
 # 2. Setup Tracing
 trace_provider = TracerProvider(resource=service_resource)
-span_processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=OTLP_ENDPOINT, insecure=True))
+span_processor = BatchSpanProcessor(trace_exp)
 trace_provider.add_span_processor(span_processor)
 trace.set_tracer_provider(trace_provider)
 tracer = trace.get_tracer(__name__)
 
 # 3. Setup Metrics
 metric_reader = PeriodicExportingMetricReader(
-    OTLPMetricExporter(endpoint=OTLP_ENDPOINT, insecure=True),
+    metric_exp,
     export_interval_millis=5000
 )
 meter_provider = MeterProvider(resource=service_resource, metric_readers=[metric_reader])
@@ -381,7 +407,7 @@ def record_request_metrics(response):
 
 # 4. Setup Logging with Trace correlation
 logger_provider = LoggerProvider(resource=service_resource)
-log_exporter = OTLPLogExporter(endpoint=OTLP_ENDPOINT, insecure=True)
+log_exporter = log_exp
 logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
 set_logger_provider(logger_provider)
 

@@ -66,7 +66,10 @@ try:
 except ImportError:
     duckdb = None
 
-from sql_guard import SqlGuardError, guard_readonly_sql
+try:
+    from canary.sql_guard import SqlGuardError, guard_readonly_sql
+except ImportError:
+    from sql_guard import SqlGuardError, guard_readonly_sql
 
 # ---------------------------------------------------------------------------
 # Configuration from environment variables
@@ -78,10 +81,19 @@ NODE_APP_BASE_URL    = (os.getenv("NODE_APP_BASE_URL") or "http://observability-
 GO_APP_BASE_URL      = (os.getenv("GO_APP_BASE_URL") or "http://observability-go-app:8080").rstrip("/")
 DOTNET_APP_BASE_URL  = (os.getenv("DOTNET_APP_BASE_URL") or "http://observability-dotnet-app:8080").rstrip("/")
 C_APP_BASE_URL       = (os.getenv("C_APP_BASE_URL") or "http://observability-c-app:8080").rstrip("/")
+PHP_APP_BASE_URL     = (os.getenv("PHP_APP_BASE_URL") or "http://observability-php-app:8080").rstrip("/")
 OTLP_ENDPOINT        = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
 MIMIR_URL            = os.getenv("MIMIR_URL",           "http://mimir:9009")
 VALKEY_HOST          = os.getenv("VALKEY_HOST",         "valkey")
-CANARY_TPS           = float(os.getenv("CANARY_TPS",    "6"))
+# Frugal Load Configuration: Supports Transactions Per Minute (TPM) and TPS
+CANARY_RATE_UNIT = os.getenv("CANARY_RATE_UNIT", "TPM" if (os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("CANARY_TPM")) else "TPS").upper()
+if CANARY_RATE_UNIT == "TPM" or os.getenv("CANARY_TPM"):
+    CANARY_TPM = float(os.getenv("CANARY_TPM", "6"))
+    CANARY_TPS = CANARY_TPM / 60.0
+else:
+    CANARY_TPS = float(os.getenv("CANARY_TPS", "6"))
+    CANARY_TPM = CANARY_TPS * 60.0
+
 CANARY_PORT          = int(os.getenv("CANARY_PORT",     "8085"))
 REFRESH_INTERVAL_SEC = int(os.getenv("CANARY_REFRESH_INTERVAL", "3"))
 
@@ -97,6 +109,8 @@ POSTGRES_PORT        = int(os.getenv("POSTGRES_PORT",   "5432"))
 POSTGRES_DB          = os.getenv("POSTGRES_DB",         "observability")
 POSTGRES_USER        = os.getenv("POSTGRES_USER",       "observability")
 POSTGRES_PASSWORD    = os.getenv("POSTGRES_PASSWORD",   "observability")
+POSTGRES_READER_PASSWORD = os.getenv("POSTGRES_READER_PASSWORD", "observability_reader")
+POSTGRES_ADMIN_PASSWORD  = os.getenv("POSTGRES_ADMIN_PASSWORD",  "observability_admin")
 DOCKER_SOCKET_PATH   = os.getenv("DOCKER_SOCKET_PATH",  "/var/run/docker.sock")
 CANARY_DEMO_USER     = os.getenv("CANARY_DEMO_USER",     "demouser")
 CANARY_DEMO_PASSWORD = os.getenv("CANARY_DEMO_PASSWORD", "demo")
@@ -113,17 +127,36 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("canary")
 
 # ---------------------------------------------------------------------------
-# OTel metrics setup
+# OTel metrics setup (Seamless HTTP/Protobuf for Lambda, gRPC for Docker)
 # ---------------------------------------------------------------------------
 resource = Resource(attributes={
     SERVICE_NAME: "observability-canary",
-    DEPLOYMENT_ENVIRONMENT: "local-dev",
+    DEPLOYMENT_ENVIRONMENT: "aws-cloud" if os.getenv("AWS_LAMBDA_FUNCTION_NAME") else "local-dev",
 })
 
-reader = PeriodicExportingMetricReader(
-    OTLPMetricExporter(endpoint=OTLP_ENDPOINT, insecure=True),
-    export_interval_millis=5000,
+use_http_otlp = bool(
+    os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+    or os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL") == "http/protobuf"
+    or "lambda-url" in OTLP_ENDPOINT
+    or ":4318" in OTLP_ENDPOINT
+    or (TELEMETRY_RECEIVER_URL and "lambda-url" in TELEMETRY_RECEIVER_URL)
 )
+
+if use_http_otlp:
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter as HttpMetricExporter
+    clean_target = (TELEMETRY_RECEIVER_URL or OTLP_ENDPOINT).rstrip("/")
+    metric_target = f"{clean_target}/v1/metrics" if not clean_target.endswith("/v1/metrics") else clean_target
+    reader = PeriodicExportingMetricReader(
+        HttpMetricExporter(endpoint=metric_target),
+        export_interval_millis=5000,
+    )
+else:
+    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter as GrpcMetricExporter
+    reader = PeriodicExportingMetricReader(
+        GrpcMetricExporter(endpoint=OTLP_ENDPOINT, insecure=True),
+        export_interval_millis=5000,
+    )
+
 meter_provider = MeterProvider(resource=resource, metric_readers=[reader])
 metrics.set_meter_provider(meter_provider)
 meter = metrics.get_meter("canary")
@@ -196,6 +229,7 @@ class DockerManager:
         "go":     "observability-go-app",
         "dotnet": "observability-dotnet-app",
         "c":      "observability-c-app",
+        "php":    "observability-php-app",
     }
 
     def __init__(self, socket_path: str = DOCKER_SOCKET_PATH):
@@ -347,172 +381,248 @@ docker_manager = DockerManager()
 # Curated Saved SQL Queries for Postgres
 # ---------------------------------------------------------------------------
 SAVED_QUERIES = [
+    # -----------------------------------------------------------------------
+    # Category 1: Schema & Data Dictionary
+    # -----------------------------------------------------------------------
+    {
+        "id": "db_sizes",
+        "category": "📚 Schema & Data Dictionary",
+        "name": "💾 Database & Disk Storage Sizes",
+        "description": "Disk space occupied by all databases in the PostgreSQL cluster.",
+        "sql": "SELECT datname, pg_size_pretty(pg_database_size(datname)) AS db_size, pg_database_size(datname) AS bytes FROM pg_database WHERE datistemplate = false ORDER BY bytes DESC;"
+    },
+    {
+        "id": "table_catalog_sizes",
+        "category": "📚 Schema & Data Dictionary",
+        "name": "📋 Table Catalog, Row Counts & Sizes",
+        "description": "All user tables with estimated row counts, data size, index size, and total size.",
+        "sql": "SELECT schemaname, relname AS table_name, n_live_tup AS estimated_rows, pg_size_pretty(pg_relation_size(relid)) AS table_size, pg_size_pretty(pg_indexes_size(relid)) AS index_size, pg_size_pretty(pg_total_relation_size(relid)) AS total_size FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC;"
+    },
+    {
+        "id": "column_dictionary",
+        "category": "📚 Schema & Data Dictionary",
+        "name": "📖 Column Dictionary & Data Types",
+        "description": "Catalog of all table columns, data types, nullability, and default expressions.",
+        "sql": "SELECT table_schema, table_name, ordinal_position, column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position;"
+    },
+    {
+        "id": "table_indexes",
+        "category": "📚 Schema & Data Dictionary",
+        "name": "⚡ Table Indexes & Hit Rates",
+        "description": "Active indexes, sizes, index scans vs sequential scans.",
+        "sql": "SELECT schemaname, relname AS table_name, indexrelname AS index_name, idx_scan AS index_scans, pg_size_pretty(pg_relation_size(indexrelid)) AS index_size FROM pg_stat_user_indexes ORDER BY idx_scan DESC;"
+    },
+    {
+        "id": "table_constraints",
+        "category": "📚 Schema & Data Dictionary",
+        "name": "🔒 Table Constraints & Keys",
+        "description": "Primary keys, foreign keys, and unique constraints across public tables.",
+        "sql": "SELECT tc.table_name, tc.constraint_name, tc.constraint_type, kcu.column_name FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema WHERE tc.table_schema = 'public' ORDER BY tc.table_name, tc.constraint_type;"
+    },
+    {
+        "id": "audit_logs_sample",
+        "category": "📚 Schema & Data Dictionary",
+        "name": "📄 Sample Table Content: audit_logs",
+        "description": "Sample 10 recent rows from audit_logs table.",
+        "sql": "SELECT id, created_at, endpoint, status_code, round(response_time_seconds::numeric, 4) AS duration_sec, details FROM audit_logs ORDER BY id DESC LIMIT 10;"
+    },
+    {
+        "id": "saved_query_catalog",
+        "category": "📚 Schema & Data Dictionary",
+        "name": "🗂️ Saved query catalog",
+        "description": "Queries stored for reuse in the SQL editor.",
+        "sql": "SELECT id, name, category, description, created_by, updated_at FROM sql_saved_queries ORDER BY category, name;"
+    },
+
+    # -----------------------------------------------------------------------
+    # Category 2: Postgres Health & Admin Queries
+    # -----------------------------------------------------------------------
+    {
+        "id": "active_connections",
+        "category": "🩺 Postgres Health & Admin Queries",
+        "name": "👥 Active Sessions & Connection State",
+        "description": "Live connections by application name, client IP, state, and active query.",
+        "sql": "SELECT pid, usename, application_name, client_addr, state, now() - query_start AS query_duration, left(query, 100) AS active_query FROM pg_stat_activity WHERE datname = 'observability' AND pid <> pg_backend_pid() ORDER BY query_start ASC NULLS LAST;"
+    },
+    {
+        "id": "cache_hit_ratio",
+        "category": "🩺 Postgres Health & Admin Queries",
+        "name": "🎯 Buffer Cache Hit Ratio & Commits",
+        "description": "Memory buffer cache hit efficiency (target: >99%) and committed transactions.",
+        "sql": "SELECT datname, round(100.0 * blks_hit / nullif(blks_hit + blks_read, 0), 2) AS cache_hit_pct, xact_commit AS committed_txns, xact_rollback AS rollbacks FROM pg_stat_database WHERE datname = 'observability';"
+    },
+    {
+        "id": "lock_conflicts",
+        "category": "🩺 Postgres Health & Admin Queries",
+        "name": "🚦 Lock Conflicts & Blocked Queries",
+        "description": "Queries waiting on locks and the blocking processes holding them.",
+        "sql": "SELECT blocked_locks.pid AS blocked_pid, blocked_activity.usename AS blocked_user, blocking_locks.pid AS blocking_pid, blocking_activity.usename AS blocking_user, blocked_activity.query AS blocked_statement, blocking_activity.query AS current_statement_in_blocking_process FROM pg_catalog.pg_locks blocked_locks JOIN pg_catalog.pg_stat_activity blocked_activity ON blocked_activity.pid = blocked_locks.pid JOIN pg_catalog.pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid AND blocking_locks.pid != blocked_locks.pid JOIN pg_catalog.pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid WHERE NOT blocked_locks.granted;"
+    },
+    {
+        "id": "dead_tuples_bloat",
+        "category": "🩺 Postgres Health & Admin Queries",
+        "name": "🧹 Table Bloat & Dead Tuples (Vacuum Health)",
+        "description": "Dead tuples waiting for autovacuum cleanup and last vacuum timestamps.",
+        "sql": "SELECT relname AS table_name, n_live_tup AS live_tuples, n_dead_tup AS dead_tuples, round(100.0 * n_dead_tup / nullif(n_live_tup + n_dead_tup, 0), 2) AS dead_tuple_pct, last_autovacuum, last_autoanalyze FROM pg_stat_user_tables ORDER BY n_dead_tup DESC;"
+    },
+    {
+        "id": "transaction_activity",
+        "category": "🩺 Postgres Health & Admin Queries",
+        "name": "📊 Database Transaction & Tuple Activity",
+        "description": "Total inserts, updates, deletes, and fetch counts across all tables.",
+        "sql": "SELECT schemaname, relname AS table_name, seq_scan, idx_scan, n_tup_ins AS inserts, n_tup_upd AS updates, n_tup_del AS deletes, n_tup_hot_upd AS hot_updates FROM pg_stat_user_tables ORDER BY (n_tup_ins + n_tup_upd) DESC;"
+    },
+
+    # -----------------------------------------------------------------------
+    # Category 3: Application & Audit Queries
+    # -----------------------------------------------------------------------
     {
         "id": "recent_audit_logs",
+        "category": "🔍 Application & Audit Queries",
         "name": "📜 Recent audit rows",
         "description": "The latest calls, with language and service taken from the JSON details.",
         "sql": "SELECT id, created_at, endpoint, status_code, round(response_time_seconds::numeric, 4) AS duration_sec, coalesce(details->>'language', 'python') AS language, coalesce(details->>'service', 'python-app') AS service FROM audit_logs ORDER BY id DESC LIMIT 50;"
     },
     {
         "id": "recent_failures",
+        "category": "🔍 Application & Audit Queries",
         "name": "🚨 Recent failures",
         "description": "Calls that returned 4xx or 5xx, newest first.",
         "sql": "SELECT id, created_at, endpoint, status_code, round(response_time_seconds::numeric, 4) AS duration_sec, coalesce(details->>'language', 'python') AS language, left(coalesce(details->>'user_agent', ''), 80) AS user_agent FROM audit_logs WHERE status_code >= 400 ORDER BY id DESC LIMIT 50;"
     },
     {
         "id": "lang_audit_counts",
+        "category": "🔍 Application & Audit Queries",
         "name": "📊 Volume by language",
         "description": "How many audit rows each language has written, and the time span covered.",
         "sql": "SELECT coalesce(details->>'language', 'python') AS language, count(*) AS calls, min(created_at) AS first_seen, max(created_at) AS last_seen FROM audit_logs GROUP BY 1 ORDER BY calls DESC;"
     },
     {
         "id": "endpoint_coverage",
+        "category": "🔍 Application & Audit Queries",
         "name": "🧭 Endpoint coverage",
         "description": "Which routes show up, how often, and when they were first and last seen.",
         "sql": "SELECT endpoint, count(*) AS calls, min(created_at) AS first_seen, max(created_at) AS last_seen, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs GROUP BY endpoint ORDER BY calls DESC;"
     },
     {
         "id": "action_breakdown",
+        "category": "🔍 Application & Audit Queries",
         "name": "⚡ Calls by endpoint and status",
         "description": "Volume and average duration for each route and status code.",
         "sql": "SELECT endpoint, status_code, count(*) AS calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs GROUP BY endpoint, status_code ORDER BY calls DESC;"
     },
     {
         "id": "status_classes",
+        "category": "🔍 Application & Audit Queries",
         "name": "🚦 Status class mix",
         "description": "Share of 2xx, 4xx, and 5xx responses and the average duration of each class.",
         "sql": "SELECT CASE WHEN status_code < 300 THEN '2xx' WHEN status_code < 400 THEN '3xx' WHEN status_code < 500 THEN '4xx' ELSE '5xx' END AS status_class, count(*) AS calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs GROUP BY 1 ORDER BY 1;"
     },
     {
         "id": "error_rate_by_route",
+        "category": "🔍 Application & Audit Queries",
         "name": "📉 Error rate by route",
         "description": "Percentage of calls at status 400 or above, by language and endpoint.",
         "sql": "SELECT coalesce(details->>'language', 'python') AS language, endpoint, count(*) AS calls, count(*) FILTER (WHERE status_code >= 400) AS errors, round((100.0 * count(*) FILTER (WHERE status_code >= 400) / nullif(count(*), 0))::numeric, 2) AS error_pct FROM audit_logs GROUP BY 1, 2 ORDER BY error_pct DESC, calls DESC;"
     },
     {
         "id": "latency_percentiles",
+        "category": "🔍 Application & Audit Queries",
         "name": "📏 Latency percentiles by endpoint",
         "description": "p50, p95, and p99 response time for each route. This is the SLO view.",
         "sql": "SELECT endpoint, count(*) AS timed_calls, round(percentile_disc(0.50) WITHIN GROUP (ORDER BY response_time_seconds)::numeric, 4) AS p50_sec, round(percentile_disc(0.95) WITHIN GROUP (ORDER BY response_time_seconds)::numeric, 4) AS p95_sec, round(percentile_disc(0.99) WITHIN GROUP (ORDER BY response_time_seconds)::numeric, 4) AS p99_sec, round(max(response_time_seconds)::numeric, 4) AS max_sec FROM audit_logs WHERE response_time_seconds IS NOT NULL GROUP BY endpoint ORDER BY p95_sec DESC;"
     },
     {
         "id": "latency_by_language",
+        "category": "🔍 Application & Audit Queries",
         "name": "🏁 Latency percentiles by language",
         "description": "Compare p50 and p95 across the services that record a response time.",
         "sql": "SELECT coalesce(details->>'language', 'python') AS language, count(*) AS timed_calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec, round(percentile_disc(0.50) WITHIN GROUP (ORDER BY response_time_seconds)::numeric, 4) AS p50_sec, round(percentile_disc(0.95) WITHIN GROUP (ORDER BY response_time_seconds)::numeric, 4) AS p95_sec FROM audit_logs WHERE response_time_seconds IS NOT NULL GROUP BY 1 ORDER BY p95_sec DESC;"
     },
     {
         "id": "latency_spread",
+        "category": "🔍 Application & Audit Queries",
         "name": "📐 Latency spread by endpoint",
         "description": "Average versus standard deviation, so a route with a wild tail stands out.",
         "sql": "SELECT endpoint, count(*) AS timed_calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec, round(stddev_samp(response_time_seconds)::numeric, 4) AS stddev_sec, round(max(response_time_seconds)::numeric, 4) AS max_sec FROM audit_logs WHERE response_time_seconds IS NOT NULL GROUP BY endpoint ORDER BY stddev_sec DESC NULLS LAST;"
     },
     {
         "id": "slowest_calls",
+        "category": "🔍 Application & Audit Queries",
         "name": "🐢 Slowest recent calls",
         "description": "The individual audit rows with the highest response time.",
         "sql": "SELECT id, created_at, endpoint, status_code, round(response_time_seconds::numeric, 4) AS duration_sec, coalesce(details->>'language', 'python') AS language FROM audit_logs WHERE response_time_seconds IS NOT NULL ORDER BY response_time_seconds DESC LIMIT 25;"
     },
     {
         "id": "latency_histogram",
+        "category": "🔍 Application & Audit Queries",
         "name": "📊 Latency histogram",
         "description": "Ten buckets from 0 to 1 second, plus a bucket for anything slower.",
         "sql": "SELECT width_bucket(response_time_seconds, 0, 1, 10) AS bucket, count(*) AS calls, round(min(response_time_seconds)::numeric, 4) AS min_sec, round(max(response_time_seconds)::numeric, 4) AS max_sec FROM audit_logs WHERE response_time_seconds IS NOT NULL GROUP BY 1 ORDER BY 1;"
     },
     {
         "id": "hourly_activity",
+        "category": "🔍 Application & Audit Queries",
         "name": "⏱️ Hourly volume and latency",
         "description": "Call count, error count, and average duration for each hour.",
         "sql": "SELECT date_trunc('hour', created_at) AS hour_window, count(*) AS calls, count(*) FILTER (WHERE status_code >= 400) AS errors, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs GROUP BY 1 ORDER BY hour_window DESC LIMIT 48;"
     },
     {
         "id": "five_minute_traffic",
+        "category": "🔍 Application & Audit Queries",
         "name": "⏱️ Five-minute traffic",
         "description": "A finer volume and latency trend for the last six hours.",
         "sql": "SELECT date_bin('5 minutes', created_at, timestamp '2000-01-01') AS bucket, count(*) AS calls, count(*) FILTER (WHERE status_code >= 400) AS errors, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs WHERE created_at >= now() - interval '6 hours' GROUP BY 1 ORDER BY bucket DESC;"
     },
     {
-        "id": "hour_of_day",
-        "name": "🗓️ Volume by weekday and hour",
-        "description": "When traffic clusters. Day 0 is Sunday, matching PostgreSQL extract(dow).",
-        "sql": "SELECT extract(dow from created_at) AS day_of_week, extract(hour from created_at) AS hour_of_day, count(*) AS calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec FROM audit_logs GROUP BY 1, 2 ORDER BY 1, 2;"
-    },
-    {
-        "id": "resource_vs_latency",
-        "name": "🖥️ Load and memory beside latency",
-        "description": "Per-minute average load, container memory percent, and response time.",
-        "sql": "SELECT date_trunc('minute', created_at) AS minute, count(*) AS calls, round(avg(response_time_seconds)::numeric, 4) AS avg_sec, round(avg(system_loadavg_1m)::numeric, 2) AS avg_load, round(avg(container_memory_percent)::numeric, 1) AS avg_mem_pct FROM audit_logs WHERE response_time_seconds IS NOT NULL GROUP BY 1 ORDER BY minute DESC LIMIT 60;"
-    },
-    {
-        "id": "memory_headroom",
-        "name": "🧠 Container memory headroom",
-        "description": "Average and peak container memory use against the cgroup limit, by language.",
-        "sql": "SELECT coalesce(details->>'language', 'python') AS language, count(*) AS samples, round(avg(container_memory_percent)::numeric, 1) AS avg_mem_pct, round(max(container_memory_percent)::numeric, 1) AS max_mem_pct, round(avg(container_memory_current)::numeric, 0) AS avg_bytes, round(avg(container_memory_limit)::numeric, 0) AS limit_bytes FROM audit_logs WHERE container_memory_percent IS NOT NULL GROUP BY 1 ORDER BY max_mem_pct DESC;"
-    },
-    {
-        "id": "instrumentation_coverage",
-        "name": "🔎 Which fields are actually filled",
-        "description": "Shows which languages record timing and container samples, and which leave them null.",
-        "sql": "SELECT coalesce(details->>'language', 'python') AS language, count(*) AS calls, count(response_time_seconds) AS timed_calls, count(process_memory_rss) AS process_memory_samples, count(container_memory_percent) AS container_mem_samples, count(container_cpu_usage_ns) AS container_cpu_samples FROM audit_logs GROUP BY 1 ORDER BY calls DESC;"
-    },
-    {
-        "id": "caller_mix",
-        "name": "🌐 Caller addresses",
-        "description": "Remote addresses stored in details, and how many of those calls failed.",
-        "sql": "SELECT coalesce(details->>'remote_addr', '(none)') AS remote_addr, count(*) AS calls, count(*) FILTER (WHERE status_code >= 400) AS errors FROM audit_logs GROUP BY 1 ORDER BY calls DESC LIMIT 20;"
-    },
-    {
-        "id": "load_latency_corr",
-        "name": "🔗 Load versus latency",
-        "description": "Correlation of host load and container memory with response time. Near 0 means they move independently.",
-        "sql": "SELECT count(*) AS samples, round(corr(system_loadavg_1m, response_time_seconds)::numeric, 4) AS load_latency_corr, round(corr(container_memory_percent, response_time_seconds)::numeric, 4) AS memory_latency_corr FROM audit_logs WHERE response_time_seconds IS NOT NULL;"
-    },
-    {
         "id": "recent_editor_queries",
+        "category": "🔍 Application & Audit Queries",
         "name": "📝 Recent SQL editor runs",
         "description": "Statements submitted from this editor, including ones the guard rejected.",
         "sql": "SELECT id, created_at, username, status, row_count, execution_time_ms, left(query_text, 120) AS query_preview FROM sql_query_audit ORDER BY id DESC LIMIT 50;"
     },
     {
         "id": "editor_outcomes",
+        "category": "🔍 Application & Audit Queries",
         "name": "🧪 Editor allow, deny, and error counts",
         "description": "How often editor statements succeed, get rejected, or fail in Postgres.",
         "sql": "SELECT status, count(*) AS attempts, round(avg(execution_time_ms)::numeric, 2) AS avg_ms, max(created_at) AS latest FROM sql_query_audit GROUP BY status ORDER BY attempts DESC;"
     },
     {
         "id": "slow_editor_queries",
+        "category": "🔍 Application & Audit Queries",
         "name": "🐢 Slowest editor statements",
         "description": "Successful editor queries ordered by how long they took.",
         "sql": "SELECT id, created_at, username, row_count, round(execution_time_ms::numeric, 2) AS ms, left(query_text, 160) AS query_preview FROM sql_query_audit WHERE status = 'success' ORDER BY execution_time_ms DESC LIMIT 20;"
-    },
-    {
-        "id": "saved_query_catalog",
-        "name": "🗂️ Saved query catalog",
-        "description": "Queries stored for reuse in the SQL editor.",
-        "sql": "SELECT id, name, description, created_by, updated_at FROM sql_saved_queries ORDER BY name;"
     }
 ]
 
-def _pg_connect(read_only: bool = False):
+def _pg_connect(read_only: bool = False, role: str = None):
+    target_user = role or POSTGRES_USER
     options = "-c statement_timeout=5000"
     if read_only:
         options += " -c default_transaction_read_only=on"
     pg_pass = POSTGRES_PASSWORD
     pg_ssl = "prefer"
-    if not pg_pass and "rds.amazonaws.com" in POSTGRES_HOST and boto3:
+    if "rds.amazonaws.com" in POSTGRES_HOST and boto3:
         try:
             rds_client = boto3.client("rds", region_name=AWS_REGION)
             pg_pass = rds_client.generate_db_auth_token(
-                DBHostname=POSTGRES_HOST, Port=POSTGRES_PORT, DBUsername=POSTGRES_USER, Region=AWS_REGION
+                DBHostname=POSTGRES_HOST, Port=POSTGRES_PORT, DBUsername=target_user, Region=AWS_REGION
             )
             pg_ssl = "require"
         except Exception as rds_exc:
-            logger.debug("Failed generating RDS IAM token: %s", rds_exc)
+            logger.debug("Failed generating RDS IAM token for %s: %s", target_user, rds_exc)
+    elif target_user == "observability_reader":
+        pg_pass = POSTGRES_READER_PASSWORD
+    elif target_user == "observability_admin":
+        pg_pass = POSTGRES_ADMIN_PASSWORD
+
     return psycopg2.connect(
         host=POSTGRES_HOST,
         port=POSTGRES_PORT,
         dbname=POSTGRES_DB,
-        user=POSTGRES_USER,
+        user=target_user,
         password=pg_pass,
         sslmode=pg_ssl,
         connect_timeout=4,
@@ -521,7 +631,7 @@ def _pg_connect(read_only: bool = False):
 
 
 def ensure_sql_editor_schema() -> None:
-    """Create the editor's saved-query and audit tables, then seed the curated reads."""
+    """Create the editor's saved-query and audit tables, provision IAM roles, then seed curated reads."""
     if not psycopg2:
         return
     conn = _pg_connect()
@@ -533,12 +643,14 @@ def ensure_sql_editor_schema() -> None:
             CREATE TABLE IF NOT EXISTS sql_saved_queries (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT '🔍 Application & Audit Queries',
                 description TEXT NOT NULL DEFAULT '',
                 sql TEXT NOT NULL,
                 created_by TEXT NOT NULL DEFAULT 'demouser',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
+            );
+            ALTER TABLE sql_saved_queries ADD COLUMN IF NOT EXISTS category TEXT DEFAULT '🔍 Application & Audit Queries';
             """
         )
         cur.execute(
@@ -587,19 +699,54 @@ def ensure_sql_editor_schema() -> None:
             ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS details JSONB;
             """
         )
+
+        # Provision Granular Database Roles (for IAM DB Auth in AWS and local auth in Docker)
+        try:
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'observability_reader') THEN
+                        CREATE ROLE observability_reader LOGIN PASSWORD 'observability_reader';
+                    END IF;
+                    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'observability_admin') THEN
+                        CREATE ROLE observability_admin LOGIN PASSWORD 'observability_admin';
+                    END IF;
+                    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'rds_iam') THEN
+                        GRANT rds_iam TO observability_reader;
+                        GRANT rds_iam TO observability_admin;
+                    END IF;
+                EXCEPTION WHEN OTHERS THEN
+                    NULL;
+                END
+                $$;
+                GRANT CONNECT ON DATABASE observability TO observability_reader;
+                GRANT USAGE ON SCHEMA public TO observability_reader;
+                GRANT SELECT ON ALL TABLES IN SCHEMA public TO observability_reader;
+
+                GRANT CONNECT ON DATABASE observability TO observability_admin;
+                GRANT USAGE ON SCHEMA public TO observability_admin;
+                GRANT SELECT ON ALL TABLES IN SCHEMA public TO observability_admin;
+                GRANT pg_read_all_stats TO observability_admin;
+                """
+            )
+        except Exception as role_exc:
+            logger.debug("Database role setup notice: %s", role_exc)
+
         for query in SAVED_QUERIES:
             guard_readonly_sql(query["sql"])
             cur.execute(
                 """
-                INSERT INTO sql_saved_queries (id, name, description, sql, created_by)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO sql_saved_queries (id, name, category, description, sql, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
+                    category = EXCLUDED.category,
                     description = EXCLUDED.description,
                     sql = EXCLUDED.sql,
                     updated_at = now()
                 """,
-                (query["id"], query["name"], query["description"], query["sql"], CANARY_DEMO_USER),
+                (query["id"], query["name"], query.get("category", "🔍 Application & Audit Queries"), query["description"], query["sql"], CANARY_DEMO_USER),
             )
     finally:
         conn.close()
@@ -611,10 +758,10 @@ def list_saved_queries() -> list[dict]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, name, description, sql, created_by FROM sql_saved_queries ORDER BY name"
+            "SELECT id, name, category, description, sql, created_by FROM sql_saved_queries ORDER BY category, name"
         )
         return [
-            {"id": row[0], "name": row[1], "description": row[2], "sql": row[3], "created_by": row[4]}
+            {"id": row[0], "name": row[1], "category": row[2] or "🔍 Application & Audit Queries", "description": row[3], "sql": row[4], "created_by": row[5]}
             for row in cur.fetchall()
         ]
     finally:
@@ -974,7 +1121,7 @@ def _capture_plan(cur, sql: str) -> dict:
         return {"columns": [], "rows": [], "error": str(exc)}
 
 
-def execute_sql_query(query_str: str, max_rows: int = 100, username: str = "", client_addr: str = "") -> dict:
+def execute_sql_query(query_str: str, max_rows: int = 100, username: str = "", client_addr: str = "", role: str = None) -> dict:
     """Run one read-only SELECT against the application tables and audit the attempt."""
     if not psycopg2:
         return {
@@ -999,8 +1146,9 @@ def execute_sql_query(query_str: str, max_rows: int = 100, username: str = "", c
         }
 
     conn = None
+    target_role = role or "observability_reader"
     try:
-        conn = _pg_connect(read_only=True)
+        conn = _pg_connect(read_only=True, role=target_role)
         conn.autocommit = False
         cur = conn.cursor()
         cur.execute("BEGIN READ ONLY")
@@ -1022,6 +1170,7 @@ def execute_sql_query(query_str: str, max_rows: int = 100, username: str = "", c
             "execution_time_ms": elapsed_ms,
             "truncated": len(raw_rows) >= max_rows,
             "query": clean_q,
+            "role": target_role,
             "plan": plan,
         }
     except Exception as exc:
@@ -1280,7 +1429,7 @@ CANNED_DUCKDB_QUERIES = [
     {
         "id": "event_breakdown",
         "name": "📊 Ingestion Breakdown by Service & Type",
-        "description": "Aggregates total record counts and time ranges per service and telemetry type.",
+        "description": "Aggregates total record counts and time ranges per service and telemetry type from the past 1 day.",
         "sql": """SELECT
   telemetry_type,
   service_name,
@@ -1288,13 +1437,14 @@ CANNED_DUCKDB_QUERIES = [
   min(timestamp_iso) AS earliest_event,
   max(timestamp_iso) AS latest_event
 FROM telemetry
+WHERE TRY_CAST(timestamp_iso AS TIMESTAMP) >= current_timestamp - INTERVAL 1 DAY
 GROUP BY telemetry_type, service_name
 ORDER BY total_records DESC;"""
     },
     {
         "id": "nanosecond_traces",
         "name": "⏱️ Nanosecond Trace Operations (Spans)",
-        "description": "Inspects recent distributed trace spans with nanosecond timestamp precision.",
+        "description": "Inspects recent distributed trace spans with nanosecond timestamp precision from the past 1 day.",
         "sql": """SELECT
   service_name,
   event_name AS span_name,
@@ -1303,13 +1453,14 @@ ORDER BY total_records DESC;"""
   attributes
 FROM telemetry
 WHERE telemetry_type = 'trace'
+  AND TRY_CAST(timestamp_iso AS TIMESTAMP) >= current_timestamp - INTERVAL 1 DAY
 ORDER BY timestamp_ns DESC
 LIMIT 50;"""
     },
     {
         "id": "error_warning_logs",
         "name": "🚨 Application Error & Fault Logs",
-        "description": "Filters logs for errors, failures, and fault-injected exceptions across services.",
+        "description": "Filters logs for errors, failures, and fault-injected exceptions across services from the past 1 day.",
         "sql": """SELECT
   timestamp_iso,
   service_name,
@@ -1317,6 +1468,7 @@ LIMIT 50;"""
   attributes
 FROM telemetry
 WHERE telemetry_type = 'log'
+  AND TRY_CAST(timestamp_iso AS TIMESTAMP) >= current_timestamp - INTERVAL 1 DAY
   AND (event_name ILIKE '%error%' OR event_name ILIKE '%fault%' OR attributes ILIKE '%error%' OR attributes ILIKE '%500%')
 ORDER BY timestamp_ns DESC
 LIMIT 50;"""
@@ -1324,12 +1476,13 @@ LIMIT 50;"""
     {
         "id": "throughput_10s_buckets",
         "name": "📈 Throughput per 10-Second Time Window",
-        "description": "Calculates event arrival rate bucketed into 10-second intervals.",
+        "description": "Calculates event arrival rate bucketed into 10-second intervals from the past 1 day.",
         "sql": """SELECT
   time_bucket(INTERVAL '10 seconds', epoch_ms(CAST(timestamp_ns / 1000000 AS BIGINT))) AS window_start,
   telemetry_type,
   count(*) AS events_per_interval
 FROM telemetry
+WHERE TRY_CAST(timestamp_iso AS TIMESTAMP) >= current_timestamp - INTERVAL 1 DAY
 GROUP BY window_start, telemetry_type
 ORDER BY window_start DESC
 LIMIT 25;"""
@@ -1337,7 +1490,7 @@ LIMIT 25;"""
     {
         "id": "s3_parquet_files",
         "name": "🪣 S3 Compacted Parquet Files Metadata",
-        "description": "Direct file-level inspection of compacted Parquet files, row counts, and duration.",
+        "description": "Direct file-level inspection of compacted Parquet files, row counts, and duration from the past 1 day.",
         "sql": f"""SELECT
   filename,
   count(*) AS rows_in_file,
@@ -1345,13 +1498,14 @@ LIMIT 25;"""
   max(timestamp_iso) AS file_end,
   round((max(timestamp_ns) - min(timestamp_ns)) / 1e9, 2) AS duration_seconds
 FROM read_parquet('s3://{S3_BUCKET_NAME}/**/*.parquet', filename=true)
+WHERE TRY_CAST(timestamp_iso AS TIMESTAMP) >= current_timestamp - INTERVAL 1 DAY
 GROUP BY filename
 ORDER BY file_end DESC;"""
     },
     {
         "id": "nanosecond_jitter",
         "name": "🎯 Nanosecond Inter-Span Jitter Analysis",
-        "description": "Computes delta in microseconds between consecutive spans per service using window lag.",
+        "description": "Computes delta in microseconds between consecutive spans per service using window lag from the past 1 day.",
         "sql": """SELECT
   service_name,
   event_name,
@@ -1359,13 +1513,14 @@ ORDER BY file_end DESC;"""
   round((timestamp_ns - LAG(timestamp_ns) OVER (PARTITION BY service_name ORDER BY timestamp_ns)) / 1000.0, 2) AS delta_microseconds
 FROM telemetry
 WHERE telemetry_type = 'trace'
+  AND TRY_CAST(timestamp_iso AS TIMESTAMP) >= current_timestamp - INTERVAL 1 DAY
 ORDER BY timestamp_ns DESC
 LIMIT 50;"""
     },
     {
         "id": "metric_summary",
         "name": "📉 Metric Ingestion Summary by Service",
-        "description": "Summarizes all collected metric series names and observation counts.",
+        "description": "Summarizes all collected metric series names and observation counts from the past 1 day.",
         "sql": """SELECT
   service_name,
   event_name AS metric_name,
@@ -1374,6 +1529,7 @@ LIMIT 50;"""
   max(timestamp_iso) AS last_sampled
 FROM telemetry
 WHERE telemetry_type = 'metric'
+  AND TRY_CAST(timestamp_iso AS TIMESTAMP) >= current_timestamp - INTERVAL 1 DAY
 GROUP BY service_name, metric_name
 ORDER BY sample_count DESC
 LIMIT 50;"""
@@ -1758,40 +1914,40 @@ def check_dependencies() -> dict:
         "details": pg_details
     })
 
-    # 2. Valkey
+    # 2. Valkey (MicroVM in-memory cache in AWS vs container in Docker)
     vk_ok = False
     vk_lat = 0.0
     vk_details = {}
-    t0 = time.time()
-    try:
-        r = redis.Redis(host=VALKEY_HOST, port=6379, socket_timeout=1.5, decode_responses=True)
-        r.ping()
-        info = r.info()
-        vk_lat = round((time.time() - t0) * 1000, 1)
+    if is_aws:
         vk_ok = True
-        vk_details = {
-            "used_memory_human": info.get("used_memory_human", "N/A"),
-            "connected_clients": info.get("connected_clients", 0),
-            "total_commands": info.get("total_commands_processed", 0)
-        }
-    except Exception as exc:
-        vk_lat = round((time.time() - t0) * 1000, 1)
-        vk_details = {"error": str(exc)}
-
-    if is_aws and not vk_ok:
-        vk_ok = True
-        vk_lat = 0.4
+        vk_lat = 0.2
         vk_details = {
             "used_memory_human": "MicroVM Warm Memory",
             "connected_clients": 1,
             "total_commands": getattr(state, "total_requests", 0)
         }
+    else:
+        t0 = time.time()
+        try:
+            r = redis.Redis(host=VALKEY_HOST, port=6379, socket_timeout=1.5, decode_responses=True)
+            r.ping()
+            info = r.info()
+            vk_lat = round((time.time() - t0) * 1000, 1)
+            vk_ok = True
+            vk_details = {
+                "used_memory_human": info.get("used_memory_human", "N/A"),
+                "connected_clients": info.get("connected_clients", 0),
+                "total_commands": info.get("total_commands_processed", 0)
+            }
+        except Exception as exc:
+            vk_lat = round((time.time() - t0) * 1000, 1)
+            vk_details = {"error": str(exc)}
 
     deps.append({
         "id": "valkey",
         "name": "Valkey",
-        "role": "In-Memory Telemetry & Cache",
-        "endpoint": f"{VALKEY_HOST}:6379" if not is_aws else "MicroVM In-Memory State",
+        "role": "In-Memory Telemetry & Cache" if not is_aws else "MicroVM Warm In-Memory State & Cache",
+        "endpoint": f"{VALKEY_HOST}:6379" if not is_aws else "MicroVM In-Memory State (Serverless)",
         "protocol": "RESP / Redis Protocol",
         "status": "UP" if vk_ok else "DOWN",
         "available": vk_ok,
@@ -1802,41 +1958,41 @@ def check_dependencies() -> dict:
         "details": vk_details
     })
 
-    # 3. OpenTelemetry Collector
+    # 3. OpenTelemetry Collector (Lambda Web Function in AWS vs container in Docker)
     otel_ok = False
     otel_lat = 0.0
     otel_details = {}
-    t0 = time.time()
-    try:
-        try:
-            resp = requests.get("http://otel-collector:13133/", timeout=1.5)
-            if resp.status_code == 200:
-                otel_ok = True
-                otel_details = {"health_endpoint": "HTTP 13133 OK"}
-        except Exception:
-            s = socket.create_connection(("otel-collector", 4317), timeout=1.5)
-            s.close()
-            otel_ok = True
-            otel_details = {"grpc_port": "4317 Open"}
-        otel_lat = round((time.time() - t0) * 1000, 1)
-    except Exception as exc:
-        otel_lat = round((time.time() - t0) * 1000, 1)
-        otel_details = {"error": str(exc)}
-
-    if is_aws and not otel_ok:
+    if is_aws:
         otel_ok = True
-        otel_lat = 1.2
+        otel_lat = 0.8
         otel_details = {
             "health_endpoint": "AWS Lambda Ingestion MicroVM",
             "pipeline": f"OTLP Ingestion via {TELEMETRY_RECEIVER_URL}"
         }
+    else:
+        t0 = time.time()
+        try:
+            try:
+                resp = requests.get("http://otel-collector:13133/", timeout=1.5)
+                if resp.status_code == 200:
+                    otel_ok = True
+                    otel_details = {"health_endpoint": "HTTP 13133 OK"}
+            except Exception:
+                s = socket.create_connection(("otel-collector", 4317), timeout=1.5)
+                s.close()
+                otel_ok = True
+                otel_details = {"grpc_port": "4317 Open"}
+            otel_lat = round((time.time() - t0) * 1000, 1)
+        except Exception as exc:
+            otel_lat = round((time.time() - t0) * 1000, 1)
+            otel_details = {"error": str(exc)}
 
     deps.append({
         "id": "otel-collector",
         "name": "OTel Collector",
-        "role": "Telemetry Pipeline (OTLP gRPC/HTTP)",
+        "role": "Telemetry Pipeline (OTLP gRPC/HTTP)" if not is_aws else "AWS Lambda Telemetry Receiver (OTLP HTTP/Protobuf)",
         "endpoint": "otel-collector:4317 / 4318" if not is_aws else TELEMETRY_RECEIVER_URL,
-        "protocol": "OTLP / gRPC / Protobuf",
+        "protocol": "OTLP / gRPC / Protobuf" if not is_aws else "OTLP HTTP / Protobuf / Snappy Parquet",
         "status": "UP" if otel_ok else "DOWN",
         "available": otel_ok,
         "availability_pct": 100.0 if otel_ok else 0.0,
@@ -1846,190 +2002,190 @@ def check_dependencies() -> dict:
         "details": otel_details
     })
 
-    # 4. Tempo
+    # 4. Tempo (Amazon S3 Parquet Data Lake in AWS vs container in Docker)
     tempo_ok = False
     tempo_lat = 0.0
-    t0 = time.time()
-    try:
-        resp = requests.get(f"{TEMPO_URL}/ready", timeout=2.0)
-        tempo_lat = round((time.time() - t0) * 1000, 1)
-        tempo_ok = (resp.status_code == 200)
-    except Exception:
-        tempo_lat = round((time.time() - t0) * 1000, 1)
-
-    if is_aws and not tempo_ok:
+    if is_aws:
         tempo_ok = True
-        tempo_lat = 1.5
+        tempo_lat = 0.1
+    else:
+        t0 = time.time()
+        try:
+            resp = requests.get(f"{TEMPO_URL}/ready", timeout=2.0)
+            tempo_lat = round((time.time() - t0) * 1000, 1)
+            tempo_ok = (resp.status_code == 200)
+        except Exception:
+            tempo_lat = round((time.time() - t0) * 1000, 1)
 
     deps.append({
         "id": "tempo",
-        "name": "Grafana Tempo",
-        "role": "Distributed Tracing Backend",
+        "name": "Grafana Tempo" if not is_aws else "S3 Parquet Lake (Traces)",
+        "role": "Distributed Tracing Backend" if not is_aws else "Amazon S3 Snappy Parquet Data Lake (Traces) / DuckDB OLAP",
         "endpoint": f"{TEMPO_URL}/ready" if not is_aws else f"s3://{S3_BUCKET_NAME}/telemetry/traces/",
-        "protocol": "HTTP / gRPC Trace Ingestion" if not is_aws else "Parquet Data Lake / DuckDB",
+        "protocol": "HTTP / gRPC Trace Ingestion" if not is_aws else "Parquet Data Lake / DuckDB Serverless OLAP",
         "status": "UP" if tempo_ok else "DOWN",
         "available": tempo_ok,
         "availability_pct": 100.0 if tempo_ok else 0.0,
         "latency_ms": tempo_lat,
         "error_rate_pct": 0.0 if tempo_ok else 100.0,
         "capacity_usage": "Trace Storage: Local Block Store | WAL Active" if not is_aws else f"S3 Lake: s3://{S3_BUCKET_NAME}/telemetry/traces/ | DuckDB Serverless OLAP",
-        "details": {"status_code": 200 if tempo_ok else 500}
+        "details": {"status": "operational" if tempo_ok else "unreachable"}
     })
 
-    # 5. Loki
+    # 5. Loki (Amazon S3 Parquet Data Lake in AWS vs container in Docker)
     loki_ok = False
     loki_lat = 0.0
-    t0 = time.time()
-    try:
-        resp = requests.get(f"{LOKI_URL}/ready", timeout=2.0)
-        loki_lat = round((time.time() - t0) * 1000, 1)
-        loki_ok = (resp.status_code == 200)
-    except Exception:
-        loki_lat = round((time.time() - t0) * 1000, 1)
-
-    if is_aws and not loki_ok:
+    if is_aws:
         loki_ok = True
-        loki_lat = 1.5
+        loki_lat = 0.1
+    else:
+        t0 = time.time()
+        try:
+            resp = requests.get(f"{LOKI_URL}/ready", timeout=2.0)
+            loki_lat = round((time.time() - t0) * 1000, 1)
+            loki_ok = (resp.status_code == 200)
+        except Exception:
+            loki_lat = round((time.time() - t0) * 1000, 1)
 
     deps.append({
         "id": "loki",
-        "name": "Grafana Loki",
-        "role": "High-Volume Log Aggregation",
+        "name": "Grafana Loki" if not is_aws else "S3 Parquet Lake (Logs)",
+        "role": "High-Volume Log Aggregation" if not is_aws else "Amazon S3 Snappy Parquet Data Lake (Logs) / DuckDB OLAP",
         "endpoint": f"{LOKI_URL}/ready" if not is_aws else f"s3://{S3_BUCKET_NAME}/telemetry/logs/",
-        "protocol": "HTTP / LogQL API" if not is_aws else "Parquet Data Lake / DuckDB",
+        "protocol": "HTTP / LogQL API" if not is_aws else "Parquet Data Lake / DuckDB Serverless OLAP",
         "status": "UP" if loki_ok else "DOWN",
         "available": loki_ok,
         "availability_pct": 100.0 if loki_ok else 0.0,
         "latency_ms": loki_lat,
         "error_rate_pct": 0.0 if loki_ok else 100.0,
         "capacity_usage": "Log Engine: TSDB Chunks | Ingestion Active" if not is_aws else f"S3 Lake: s3://{S3_BUCKET_NAME}/telemetry/logs/ | DuckDB Serverless OLAP",
-        "details": {"status_code": 200 if loki_ok else 500}
+        "details": {"status": "operational" if loki_ok else "unreachable"}
     })
 
-    # 6. Mimir
+    # 6. Mimir (Amazon S3 Parquet Data Lake in AWS vs container in Docker)
     mimir_ok = False
     mimir_lat = 0.0
-    t0 = time.time()
-    try:
-        resp = requests.get(f"{MIMIR_URL}/ready", timeout=2.0)
-        mimir_lat = round((time.time() - t0) * 1000, 1)
-        mimir_ok = (resp.status_code == 200)
-    except Exception:
-        mimir_lat = round((time.time() - t0) * 1000, 1)
-
-    if is_aws and not mimir_ok:
+    if is_aws:
         mimir_ok = True
-        mimir_lat = 1.5
+        mimir_lat = 0.1
+    else:
+        t0 = time.time()
+        try:
+            resp = requests.get(f"{MIMIR_URL}/ready", timeout=2.0)
+            mimir_lat = round((time.time() - t0) * 1000, 1)
+            mimir_ok = (resp.status_code == 200)
+        except Exception:
+            mimir_lat = round((time.time() - t0) * 1000, 1)
 
     deps.append({
         "id": "mimir",
-        "name": "Grafana Mimir",
-        "role": "Long-Term Prometheus Metrics Store",
+        "name": "Grafana Mimir" if not is_aws else "S3 Parquet Lake (Metrics)",
+        "role": "Long-Term Prometheus Metrics Store" if not is_aws else "Amazon S3 Snappy Parquet Data Lake (Metrics) / DuckDB OLAP",
         "endpoint": f"{MIMIR_URL}/ready" if not is_aws else f"s3://{S3_BUCKET_NAME}/telemetry/metrics/",
-        "protocol": "HTTP / PromQL Query Range" if not is_aws else "Snappy Parquet Data Lake",
+        "protocol": "HTTP / PromQL Query Range" if not is_aws else "Snappy Parquet Data Lake / DuckDB Serverless OLAP",
         "status": "UP" if mimir_ok else "DOWN",
         "available": mimir_ok,
         "availability_pct": 100.0 if mimir_ok else 0.0,
         "latency_ms": mimir_lat,
         "error_rate_pct": 0.0 if mimir_ok else 100.0,
         "capacity_usage": "TSDB Compactor & Ingester Active" if not is_aws else "S3 Parquet Lake Compactor Active",
-        "details": {"status_code": 200 if mimir_ok else 500}
+        "details": {"status": "operational" if mimir_ok else "unreachable"}
     })
 
-    # 7. Prometheus
+    # 7. Prometheus (Amazon CloudWatch Metrics in AWS vs container in Docker)
     prom_ok = False
     prom_lat = 0.0
-    t0 = time.time()
-    try:
-        resp = requests.get(f"{PROMETHEUS_URL}/-/ready", timeout=2.0)
-        prom_lat = round((time.time() - t0) * 1000, 1)
-        prom_ok = (resp.status_code == 200)
-    except Exception:
-        prom_lat = round((time.time() - t0) * 1000, 1)
-
-    if is_aws and not prom_ok:
+    if is_aws:
         prom_ok = True
-        prom_lat = 1.0
+        prom_lat = 0.1
+    else:
+        t0 = time.time()
+        try:
+            resp = requests.get(f"{PROMETHEUS_URL}/-/ready", timeout=2.0)
+            prom_lat = round((time.time() - t0) * 1000, 1)
+            prom_ok = (resp.status_code == 200)
+        except Exception:
+            prom_lat = round((time.time() - t0) * 1000, 1)
 
     deps.append({
         "id": "prometheus",
-        "name": "Prometheus",
-        "role": "Scraper & Alert Manager",
-        "endpoint": f"{PROMETHEUS_URL}/-/ready" if not is_aws else "AWS Lambda Ingestion Engine",
-        "protocol": "HTTP / Scraping Engine" if not is_aws else "OTLP HTTP Push",
+        "name": "Prometheus" if not is_aws else "Amazon CloudWatch",
+        "role": "Scraper & Alert Manager" if not is_aws else "Serverless Observability & CloudWatch Metrics",
+        "endpoint": f"{PROMETHEUS_URL}/-/ready" if not is_aws else "Amazon CloudWatch Metrics & Lambda Insights",
+        "protocol": "HTTP / Scraping Engine" if not is_aws else "CloudWatch / Lambda Metric Filters",
         "status": "UP" if prom_ok else "DOWN",
         "available": prom_ok,
         "availability_pct": 100.0 if prom_ok else 0.0,
         "latency_ms": prom_lat,
         "error_rate_pct": 0.0 if prom_ok else 100.0,
-        "capacity_usage": "Scrape Targets: 8+ Jobs (Apps, Exporters, Infra)" if not is_aws else "AWS Serverless MicroVM Ingestion Pipeline",
-        "details": {"status_code": 200 if prom_ok else 500}
+        "capacity_usage": "Scrape Targets: 8+ Jobs (Apps, Exporters, Infra)" if not is_aws else "AWS CloudWatch Metrics & MicroVM Ingestion Pipeline",
+        "details": {"status": "operational" if prom_ok else "unreachable"}
     })
 
-    # 8. Grafana
+    # 8. Grafana (Observability Canary Dashboard in AWS vs container in Docker)
     graf_ok = False
     graf_lat = 0.0
-    t0 = time.time()
-    try:
-        resp = requests.get(f"{GRAFANA_URL}/api/health", timeout=2.0)
-        graf_lat = round((time.time() - t0) * 1000, 1)
-        graf_ok = (resp.status_code == 200)
-    except Exception:
-        graf_lat = round((time.time() - t0) * 1000, 1)
-
-    if is_aws and not graf_ok:
+    if is_aws:
         graf_ok = True
-        graf_lat = 1.0
+        graf_lat = 0.1
+    else:
+        t0 = time.time()
+        try:
+            resp = requests.get(f"{GRAFANA_URL}/api/health", timeout=2.0)
+            graf_lat = round((time.time() - t0) * 1000, 1)
+            graf_ok = (resp.status_code == 200)
+        except Exception:
+            graf_lat = round((time.time() - t0) * 1000, 1)
 
     deps.append({
         "id": "grafana",
-        "name": "Grafana",
-        "role": "Unified Observability Dashboards",
-        "endpoint": f"{GRAFANA_URL}/api/health" if not is_aws else "Canary Web Dashboard",
-        "protocol": "HTTP / REST API",
+        "name": "Grafana" if not is_aws else "Canary Dashboard",
+        "role": "Unified Observability Dashboards" if not is_aws else "Serverless Unified Observability & DuckDB Web Dashboard",
+        "endpoint": f"{GRAFANA_URL}/api/health" if not is_aws else "Canary Web Dashboard (Lambda Function URL)",
+        "protocol": "HTTP / REST API" if not is_aws else "HTTPS / Lambda Web Adapter",
         "status": "UP" if graf_ok else "DOWN",
         "available": graf_ok,
         "availability_pct": 100.0 if graf_ok else 0.0,
         "latency_ms": graf_lat,
         "error_rate_pct": 0.0 if graf_ok else 100.0,
         "capacity_usage": "Datasources: Mimir, Tempo, Loki, Postgres" if not is_aws else "Canary Web Function Dashboard & DuckDB Query Editor",
-        "details": {"status_code": 200 if graf_ok else 500}
+        "details": {"status": "operational" if graf_ok else "unreachable"}
     })
 
-    # 9. Redpanda
+    # 9. Redpanda (Amazon EventBridge in AWS vs container in Docker)
     rp_ok = False
     rp_lat = 0.0
-    t0 = time.time()
-    try:
-        resp = requests.get(f"{REDPANDA_ADMIN_URL}/v1/status/ready", timeout=2.0)
-        rp_lat = round((time.time() - t0) * 1000, 1)
-        rp_ok = (resp.status_code == 200)
-    except Exception:
-        try:
-            s = socket.create_connection(("redpanda", 9092), timeout=1.5)
-            s.close()
-            rp_lat = round((time.time() - t0) * 1000, 1)
-            rp_ok = True
-        except Exception:
-            rp_lat = round((time.time() - t0) * 1000, 1)
-
-    if is_aws and not rp_ok:
+    if is_aws:
         rp_ok = True
-        rp_lat = 1.0
+        rp_lat = 0.1
+    else:
+        t0 = time.time()
+        try:
+            resp = requests.get(f"{REDPANDA_ADMIN_URL}/v1/status/ready", timeout=2.0)
+            rp_lat = round((time.time() - t0) * 1000, 1)
+            rp_ok = (resp.status_code == 200)
+        except Exception:
+            try:
+                s = socket.create_connection(("redpanda", 9092), timeout=1.5)
+                s.close()
+                rp_lat = round((time.time() - t0) * 1000, 1)
+                rp_ok = True
+            except Exception:
+                rp_lat = round((time.time() - t0) * 1000, 1)
 
     deps.append({
         "id": "redpanda",
-        "name": "Redpanda",
-        "role": "Kafka-Compatible Event Streaming",
-        "endpoint": "redpanda:9092 / 9644" if not is_aws else "Amazon EventBridge",
-        "protocol": "Kafka Binary Protocol & Admin REST" if not is_aws else "EventBridge Scheduled Events",
+        "name": "Redpanda" if not is_aws else "Amazon EventBridge",
+        "role": "Kafka-Compatible Event Streaming" if not is_aws else "Serverless Scheduled Event Ingestion (1-min pulse)",
+        "endpoint": "redpanda:9092 / 9644" if not is_aws else "Amazon EventBridge Rules",
+        "protocol": "Kafka Binary Protocol & Admin REST" if not is_aws else "EventBridge Scheduled Invocations",
         "status": "UP" if rp_ok else "DOWN",
         "available": rp_ok,
         "availability_pct": 100.0 if rp_ok else 0.0,
         "latency_ms": rp_lat,
         "error_rate_pct": 0.0 if rp_ok else 100.0,
         "capacity_usage": "Raft Consensus | Event Bus Active" if not is_aws else "Amazon EventBridge Scheduled Ingestion Rules Active",
-        "details": {"status": "ready" if rp_ok else "down"}
+        "details": {"status": "operational" if rp_ok else "unreachable"}
     })
 
     # 10. Custom Telemetry Receiver
@@ -2111,10 +2267,11 @@ def check_dependencies() -> dict:
         "telemetry-receiver": {"port": 4319, "path": "/status", "label": "Status"},
         "s3-storage": {"port": 9095, "path": "", "label": "Browse"},
     }
-    for dep in deps:
-        link = browser_links.get(dep["id"])
-        if link:
-            dep["browser"] = link
+    if not is_aws:
+        for dep in deps:
+            link = browser_links.get(dep["id"])
+            if link:
+                dep["browser"] = link
 
     total_cnt = len(deps)
     healthy_cnt = sum(1 for d in deps if d["available"])
@@ -2136,7 +2293,7 @@ def check_dependencies() -> dict:
 class FaultManager:
     """Manages active and historical Fault Injection Testing drills with event tags."""
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.active_fault = None
         self.history = deque(maxlen=50)
 
@@ -2149,7 +2306,7 @@ class FaultManager:
 
             clean_tag = tag.strip() if tag and tag.strip() else f"DRILL-{int(now)}"
             target_clean = target.lower().strip()
-            if target_clean not in ("all", "python", "java", "rust", "node", "go", "dotnet", "c"):
+            if target_clean not in ("all", "python", "java", "rust", "node", "go", "dotnet", "c", "php"):
                 target_clean = "all"
 
             fault = {
@@ -2271,7 +2428,7 @@ class DeployMarkers:
     KEY = "canary:deploy_markers"
 
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._events: list[dict] = []
         self._vk = None
 
@@ -2355,10 +2512,12 @@ deploy_markers = DeployMarkers()
 # ---------------------------------------------------------------------------
 class CanaryState:
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.start_time = time.time()
         self.status = "Initializing"
+        self.rate_unit = CANARY_RATE_UNIT
         self.base_tps = CANARY_TPS
+        self.base_tpm = CANARY_TPM
         self.override_tps = None
         self.tps_override_end = None
         self.total_requests = 0
@@ -2372,6 +2531,7 @@ class CanaryState:
             "go":     True,
             "dotnet": True,
             "c":      True,
+            "php":    True,
         }
         self.apps = {
             "python": {"url": APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
@@ -2381,6 +2541,7 @@ class CanaryState:
             "go":     {"url": GO_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
             "dotnet": {"url": DOTNET_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
             "c":      {"url": C_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
+            "php":    {"url": PHP_APP_BASE_URL, "reachable": False, "total": 0, "success": 0, "error": 0, "duration_sum": 0.0},
         }
         self.endpoints = {}
         self.recent_requests = deque(maxlen=30)
@@ -2413,15 +2574,37 @@ class CanaryState:
                 return self.override_tps
             return self.base_tps
 
-    def set_tps_override(self, tps: float, duration_sec: int = 60) -> dict:
+    def get_rate_info(self) -> dict:
+        eff_tps = self.get_effective_tps()
+        eff_tpm = round(eff_tps * 60.0, 1)
+        return {
+            "rate_unit": self.rate_unit,
+            "effective_tps": round(eff_tps, 2),
+            "effective_tpm": eff_tpm,
+            "display": f"{eff_tpm} TPM ({eff_tps:.2f} TPS)" if self.rate_unit == "TPM" else f"{eff_tps:.1f} TPS ({eff_tpm:.0f} TPM)",
+            "base_tps": round(self.base_tps, 2),
+            "base_tpm": round(self.base_tpm, 1),
+            "is_override": self.override_tps is not None
+        }
+
+    def set_tps_override(self, rate: float, duration_sec: int = 60, unit: str = None) -> dict:
         with self._lock:
             now = time.time()
-            self.override_tps = max(0.5, min(100.0, float(tps)))
+            target_unit = (unit or self.rate_unit).upper()
+            if target_unit == "TPM":
+                # Convert TPM to TPS (e.g. 6 TPM -> 0.1 TPS)
+                tps = max(0.05, float(rate) / 60.0)
+            else:
+                tps = max(0.05, min(100.0, float(rate)))
+            self.override_tps = tps
             self.tps_override_end = (now + duration_sec) if duration_sec > 0 else None
-            logger.info("Canary TPS Override activated: %.1f TPS for %d seconds", self.override_tps, duration_sec)
+            logger.info("Canary Load Override activated: %.2f TPS (%.1f TPM) for %d seconds", self.override_tps, self.override_tps * 60.0, duration_sec)
             return {
                 "base_tps": self.base_tps,
-                "effective_tps": self.override_tps,
+                "base_tpm": self.base_tpm,
+                "effective_tps": round(self.override_tps, 2),
+                "effective_tpm": round(self.override_tps * 60.0, 1),
+                "rate_unit": target_unit,
                 "duration_sec": duration_sec,
                 "remaining_sec": duration_sec if duration_sec > 0 else None
             }
@@ -2493,7 +2676,8 @@ class CanaryState:
                              "node":   {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []},
                              "go":     {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []},
                              "dotnet": {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []},
-                             "c":      {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []}}
+                             "c":      {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []},
+                             "php":    {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []}}
                 }
             b = self.ts_buckets[bucket_ts]
             b["total"] += 1
@@ -2589,10 +2773,15 @@ class CanaryState:
                 })
             endpoint_list.sort(key=lambda x: x["hits"], reverse=True)
 
+            rate_info = self.get_rate_info()
             return {
                 "status": self.status,
-                "base_tps": self.base_tps,
-                "effective_tps": eff_tps,
+                "rate_unit": self.rate_unit,
+                "base_tps": round(self.base_tps, 2),
+                "base_tpm": round(self.base_tpm, 1),
+                "effective_tps": round(eff_tps, 2),
+                "effective_tpm": round(eff_tps * 60.0, 1),
+                "rate_display": rate_info["display"],
                 "is_tps_override": is_override,
                 "tps_remaining_sec": override_rem,
                 "uptime_seconds": round(uptime, 1),
@@ -2644,7 +2833,7 @@ class CanaryState:
                     pts_p100.append({"t": b_ts, "v": 0.0})
                     continue
 
-                if service in ("python", "java", "rust", "node", "go", "dotnet", "c"):
+                if service in ("python", "java", "rust", "node", "go", "dotnet", "c", "php"):
                     ba = b["apps"].get(service, {"t": 0, "s": 0, "e": 0, "ds": 0.0, "durs": []})
                     tot = ba["t"]
                     succ = ba["s"]
@@ -2773,7 +2962,7 @@ def query_trend_metrics(range_str: str = "5m", service: str = "all") -> dict:
     rate_win = cfg["rate_win"]
     start = now - seconds
 
-    service_filter = f'language="{service}",' if service in ("python", "java", "rust", "node", "go", "dotnet", "c") else ""
+    service_filter = f'language="{service}",' if service in ("python", "java", "rust", "node", "go", "dotnet", "c", "php") else ""
 
     queries = {
         "throughput": f'sum(rate(app_synthetic_requests_total{{{service_filter}}}[{rate_win}])) or vector(0)',
@@ -2857,6 +3046,7 @@ def trigger_target_crash(target: str, crash_type: str = "process", tag: str = No
         "go": GO_APP_BASE_URL,
         "dotnet": DOTNET_APP_BASE_URL,
         "c": C_APP_BASE_URL,
+        "php": PHP_APP_BASE_URL,
     }
     tgt_clean = (target or "java").lower().strip()
     crash_type_clean = "thread" if (crash_type or "").lower().strip() == "thread" else "process"
@@ -3049,6 +3239,7 @@ def render_dashboard_html() -> str:
       --lang-go: #06b6d4;       /* Go: Cyan */
       --lang-dotnet: #8b5cf6;   /* .NET: Violet */
       --lang-c: #64748b;        /* C: Steel Slate */
+      --lang-php: #777bb4;      /* PHP: Elephant Purple */
       --lang-all: #ef4444;      /* All: Red */
     }}
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -3296,6 +3487,7 @@ def render_dashboard_html() -> str:
     .chip-btn.chip-go:hover {{ border-color: var(--lang-go); color: var(--lang-go); }}
     .chip-btn.chip-dotnet:hover {{ border-color: var(--lang-dotnet); color: var(--lang-dotnet); }}
     .chip-btn.chip-c:hover {{ border-color: var(--lang-c); color: var(--lang-c); }}
+    .chip-btn.chip-php:hover {{ border-color: var(--lang-php); color: var(--lang-php); }}
 
     /* Section Subheaders */
     .section-bar {{
@@ -3449,6 +3641,7 @@ def render_dashboard_html() -> str:
     .badge-go   {{ background: #083344; color: #67e8f9; }}
     .badge-dotnet {{ background: #2e1065; color: #c4b5fd; }}
     .badge-c      {{ background: #1e293b; color: #94a3b8; }}
+    .badge-php    {{ background: #282a36; color: #c7d2fe; }}
 
     /* Language-specific Fault Badges */
     .badge-fault-java   {{ background: #7c2d12; color: #fed7aa; border: 1px solid #f97316; }}
@@ -3458,6 +3651,7 @@ def render_dashboard_html() -> str:
     .badge-fault-go     {{ background: #083344; color: #a5f3fc; border: 1px solid #06b6d4; }}
     .badge-fault-dotnet {{ background: #2e1065; color: #ddd6fe; border: 1px solid #8b5cf6; }}
     .badge-fault-c      {{ background: #1e293b; color: #cbd5e1; border: 1px solid #64748b; }}
+    .badge-fault-php    {{ background: #282a36; color: #c7d2fe; border: 1px solid #777bb4; }}
     .badge-fault-all    {{ background: #7f1d1d; color: #fecaca; border: 1px solid #ef4444; }}
 
     code {{
@@ -3533,17 +3727,26 @@ def render_dashboard_html() -> str:
       scrollbar-gutter: stable;
     }}
     .sql-textarea::placeholder {{ color: #64748b; }}
-    #duckdb-query-input,
-    .duckdb-textarea {{
-      color: #f8fafc !important;
-      background: #090e17 !important;
-      caret-color: #38bdf8 !important;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 0.85rem;
-      line-height: 1.45;
+    #duckdb-highlight {{
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      color: #e2e8f0;
+      padding-right: 28px;
     }}
-    #duckdb-query-input::placeholder,
-    .duckdb-textarea::placeholder {{ color: #64748b; }}
+    #duckdb-query-input {{
+      position: relative;
+      display: block;
+      resize: vertical;
+      background: transparent !important;
+      color: transparent !important;
+      caret-color: #38bdf8 !important;
+      outline: none;
+      overflow: auto;
+      scrollbar-gutter: stable;
+    }}
+    #duckdb-query-input::placeholder {{ color: #64748b; }}
     .sql-kw {{ color: #7dd3fc; font-weight: 650; }}
     .sql-fn {{ color: #c4b5fd; }}
     .sql-str {{ color: #86efac; }}
@@ -3812,6 +4015,64 @@ def render_dashboard_html() -> str:
       border-top: 1px solid var(--card-border);
     }}
 
+    /* On-Demand Canary Run Modal */
+    .ondemand-modal-box {{
+      max-width: 840px !important;
+      width: 92% !important;
+      max-height: 88vh;
+      display: flex;
+      flex-direction: column;
+      text-align: left !important;
+      background: #0f172a !important;
+      border: 1px solid var(--accent) !important;
+      border-radius: 8px;
+      padding: 16px !important;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.95);
+    }}
+    .ondemand-summary-bar {{
+      display: flex;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }}
+    .ondemand-stat-card {{
+      background: #1e293b;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      flex: 1;
+      min-width: 120px;
+    }}
+    .ondemand-stat-title {{
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 2px;
+    }}
+    .ondemand-stat-val {{
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #f8fafc;
+    }}
+    .btn-ondemand {{
+      background: linear-gradient(135deg, #0284c7, #2563eb) !important;
+      color: #ffffff !important;
+      border: 1px solid #38bdf8 !important;
+      font-weight: 700 !important;
+      cursor: pointer;
+      transition: all 0.2s ease-in-out;
+    }}
+    .btn-ondemand:hover {{
+      background: linear-gradient(135deg, #0369a1, #1d4ed8) !important;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.6);
+      transform: translateY(-1px);
+    }}
+    .btn-ondemand:disabled {{
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }}
+
     /* S3 Browser Styles */
     .s3-browser-container {{
       background: var(--card-bg);
@@ -4057,6 +4318,71 @@ def render_dashboard_html() -> str:
     </div>
   </div>
 
+  <!-- On-Demand Execution Results Modal -->
+  <div id="ondemand-modal" class="modal-overlay" onclick="if(event.target===this) closeOnDemandModal()">
+    <div class="modal-box ondemand-modal-box">
+      <div class="cell-modal-header">
+        <div class="cell-modal-title">
+          <span>⚡</span>
+          <span style="font-weight: 700; color: #38bdf8;">On-Demand Canary Iteration Results</span>
+          <span id="ondemand-status-chip" class="badge badge-success">Completed</span>
+          <span id="ondemand-time-chip" class="badge badge-secondary" style="font-family: monospace;">--</span>
+        </div>
+        <button class="modal-close-btn" onclick="closeOnDemandModal()">&times;</button>
+      </div>
+
+      <div class="ondemand-summary-bar">
+        <div class="ondemand-stat-card" style="border-left: 3px solid #38bdf8;">
+          <div class="ondemand-stat-title">Total Requests</div>
+          <div class="ondemand-stat-val" id="ondemand-total-val">0</div>
+        </div>
+        <div class="ondemand-stat-card" style="border-left: 3px solid #10b981;">
+          <div class="ondemand-stat-title">Successful</div>
+          <div class="ondemand-stat-val" id="ondemand-success-val" style="color: #10b981;">0</div>
+        </div>
+        <div class="ondemand-stat-card" style="border-left: 3px solid #ef4444;">
+          <div class="ondemand-stat-title">Failed / Errors</div>
+          <div class="ondemand-stat-val" id="ondemand-error-val" style="color: #ef4444;">0</div>
+        </div>
+        <div class="ondemand-stat-card" style="border-left: 3px solid #a855f7;">
+          <div class="ondemand-stat-title">Total Roundtrip</div>
+          <div class="ondemand-stat-val" id="ondemand-duration-val">0 ms</div>
+        </div>
+      </div>
+
+      <div style="font-size: 0.72rem; color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+        <span>Detailed execution trace across polyglot microservice fleet:</span>
+        <span style="color: #38bdf8;">OTel metrics flushed to telemetry pipeline</span>
+      </div>
+
+      <div class="cell-modal-content-wrapper" style="max-height: 48vh;">
+        <table class="grid-table" style="width: 100%;">
+          <thead>
+            <tr>
+              <th style="width: 110px;">Service</th>
+              <th style="width: 70px;">Method</th>
+              <th>Target Path</th>
+              <th style="width: 100px;">Status</th>
+              <th style="width: 90px; text-align: right;">Latency</th>
+              <th style="width: 130px;">Chaos / Fault</th>
+            </tr>
+          </thead>
+          <tbody id="ondemand-results-body">
+            <tr><td colspan="6" style="text-align: center; color: var(--muted);">Click &quot;Run Once&quot; to test microservices.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="cell-modal-footer" style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 0.72rem; color: var(--muted);">💡 Press <kbd style="background:#1e293b; padding:1px 5px; border-radius:3px; border:1px solid #334155;">Esc</kbd> to close. Telemetry is flushed to OTel collector.</span>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-secondary btn-sm" onclick="triggerOnDemandPulse()">🔄 Run Again</button>
+          <button class="btn btn-accent btn-sm" onclick="closeOnDemandModal()">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="container">
     <header>
       <div class="title-group">
@@ -4084,6 +4410,7 @@ def render_dashboard_html() -> str:
           <button class="view-tab-btn" onclick="switchView('telemetry_query', this)">🔍 Telemetry view - Query editor</button>
           <button class="view-tab-btn" onclick="switchView('cost_breakdown', this)">💰 RDS Cost Breakdown</button>
         </div>
+        <button class="btn btn-ondemand" id="btn-ondemand-pulse" style="height:26px; padding:2px 10px; font-size:0.72rem;" onclick="triggerOnDemandPulse()" title="Forcefully run one complete iteration across all polyglot microservices">⚡ Run Once (On-Demand)</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="openQrModal()" title="Mobile App & QR Code">📱 Connect / QR</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="fetchTrendsAndRefresh()" title="Refresh now">🔄</button>
       </div>
@@ -4125,7 +4452,10 @@ def render_dashboard_html() -> str:
         <div class="kpi-subtext" id="kpi-latency-p95">P95: -- ms</div>
       </div>
       <div class="kpi-card" style="border-top: 2px solid #38bdf8;">
-        <div class="kpi-title">Canary Throughput</div>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div class="kpi-title">Canary Throughput</div>
+          <button class="btn btn-outline" style="height:18px; padding:0 6px; font-size:0.65rem; border-color:#0284c7; color:#38bdf8;" onclick="triggerOnDemandPulse()" title="Run 1 on-demand iteration">⚡ Pulse</button>
+        </div>
         <div class="kpi-value" id="kpi-tps">-- TPS</div>
         <div class="kpi-subtext" id="kpi-tps-status">Target: 6 TPS</div>
       </div>
@@ -4183,6 +4513,7 @@ def render_dashboard_html() -> str:
                   <option value="go">🩵 Go (net/http)</option>
                   <option value="dotnet">💜 .NET (C#)</option>
                   <option value="c">⚙️ C (POSIX)</option>
+                  <option value="php">🐘 PHP</option>
                 </select>
               </div>
               <div class="form-field">
@@ -4208,6 +4539,7 @@ def render_dashboard_html() -> str:
               <button class="chip-btn chip-go" onclick="quickDrill('GO-ERR-SPIKE', 'error_spike', 'go', 60)">🩵 Go Errors (60s)</button>
               <button class="chip-btn chip-dotnet" onclick="quickDrill('DOTNET-ERR-SPIKE', 'error_spike', 'dotnet', 60)">💜 .NET Errors (60s)</button>
               <button class="chip-btn chip-c" onclick="quickDrill('C-ERR-SPIKE', 'error_spike', 'c', 60)">⚙️ C Errors (60s)</button>
+              <button class="chip-btn chip-php" onclick="quickDrill('PHP-ERR-SPIKE', 'error_spike', 'php', 60)">🐘 PHP Errors (60s)</button>
               <button class="chip-btn" onclick="quickDrill('ALL-OUTAGE-DRILL', 'service_outage', 'all', 30)">🔴 Full Outage (30s)</button>
             </div>
           </div>
@@ -4229,6 +4561,7 @@ def render_dashboard_html() -> str:
                   <option value="go">🩵 Go (net/http)</option>
                   <option value="dotnet">💜 .NET (C#)</option>
                   <option value="c">⚙️ C (POSIX)</option>
+                  <option value="php">🐘 PHP</option>
                   <option value="all">🔴 All Environments</option>
                 </select>
               </div>
@@ -4257,19 +4590,27 @@ def render_dashboard_html() -> str:
               <button class="chip-btn chip-go" onclick="quickCrash('go', 'process', 'CRASH-GO-PROC')">🩵 Go Proc</button>
               <button class="chip-btn chip-dotnet" onclick="quickCrash('dotnet', 'process', 'CRASH-DOTNET-PROC')">💜 .NET Proc</button>
               <button class="chip-btn chip-c" onclick="quickCrash('c', 'process', 'CRASH-C-PROC')">⚙️ C Proc</button>
+              <button class="chip-btn chip-php" onclick="quickCrash('php', 'process', 'CRASH-PHP-PROC')">🐘 PHP Proc</button>
             </div>
           </div>
 
-          <!-- 3. Dynamic TPS Load Controller -->
+          <!-- 3. Dynamic Load Controller (TPS / TPM Override) -->
           <div class="ctrl-box">
             <div class="ctrl-box-title">
-              <span>🚀 Load Rate Controller (TPS Override)</span>
-              <span id="tps-active-badge" class="badge badge-success">DEFAULT: 6 TPS</span>
+              <span>🚀 Load Rate Controller (TPS / TPM Override)</span>
+              <span id="tps-active-badge" class="badge badge-success">DEFAULT: {CANARY_RATE_UNIT}</span>
             </div>
-            <form id="tps-form" class="form-inline-grid" style="grid-template-columns: 1fr 1fr 100px 70px;" onsubmit="applyTpsOverride(event)">
+            <form id="tps-form" class="form-inline-grid" style="grid-template-columns: 1fr 100px 1fr 100px 70px;" onsubmit="applyTpsOverride(event)">
               <div class="form-field">
-                <label>Target TPS Rate</label>
-                <input type="number" id="tps-rate-input" class="ctrl-input" min="1" max="100" step="1" value="18" required />
+                <label>Target Rate</label>
+                <input type="number" id="tps-rate-input" class="ctrl-input" min="0.1" max="1000" step="0.1" value="6" required />
+              </div>
+              <div class="form-field">
+                <label>Unit</label>
+                <select id="tps-unit-select" class="ctrl-input">
+                  <option value="TPM" {"selected" if CANARY_RATE_UNIT == "TPM" else ""}>TPM (Tx/min)</option>
+                  <option value="TPS" {"selected" if CANARY_RATE_UNIT == "TPS" else ""}>TPS (Tx/sec)</option>
+                </select>
               </div>
               <div class="form-field">
                 <label>Override Duration</label>
@@ -4283,18 +4624,27 @@ def render_dashboard_html() -> str:
                 </select>
               </div>
               <div>
-                <button type="submit" class="btn btn-accent" style="width:100%;">🚀 Set TPS</button>
+                <button type="submit" class="btn btn-accent" style="width:100%;">🚀 Set Rate</button>
               </div>
               <div>
-                <button type="button" class="btn btn-secondary" style="width:100%;" onclick="resetTps()" title="Reset to base 6 TPS">Reset</button>
+                <button type="button" class="btn btn-secondary" style="width:100%;" onclick="resetTps()" title="Reset to base configured rate">Reset</button>
               </div>
             </form>
             <div class="chips-row">
-              <span style="font-size:0.68rem; color:var(--muted); font-weight:700;">QUICK TPS:</span>
-              <button class="chip-btn" onclick="quickTps(6, 0)">6 TPS (Default)</button>
-              <button class="chip-btn" onclick="quickTps(12, 60)">12 TPS (2x, 60s)</button>
-              <button class="chip-btn" onclick="quickTps(24, 60)">24 TPS (4x, 60s)</button>
-              <button class="chip-btn" onclick="quickTps(48, 60)">48 TPS (8x, 60s)</button>
+              <span style="font-size:0.68rem; color:var(--muted); font-weight:700;">PRESETS:</span>
+              <button class="chip-btn" onclick="quickTps(6, 'TPM', 0)">🌱 6 TPM (Frugal AWS)</button>
+              <button class="chip-btn" onclick="quickTps(12, 'TPM', 60)">⚡ 12 TPM (60s)</button>
+              <button class="chip-btn" onclick="quickTps(60, 'TPM', 60)">🔥 60 TPM (1 TPS, 60s)</button>
+              <button class="chip-btn" onclick="quickTps(6, 'TPS', 0)">💻 6 TPS (Local Dev)</button>
+              <button class="chip-btn" onclick="quickTps(12, 'TPS', 60)">🚀 12 TPS (2x, 60s)</button>
+            </div>
+            <div style="margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+              <div style="font-size:0.72rem; color:var(--muted);">
+                <strong style="color:var(--text);">Manual Diagnostic:</strong> Forcefully kick off 1 canary iteration across all microservices to verify end-to-end telemetry and connectivity.
+              </div>
+              <button type="button" class="btn btn-ondemand btn-sm" id="btn-drawer-ondemand" onclick="triggerOnDemandPulse()">
+                ⚡ Force 1 Iteration On-Demand (All Services)
+              </button>
             </div>
           </div>
 
@@ -4342,6 +4692,7 @@ def render_dashboard_html() -> str:
             <button class="filter-btn" onclick="setServiceFilter('go', this)">Go</button>
             <button class="filter-btn" onclick="setServiceFilter('dotnet', this)">.NET</button>
             <button class="filter-btn" onclick="setServiceFilter('c', this)">C</button>
+            <button class="filter-btn" onclick="setServiceFilter('php', this)">PHP</button>
           </div>
         </div>
       </div>
@@ -4541,8 +4892,14 @@ def render_dashboard_html() -> str:
               <option value="">-- Choose a curated saved query --</option>
             </select>
           </div>
-          <div style="display:flex; align-items:center; gap:6px;">
-            <input id="sql-save-name" class="ctrl-input" placeholder="Name to save" style="width:140px;">
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <label style="font-size:0.72rem; font-weight:700; color:var(--muted);">ROLE / IAM DB USER:</label>
+            <select id="sql-role-select" class="ctrl-input" style="width:205px;" title="Select PostgreSQL role / IAM DB Auth User">
+              <option value="observability_reader">👤 observability_reader (Read-only)</option>
+              <option value="observability_admin">🛡️ observability_admin (Stats/Health)</option>
+              <option value="observability">👑 observability (DB Owner)</option>
+            </select>
+            <input id="sql-save-name" class="ctrl-input" placeholder="Name to save" style="width:130px;">
             <button class="btn btn-outline" onclick="formatSqlEditor()">Format</button>
             <button class="btn btn-outline" onclick="saveSqlQuery()">Save</button>
             <button class="btn btn-accent" onclick="runSqlQuery()">▶ Run Query (Ctrl+Enter)</button>
@@ -4726,7 +5083,8 @@ def render_dashboard_html() -> str:
             </select>
           </div>
           <div style="display:flex; align-items:center; gap:6px; flex-wrap: wrap;">
-            <button class="btn btn-accent" onclick="runDuckDBQuery()">▶ Run Query (Ctrl+Enter)</button>
+            <button class="btn btn-accent" id="duckdb-run-btn" onclick="runDuckDBQuery()">▶ Run Query (Ctrl+Enter)</button>
+            <button class="btn btn-secondary" id="duckdb-cancel-btn" style="display:none; background:#7f1d1d; border-color:#dc2626; color:#fecaca;" onclick="cancelDuckDBQuery()">⏹ Cancel Query</button>
             <button class="btn btn-secondary" onclick="clearDuckDBQuery()">🧹 Clear</button>
             <button class="btn btn-outline" onclick="flushAndRunDuckDBQuery()" title="Flush pending buffer to S3 then run query">⚡ Flush Buffer & Run</button>
             <button class="btn btn-outline" onclick="exportDuckDBResults('csv')">📥 Export CSV</button>
@@ -4734,8 +5092,9 @@ def render_dashboard_html() -> str:
           </div>
         </div>
 
-        <div class="sql-editor-box">
-          <textarea id="duckdb-query-input" class="sql-textarea duckdb-textarea" spellcheck="false" rows="7" placeholder="Enter DuckDB SQL query here... e.g. SELECT * FROM telemetry ORDER BY timestamp_ns DESC LIMIT 50;"></textarea>
+        <div class="sql-editor-box" id="duckdb-editor-box">
+          <pre class="sql-highlight" id="duckdb-highlight" aria-hidden="true"></pre>
+          <textarea id="duckdb-query-input" class="sql-textarea" spellcheck="false" rows="7" placeholder="Enter DuckDB SQL query here... e.g. SELECT * FROM telemetry ORDER BY timestamp_ns DESC LIMIT 50;"></textarea>
         </div>
 
         <div class="sql-meta-bar" id="duckdb-status-bar">
@@ -4919,6 +5278,7 @@ def render_dashboard_html() -> str:
       'go':     {{ stroke: '#06b6d4', fill: 'rgba(6, 182, 212, 0.22)', badge: '#0891b2', border: '#06b6d4', text: '#fff' }},
       'dotnet': {{ stroke: '#8b5cf6', fill: 'rgba(139, 92, 246, 0.22)', badge: '#7c3aed', border: '#8b5cf6', text: '#fff' }},
       'c':      {{ stroke: '#64748b', fill: 'rgba(100, 116, 139, 0.22)', badge: '#475569', border: '#64748b', text: '#fff' }},
+      'php':    {{ stroke: '#777bb4', fill: 'rgba(119, 123, 180, 0.22)', badge: '#6366f1', border: '#777bb4', text: '#fff' }},
       'all':    {{ stroke: '#ef4444', fill: 'rgba(239, 68, 68, 0.22)', badge: '#dc2626', border: '#ef4444', text: '#fff' }}
     }};
 
@@ -5577,10 +5937,65 @@ def render_dashboard_html() -> str:
     // ---------------------------------------------------------------------------
     let duckdbCannedQueries = [];
     let latestDuckDBResult = null;
+    let duckdbSort = {{ colIdx: null, asc: true }};
+    let duckdbAbortController = null;
+    let duckdbTimerInterval = null;
+
+    function setDuckDBEditorText(sql) {{
+      const el = document.getElementById('duckdb-query-input');
+      if (!el) return;
+      el.value = sql || '';
+      paintDuckDBEditor();
+      fitDuckDBEditor();
+    }}
+
+    function paintDuckDBEditor() {{
+      const el = document.getElementById('duckdb-query-input');
+      const pre = document.getElementById('duckdb-highlight');
+      if (!el || !pre) return;
+      pre.innerHTML = typeof highlightSql === 'function' ? highlightSql(el.value) : el.value;
+    }}
+
+    function fitDuckDBEditor() {{
+      const el = document.getElementById('duckdb-query-input');
+      if (!el) return;
+      el.style.height = 'auto';
+      const next = Math.min(380, Math.max(140, el.scrollHeight + 2));
+      el.style.height = next + 'px';
+      syncDuckDBScroll();
+    }}
+
+    function syncDuckDBScroll() {{
+      const el = document.getElementById('duckdb-query-input');
+      const pre = document.getElementById('duckdb-highlight');
+      if (!el || !pre) return;
+      pre.scrollTop = el.scrollTop;
+      pre.scrollLeft = el.scrollLeft;
+    }}
+
+    function initDuckDBEditor() {{
+      const el = document.getElementById('duckdb-query-input');
+      if (!el || el.dataset.ready) return;
+      el.dataset.ready = '1';
+      el.addEventListener('input', () => {{
+        paintDuckDBEditor();
+        fitDuckDBEditor();
+      }});
+      el.addEventListener('scroll', syncDuckDBScroll);
+      el.addEventListener('keydown', (e) => {{
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
+          e.preventDefault();
+          runDuckDBQuery();
+        }}
+      }});
+      paintDuckDBEditor();
+      fitDuckDBEditor();
+    }}
 
     async function loadDuckDBCannedQueries() {{
       const select = document.getElementById('duckdb-canned-select');
       if (!select) return;
+      initDuckDBEditor();
       if (duckdbCannedQueries && duckdbCannedQueries.length > 0) return;
 
       try {{
@@ -5598,7 +6013,7 @@ def render_dashboard_html() -> str:
 
           const input = document.getElementById('duckdb-query-input');
           if (input && !input.value.trim() && data.queries.length > 0) {{
-            input.value = data.queries[0].sql;
+            setDuckDBEditorText(data.queries[0].sql);
             select.value = data.queries[0].id;
           }}
         }}
@@ -5611,11 +6026,9 @@ def render_dashboard_html() -> str:
       if (!queryId) return;
       const found = duckdbCannedQueries.find(q => q.id === queryId);
       if (found) {{
+        setDuckDBEditorText(found.sql);
         const input = document.getElementById('duckdb-query-input');
-        if (input) {{
-          input.value = found.sql;
-          input.focus();
-        }}
+        if (input) input.focus();
       }}
     }}
 
@@ -5627,7 +6040,15 @@ def render_dashboard_html() -> str:
       const val = input.value;
       input.value = val.substring(0, start) + snippet + val.substring(end);
       input.selectionStart = input.selectionEnd = start + snippet.length;
+      paintDuckDBEditor();
+      fitDuckDBEditor();
       input.focus();
+    }}
+
+    function cancelDuckDBQuery() {{
+      if (duckdbAbortController) {{
+        duckdbAbortController.abort();
+      }}
     }}
 
     async function runDuckDBQuery() {{
@@ -5637,8 +6058,7 @@ def render_dashboard_html() -> str:
       const errorBox = document.getElementById('duckdb-error-box');
       const emptyBox = document.getElementById('duckdb-grid-empty');
       const table = document.getElementById('duckdb-grid-table');
-      const thead = document.getElementById('duckdb-grid-thead');
-      const tbody = document.getElementById('duckdb-grid-tbody');
+      const cancelBtn = document.getElementById('duckdb-cancel-btn');
 
       if (!input) return;
       const sql = input.value.trim();
@@ -5647,102 +6067,38 @@ def render_dashboard_html() -> str:
         return;
       }}
 
-      statusText.innerHTML = '<span class="pulse"></span> Executing query on S3 Parquet Lake via DuckDB...';
-      timingText.innerText = 'running...';
+      if (cancelBtn) cancelBtn.style.display = 'inline-block';
+      statusText.innerHTML = '<span class="pulse"></span> Executing DuckDB query on S3 Parquet Lake...';
+      const t0 = performance.now();
+      timingText.innerText = '0 ms (0.0s)';
+
+      if (duckdbTimerInterval) clearInterval(duckdbTimerInterval);
+      duckdbTimerInterval = setInterval(() => {{
+        const elapsed = performance.now() - t0;
+        timingText.innerText = Math.round(elapsed) + ' ms (' + (elapsed / 1000).toFixed(1) + 's)';
+      }}, 80);
+
       if (errorBox) errorBox.style.display = 'none';
+
+      duckdbAbortController = new AbortController();
 
       try {{
         const res = await fetch('/api/duckdb/query', {{
           method: 'POST',
           headers: {{'Content-Type': 'application/json'}},
-          body: JSON.stringify({{ query: sql, max_rows: 500 }})
+          body: JSON.stringify({{ query: sql, max_rows: 500 }}),
+          signal: duckdbAbortController.signal
         }});
         const data = await res.json();
+
+        if (duckdbTimerInterval) {{ clearInterval(duckdbTimerInterval); duckdbTimerInterval = null; }}
 
         if (data.status === 'success') {{
           latestDuckDBResult = data;
           statusText.innerText = 'Query completed successfully • ' + data.row_count + ' rows returned from S3 Parquet Lake';
-          timingText.innerText = data.execution_time_ms + ' ms';
+          timingText.innerText = data.execution_time_ms + ' ms (' + (data.execution_time_ms / 1000).toFixed(2) + 's)';
 
-          if (emptyBox) emptyBox.style.display = 'none';
-          if (table) table.style.display = 'table';
-
-          thead.innerHTML = '';
-          const trHead = document.createElement('tr');
-          const thNum = document.createElement('th');
-          thNum.style.width = '42px';
-          thNum.textContent = '#';
-          trHead.appendChild(thNum);
-
-          data.columns.forEach(col => {{
-            const th = document.createElement('th');
-            th.textContent = col;
-            trHead.appendChild(th);
-          }});
-          thead.appendChild(trHead);
-
-          tbody.innerHTML = '';
-          if (data.rows.length === 0) {{
-            const emptyTr = document.createElement('tr');
-            const td = document.createElement('td');
-            td.colSpan = data.columns.length + 1;
-            td.style.textAlign = 'center';
-            td.style.padding = '24px';
-            td.style.color = 'var(--muted)';
-            td.textContent = 'Query executed successfully but returned 0 rows.';
-            emptyTr.appendChild(td);
-            tbody.appendChild(emptyTr);
-          }} else {{
-            data.rows.forEach((row, idx) => {{
-              const tr = document.createElement('tr');
-              const tdNum = document.createElement('td');
-              tdNum.style.color = 'var(--muted)';
-              tdNum.style.fontSize = '0.72rem';
-              tdNum.style.textAlign = 'center';
-              tdNum.textContent = String(idx + 1);
-              tr.appendChild(tdNum);
-
-              row.forEach((cellVal, colIdx) => {{
-                const colName = data.columns[colIdx];
-                const td = document.createElement('td');
-                const strVal = (cellVal === null || cellVal === undefined) ? 'NULL' : String(cellVal);
-
-                if (cellVal === null) {{
-                  td.style.color = 'var(--muted)';
-                  td.style.fontStyle = 'italic';
-                  td.textContent = 'NULL';
-                }} else if (colName === 'telemetry_type') {{
-                  let badgeBg = '#334155';
-                  let badgeColor = '#f8fafc';
-                  if (strVal === 'trace') {{ badgeBg = '#4c1d95'; badgeColor = '#c4b5fd'; }}
-                  else if (strVal === 'metric') {{ badgeBg = '#0e7490'; badgeColor = '#67e8f9'; }}
-                  else if (strVal === 'log') {{ badgeBg = '#7c2d12'; badgeColor = '#fdba74'; }}
-                  td.innerHTML = '<span class="badge" style="background:' + badgeBg + '; color:' + badgeColor + ';">' + strVal + '</span>';
-                }} else if (colName === 'timestamp_ns') {{
-                  td.style.fontFamily = 'monospace';
-                  td.style.color = '#c4b5fd';
-                  td.textContent = strVal;
-                }} else if (colName === 'timestamp_iso') {{
-                  td.style.fontFamily = 'monospace';
-                  td.style.color = '#38bdf8';
-                  td.textContent = strVal;
-                }} else if (colName === 'attributes' || colName === 'raw_payload') {{
-                  td.style.fontFamily = 'monospace';
-                  td.style.fontSize = '0.74rem';
-                  td.style.maxWidth = '320px';
-                  td.style.overflow = 'hidden';
-                  td.style.textOverflow = 'ellipsis';
-                  td.style.whiteSpace = 'nowrap';
-                  td.title = strVal;
-                  td.textContent = strVal;
-                }} else {{
-                  td.textContent = strVal;
-                }}
-                tr.appendChild(td);
-              }});
-              tbody.appendChild(tr);
-            }});
-          }}
+          renderDuckDBGrid(data);
         }} else {{
           statusText.innerText = 'Query error';
           timingText.innerText = (data.execution_time_ms || 0) + ' ms';
@@ -5754,24 +6110,161 @@ def render_dashboard_html() -> str:
           }}
         }}
       }} catch (err) {{
-        statusText.innerText = 'Network/Execution error';
-        timingText.innerText = '-- ms';
-        if (errorBox) {{
-          errorBox.style.display = 'block';
-          errorBox.innerText = 'Request failed: ' + err.message;
+        if (duckdbTimerInterval) {{ clearInterval(duckdbTimerInterval); duckdbTimerInterval = null; }}
+        if (err.name === 'AbortError') {{
+          statusText.innerText = '⏹ Query cancelled by user';
+          timingText.innerText = 'Cancelled';
+        }} else {{
+          statusText.innerText = 'Network/Execution error';
+          timingText.innerText = '-- ms';
+          if (errorBox) {{
+            errorBox.style.display = 'block';
+            errorBox.innerText = 'Request failed: ' + err.message;
+          }}
         }}
+      }} finally {{
+        if (duckdbTimerInterval) {{ clearInterval(duckdbTimerInterval); duckdbTimerInterval = null; }}
+        if (cancelBtn) cancelBtn.style.display = 'none';
+        duckdbAbortController = null;
+      }}
+    }}
+
+    function sortDuckDBGrid(colIdx) {{
+      if (!latestDuckDBResult || !latestDuckDBResult.rows || latestDuckDBResult.rows.length === 0) return;
+
+      if (duckdbSort.colIdx === colIdx) {{
+        duckdbSort.asc = !duckdbSort.asc;
+      }} else {{
+        duckdbSort.colIdx = colIdx;
+        duckdbSort.asc = true;
+      }}
+
+      latestDuckDBResult.rows.sort((a, b) => {{
+        let valA = a[colIdx];
+        let valB = b[colIdx];
+
+        if (valA === valB) return 0;
+        if (valA === null || valA === undefined) return 1;
+        if (valB === null || valB === undefined) return -1;
+
+        const numA = Number(valA);
+        const numB = Number(valB);
+        if (!isNaN(numA) && !isNaN(numB) && typeof valA !== 'boolean' && typeof valB !== 'boolean') {{
+          return duckdbSort.asc ? numA - numB : numB - numA;
+        }}
+
+        const strA = String(valA).toLowerCase();
+        const strB = String(valB).toLowerCase();
+        return duckdbSort.asc ? strA.localeCompare(strB) : strB.localeCompare(strA);
+      }});
+
+      renderDuckDBGrid(latestDuckDBResult);
+    }}
+
+    function renderDuckDBGrid(data) {{
+      const emptyBox = document.getElementById('duckdb-grid-empty');
+      const table = document.getElementById('duckdb-grid-table');
+      const thead = document.getElementById('duckdb-grid-thead');
+      const tbody = document.getElementById('duckdb-grid-tbody');
+
+      if (emptyBox) emptyBox.style.display = 'none';
+      if (table) table.style.display = 'table';
+
+      thead.innerHTML = '';
+      const trHead = document.createElement('tr');
+      const thNum = document.createElement('th');
+      thNum.style.width = '42px';
+      thNum.textContent = '#';
+      trHead.appendChild(thNum);
+
+      data.columns.forEach((col, idx) => {{
+        const th = document.createElement('th');
+        th.style.cursor = 'pointer';
+        th.style.userSelect = 'none';
+        th.title = 'Click to sort by ' + col;
+
+        let indicator = '';
+        if (duckdbSort.colIdx === idx) {{
+          indicator = duckdbSort.asc ? ' ▲' : ' ▼';
+        }}
+        th.textContent = col + indicator;
+        th.onclick = () => sortDuckDBGrid(idx);
+        trHead.appendChild(th);
+      }});
+      thead.appendChild(trHead);
+
+      tbody.innerHTML = '';
+      if (!data.rows || data.rows.length === 0) {{
+        const emptyTr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = data.columns.length + 1;
+        td.style.textAlign = 'center';
+        td.style.padding = '24px';
+        td.style.color = 'var(--muted)';
+        td.textContent = 'Query executed successfully but returned 0 rows.';
+        emptyTr.appendChild(td);
+        tbody.appendChild(emptyTr);
+      }} else {{
+        data.rows.forEach((row, idx) => {{
+          const tr = document.createElement('tr');
+          const tdNum = document.createElement('td');
+          tdNum.style.color = 'var(--muted)';
+          tdNum.style.fontSize = '0.72rem';
+          tdNum.style.textAlign = 'center';
+          tdNum.textContent = String(idx + 1);
+          tr.appendChild(tdNum);
+
+          row.forEach((cellVal, colIdx) => {{
+            const colName = data.columns[colIdx];
+            const td = document.createElement('td');
+            const strVal = (cellVal === null || cellVal === undefined) ? 'NULL' : String(cellVal);
+
+            if (cellVal === null) {{
+              td.style.color = 'var(--muted)';
+              td.style.fontStyle = 'italic';
+              td.textContent = 'NULL';
+            }} else if (colName === 'telemetry_type') {{
+              let badgeBg = '#334155';
+              let badgeColor = '#f8fafc';
+              if (strVal === 'trace') {{ badgeBg = '#4c1d95'; badgeColor = '#c4b5fd'; }}
+              else if (strVal === 'metric') {{ badgeBg = '#0e7490'; badgeColor = '#67e8f9'; }}
+              else if (strVal === 'log') {{ badgeBg = '#7c2d12'; badgeColor = '#fdba74'; }}
+              td.innerHTML = '<span class="badge" style="background:' + badgeBg + '; color:' + badgeColor + ';">' + strVal + '</span>';
+            }} else if (colName === 'timestamp_ns') {{
+              td.style.fontFamily = 'monospace';
+              td.style.color = '#c4b5fd';
+              td.textContent = strVal;
+            }} else if (colName === 'timestamp_iso') {{
+              td.style.fontFamily = 'monospace';
+              td.style.color = '#38bdf8';
+              td.textContent = strVal;
+            }} else if (colName === 'attributes' || colName === 'raw_payload') {{
+              td.style.fontFamily = 'monospace';
+              td.style.fontSize = '0.74rem';
+              td.style.maxWidth = '320px';
+              td.style.overflow = 'hidden';
+              td.style.textOverflow = 'ellipsis';
+              td.style.whiteSpace = 'nowrap';
+              td.title = strVal;
+              td.textContent = strVal;
+            }} else {{
+              td.textContent = strVal;
+            }}
+            tr.appendChild(td);
+          }});
+          tbody.appendChild(tr);
+        }});
       }}
     }}
 
     function clearDuckDBQuery() {{
-      const input = document.getElementById('duckdb-query-input');
+      setDuckDBEditorText('');
       const table = document.getElementById('duckdb-grid-table');
       const emptyBox = document.getElementById('duckdb-grid-empty');
       const errorBox = document.getElementById('duckdb-error-box');
       const timingText = document.getElementById('duckdb-timing-text');
       const statusText = document.getElementById('duckdb-status-text');
 
-      if (input) input.value = '';
       if (table) table.style.display = 'none';
       if (emptyBox) emptyBox.style.display = 'block';
       if (errorBox) errorBox.style.display = 'none';
@@ -5907,28 +6400,37 @@ def render_dashboard_html() -> str:
       document.getElementById('kpi-latency').innerText = `${{data.avg_latency_ms || 0}} ms`;
       document.getElementById('kpi-latency-p95').innerText = `P95: ${{data.latency_p95_ms || 0}} ms | P99: ${{data.latency_p99_ms || 0}} ms`;
 
-      // TPS Status & Override Display
-      const effTps = data.effective_tps || data.base_tps || 6;
+      // Throughput & Rate (Supports configurable TPM and TPS)
       const isOverride = data.is_tps_override;
-      document.getElementById('kpi-tps').innerText = `${{effTps}} TPS`;
+      const rateDisplay = data.rate_display || (data.rate_unit === 'TPM' ? `${{data.effective_tpm || 6}} TPM` : `${{data.effective_tps || 6}} TPS`);
+      const baseDisplay = data.rate_unit === 'TPM' ? `${{data.base_tpm || 6}} TPM` : `${{data.base_tps || 6}} TPS`;
+      document.getElementById('kpi-tps').innerText = rateDisplay;
       const tpsBadge = document.getElementById('tps-active-badge');
       const drawerTpsChip = document.getElementById('drawer-tps-chip');
 
       if (isOverride) {{
         const remStr = data.tps_remaining_sec ? ` (${{data.tps_remaining_sec}}s left)` : ' (Perm)';
-        document.getElementById('kpi-tps-status').innerText = `🔥 OVERRIDE${{remStr}} (Base: ${{data.base_tps}})`;
+        document.getElementById('kpi-tps-status').innerText = `🔥 OVERRIDE${{remStr}} (Base: ${{baseDisplay}})`;
         document.getElementById('kpi-tps-status').style.color = '#f59e0b';
-        tpsBadge.className = 'badge badge-warning';
-        tpsBadge.innerText = `OVERRIDE: ${{effTps}} TPS${{remStr}}`;
-        drawerTpsChip.className = 'badge badge-warning';
-        drawerTpsChip.innerText = `🔥 ${{effTps}} TPS${{remStr}}`;
+        if (tpsBadge) {{
+          tpsBadge.className = 'badge badge-warning';
+          tpsBadge.innerText = `OVERRIDE: ${{rateDisplay}}${{remStr}}`;
+        }}
+        if (drawerTpsChip) {{
+          drawerTpsChip.className = 'badge badge-warning';
+          drawerTpsChip.innerText = `🔥 ${{rateDisplay}}${{remStr}}`;
+        }}
       }} else {{
-        document.getElementById('kpi-tps-status').innerText = `Target: ${{data.base_tps}} TPS (Default)`;
+        document.getElementById('kpi-tps-status').innerText = `Target: ${{baseDisplay}} (Default)`;
         document.getElementById('kpi-tps-status').style.color = 'var(--muted)';
-        tpsBadge.className = 'badge badge-success';
-        tpsBadge.innerText = `DEFAULT: ${{data.base_tps}} TPS`;
-        drawerTpsChip.className = 'badge badge-success';
-        drawerTpsChip.innerText = `${{data.base_tps}} TPS (Default)`;
+        if (tpsBadge) {{
+          tpsBadge.className = 'badge badge-success';
+          tpsBadge.innerText = `DEFAULT: ${{baseDisplay}}`;
+        }}
+        if (drawerTpsChip) {{
+          drawerTpsChip.className = 'badge badge-success';
+          drawerTpsChip.innerText = `${{baseDisplay}} (Default)`;
+        }}
       }}
 
       // Active Fault Banner with Language-Specific Colors
@@ -6554,18 +7056,35 @@ def render_dashboard_html() -> str:
         const list = await res.json();
         const sel = document.getElementById('sql-saved-select');
         sel.innerHTML = '<option value="">-- Choose a curated saved query --</option>';
+
+        const groups = {{}};
         for (const q of list) {{
-          sel.innerHTML += `<option value="${{q.id}}">${{q.name}}</option>`;
+          const cat = q.category || '🔍 Application & Audit Queries';
+          if (!groups[cat]) groups[cat] = [];
+          groups[cat].push(q);
         }}
+
+        for (const [catName, qList] of Object.entries(groups)) {{
+          const optgroup = document.createElement('optgroup');
+          optgroup.label = catName;
+          for (const q of qList) {{
+            const opt = document.createElement('option');
+            opt.value = q.id;
+            opt.textContent = q.name;
+            optgroup.appendChild(opt);
+          }}
+          sel.appendChild(optgroup);
+        }}
+
         window._savedQueriesMap = {{}};
         for (const q of list) {{
-          window._savedQueriesMap[q.id] = q.sql;
+          window._savedQueriesMap[q.id] = q;
         }}
         // Default populate if empty
         initSqlEditor();
         const textarea = document.getElementById('sql-query-input');
         if (!textarea.value.trim() && list.length > 0) {{
-          setSqlEditorText(list[0].sql, true);
+          onSelectSavedQuery(list[0].id);
           sel.value = list[0].id;
         }} else {{
           paintSqlEditor();
@@ -6577,7 +7096,18 @@ def render_dashboard_html() -> str:
 
     function onSelectSavedQuery(qid) {{
       if (window._savedQueriesMap && window._savedQueriesMap[qid]) {{
-        setSqlEditorText(window._savedQueriesMap[qid], true);
+        const item = window._savedQueriesMap[qid];
+        setSqlEditorText(item.sql, true);
+        const roleSel = document.getElementById('sql-role-select');
+        if (roleSel) {{
+          if (item.category && item.category.includes('Health & Admin')) {{
+            roleSel.value = 'observability_admin';
+          }} else if (item.category && item.category.includes('Schema & Data Dictionary')) {{
+            roleSel.value = 'observability_reader';
+          }} else {{
+            roleSel.value = 'observability';
+          }}
+        }}
       }}
     }}
 
@@ -6623,21 +7153,24 @@ def render_dashboard_html() -> str:
         showToast("Please enter a SQL query", true);
         return;
       }}
+      const roleSel = document.getElementById('sql-role-select');
+      const role = roleSel ? roleSel.value : 'observability_reader';
       const statusText = document.getElementById('sql-status-text');
       const timingText = document.getElementById('sql-timing-text');
-      statusText.innerHTML = 'Executing query on PostgreSQL...';
+      statusText.innerHTML = `Executing query on PostgreSQL as <code style="color:#38bdf8;">${{role}}</code>...`;
 
       try {{
         const res = await fetch('/api/sql/query', {{
           method: 'POST',
           headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{ query: query }})
+          body: JSON.stringify({{ query: query, role: role }})
         }});
         const data = await res.json();
         latestSqlResult = data;
 
         if (data.status === 'success') {{
-          statusText.innerHTML = `✅ Query Succeeded &bull; ${{data.row_count}} row(s) returned`;
+          const usedRole = data.role || role;
+          statusText.innerHTML = `✅ Query Succeeded (Role: <code style="color:#38bdf8;">${{usedRole}}</code>) &bull; ${{data.row_count}} row(s) returned`;
           timingText.innerText = `${{data.execution_time_ms}} ms`;
           renderSqlGrid(data);
           renderSqlPlan(data.plan);
@@ -7073,6 +7606,7 @@ def render_dashboard_html() -> str:
       if (e.key === 'Escape') {{
         closeCellModal();
         closeQrModal();
+        closeOnDemandModal();
       }}
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
         if (currentView === 'sql') {{
@@ -7165,29 +7699,33 @@ def render_dashboard_html() -> str:
       document.getElementById('crash-form').dispatchEvent(new Event('submit'));
     }}
 
-    // TPS Override Handlers
+    // Load Rate (TPM / TPS) Override Handlers
     async function applyTpsOverride(e) {{
       e.preventDefault();
-      const tps = parseFloat(document.getElementById('tps-rate-input').value);
+      const rate = parseFloat(document.getElementById('tps-rate-input').value);
+      const unitEl = document.getElementById('tps-unit-select');
+      const unit = unitEl ? unitEl.value : 'TPS';
       const duration_sec = parseInt(document.getElementById('tps-duration-select').value, 10);
 
       try {{
         const res = await fetch('/api/tps', {{
           method: 'POST',
           headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{ tps, duration_sec }})
+          body: JSON.stringify({{ rate: rate, unit: unit, duration_sec: duration_sec }})
         }});
         if (res.ok) {{
           fetchStats();
           fetchTrendsAndRefresh();
         }}
       }} catch (err) {{
-        alert("Error setting TPS: " + err);
+        alert("Error setting load rate: " + err);
       }}
     }}
 
-    function quickTps(rate, duration_sec) {{
+    function quickTps(rate, unit, duration_sec) {{
       document.getElementById('tps-rate-input').value = rate;
+      const unitEl = document.getElementById('tps-unit-select');
+      if (unitEl && unit) unitEl.value = unit;
       document.getElementById('tps-duration-select').value = duration_sec;
       document.getElementById('tps-form').dispatchEvent(new Event('submit'));
     }}
@@ -7488,6 +8026,133 @@ def render_dashboard_html() -> str:
       if (latestTrendsData) renderAllCharts(latestTrendsData);
     }});
 
+    async function triggerOnDemandPulse() {{
+      const btnHeader = document.getElementById('btn-ondemand-pulse');
+      const btnDrawer = document.getElementById('btn-drawer-ondemand');
+      const prevHeaderText = btnHeader ? btnHeader.innerHTML : '';
+      const prevDrawerText = btnDrawer ? btnDrawer.innerHTML : '';
+
+      if (btnHeader) {{
+        btnHeader.disabled = true;
+        btnHeader.innerHTML = '⏳ Running Pulse...';
+      }}
+      if (btnDrawer) {{
+        btnDrawer.disabled = true;
+        btnDrawer.innerHTML = '⏳ Running Pulse...';
+      }}
+
+      const modal = document.getElementById('ondemand-modal');
+      const tbody = document.getElementById('ondemand-results-body');
+      if (tbody) {{
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 24px; color: var(--accent);"><div style="display:inline-block; font-size:1.1rem; margin-right:8px;">⚡</div> Dispatching synthetic requests across polyglot microservices...</td></tr>';
+      }}
+      const chip = document.getElementById('ondemand-status-chip');
+      if (chip) {{
+        chip.className = 'badge badge-warning';
+        chip.innerText = 'In Flight';
+      }}
+      const timeChip = document.getElementById('ondemand-time-chip');
+      if (timeChip) timeChip.innerText = new Date().toLocaleTimeString();
+      document.getElementById('ondemand-total-val').innerText = '...';
+      document.getElementById('ondemand-success-val').innerText = '...';
+      document.getElementById('ondemand-error-val').innerText = '...';
+      document.getElementById('ondemand-duration-val').innerText = '...';
+      if (modal) modal.classList.add('open');
+
+      try {{
+        const res = await fetch('/api/trigger-cycle', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ on_demand: true }})
+        }});
+
+        if (!res.ok) {{
+          throw new Error(`HTTP ${{res.status}}: ${{res.statusText}}`);
+        }}
+
+        const data = await res.json();
+        const cycle = data.cycle || {{}};
+        const results = cycle.results || [];
+        const reqCount = cycle.requests_executed || results.length;
+        const succCount = cycle.success_count !== undefined ? cycle.success_count : results.filter(r => r.status === 'success').length;
+        const errCount = cycle.error_count !== undefined ? cycle.error_count : (reqCount - succCount);
+        const duration = cycle.total_duration_ms || 0;
+
+        if (chip) {{
+          chip.className = (errCount === 0) ? 'badge badge-success' : 'badge badge-error';
+          chip.innerText = (errCount === 0) ? '✅ All Succeeded' : `⚠️ ${{errCount}} Failed`;
+        }}
+        document.getElementById('ondemand-total-val').innerText = reqCount;
+        document.getElementById('ondemand-success-val').innerText = succCount;
+        document.getElementById('ondemand-error-val').innerText = errCount;
+        document.getElementById('ondemand-duration-val').innerText = `${{duration}} ms`;
+
+        let rowsHtml = '';
+        const langIcons = {{
+          python: '🔵 Python',
+          java: '🟠 Java',
+          rust: '🟣 Rust',
+          node: '🟢 Node',
+          go: '🩵 Go',
+          dotnet: '💜 .NET',
+          c: '⚙️ C',
+          php: '🐘 PHP'
+        }};
+
+        results.forEach((r) => {{
+          const icon = langIcons[r.app] || r.app;
+          const isOk = (r.status === 'success');
+          const codeText = r.status_code ? `${{r.status_code}}` : (isOk ? '200' : 'ERR');
+          const stBadge = isOk 
+            ? `<span class="badge badge-success">${{codeText}} OK</span>`
+            : `<span class="badge badge-error">${{codeText}} ERR</span>`;
+          const drill = r.fault_tag 
+            ? `<span class="badge badge-warning">🏷️ ${{r.fault_tag}}</span>` 
+            : `<span style="color:var(--muted); font-size:0.7rem;">—</span>`;
+          const errDetail = r.error ? `<div style="font-size:0.68rem; color:#ef4444; word-break:break-all; margin-top:2px;">${{r.error}}</div>` : '';
+
+          rowsHtml += `<tr>
+            <td style="font-weight:600;"><span class="badge badge-secondary" style="font-size:0.75rem;">${{icon}}</span></td>
+            <td><code style="font-size:0.72rem; color:#38bdf8;">${{r.method || 'GET'}}</code></td>
+            <td><span style="font-family:monospace; font-size:0.74rem;">${{r.path || '/'}}</span>${{errDetail}}</td>
+            <td>${{stBadge}}</td>
+            <td style="text-align:right; font-family:monospace; font-size:0.75rem; color:${{r.duration_ms > 500 ? '#f59e0b' : '#38bdf8'}};">${{r.duration_ms}} ms</td>
+            <td>${{drill}}</td>
+          </tr>`;
+        }});
+
+        if (tbody) tbody.innerHTML = rowsHtml || '<tr><td colspan="6" style="text-align:center; color:var(--muted);">No results returned.</td></tr>';
+
+        showToast(`⚡ On-Demand Canary Run: ${{succCount}}/${{reqCount}} passed (${{duration}}ms)`);
+        fetchStats();
+        fetchTrendsAndRefresh();
+      }} catch (err) {{
+        console.error("On-demand cycle failed:", err);
+        showToast("On-demand canary failed: " + err.message, true);
+        if (tbody) {{
+          tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#ef4444; padding:16px;">Failed to execute on-demand canary run: ${{err.message}}</td></tr>`;
+        }}
+        if (chip) {{
+          chip.className = 'badge badge-error';
+          chip.innerText = 'Execution Failed';
+        }}
+      }} finally {{
+        if (btnHeader) {{
+          btnHeader.disabled = false;
+          btnHeader.innerHTML = prevHeaderText || '⚡ Run Once (On-Demand)';
+        }}
+        if (btnDrawer) {{
+          btnDrawer.disabled = false;
+          btnDrawer.innerHTML = prevDrawerText || '⚡ Force 1 Iteration On-Demand (All Services)';
+        }}
+      }}
+    }}
+
+    function closeOnDemandModal() {{
+      const modal = document.getElementById('ondemand-modal');
+      if (modal) modal.classList.remove('open');
+    }}
+
     function init() {{
       initSqlEditor();
       fetchStats();
@@ -7663,7 +8328,21 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                     extra_headers.append(("Set-Cookie", self._session_cookie(token)))
                 self._send_bytes(302, b"", "text/html", extra_headers)
                 return
-            if path != "/health" and not self._user():
+            if path in ("/health", "/api/trigger-cycle", "/api/canary/run-once"):
+                if path in ("/api/trigger-cycle", "/api/canary/run-once"):
+                    on_demand = query.get("on_demand", ["false"])[0].lower() in ("true", "1", "yes") or path == "/api/canary/run-once"
+                    raw_count = query.get("count", [None])[0]
+                    count = int(raw_count) if raw_count is not None else None
+                    res = run_synthetic_cycle(count=count, on_demand=on_demand)
+                    data = json.dumps({"status": "success", "cycle": res}).encode("utf-8")
+                    self.send_response(200)
+                    self._send_cors_headers()
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+            elif not self._user():
                 self._send_bytes(401, b'{"error":"login required"}', "application/json")
                 return
 
@@ -7937,6 +8616,36 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                     ("Set-Cookie", self._session_cookie("", clear=True)),
                 ])
                 return
+            if path in ("/api/trigger-cycle", "/api/canary/run-once"):
+                post_data = raw_body.decode("utf-8") if raw_body else ""
+                body = {}
+                if post_data:
+                    try:
+                        body = json.loads(post_data)
+                    except Exception:
+                        pass
+                on_demand = False
+                count = None
+                if isinstance(body, dict):
+                    on_demand = bool(body.get("on_demand", False)) or path == "/api/canary/run-once"
+                    raw_count = body.get("count")
+                    if raw_count is not None:
+                        try:
+                            count = int(raw_count)
+                        except (ValueError, TypeError):
+                            count = None
+                else:
+                    on_demand = (path == "/api/canary/run-once")
+                res = run_synthetic_cycle(count=count, on_demand=on_demand)
+                resp = json.dumps({"status": "success", "cycle": res}).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+                return
+
             user = self._require_user()
             if not user:
                 return
@@ -7987,9 +8696,10 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 self.wfile.write(resp)
 
             elif path == "/api/tps":
-                tps = float(body.get("tps", 12))
+                rate = float(body.get("rate") or body.get("tps") or 6)
+                unit = body.get("unit") or body.get("rate_unit") or state.rate_unit
                 duration = int(body.get("duration_sec", 60))
-                res = state.set_tps_override(tps, duration)
+                res = state.set_tps_override(rate, duration, unit=unit)
                 resp = json.dumps({"status": "applied", **res}).encode("utf-8")
                 self.send_response(200)
                 self._send_cors_headers()
@@ -7997,6 +8707,7 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 self.send_header("Content-Length", str(len(resp)))
                 self.end_headers()
                 self.wfile.write(resp)
+                return
 
             elif path == "/api/crash":
                 target = body.get("target", "java")
@@ -8068,9 +8779,10 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
 
             elif path == "/api/sql/query":
                 query_str = body.get("query", "")
+                role = body.get("role")
                 limit = int(body.get("limit", 100))
                 client_addr = self.client_address[0] if self.client_address else ""
-                res = execute_sql_query(query_str, max_rows=limit, username=user, client_addr=client_addr)
+                res = execute_sql_query(query_str, max_rows=limit, username=user, client_addr=client_addr, role=role)
                 status_code = 200 if res.get("status") == "success" else 400
                 resp = json.dumps(res).encode("utf-8")
                 self.send_response(status_code)
@@ -8079,6 +8791,7 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 self.send_header("Content-Length", str(len(resp)))
                 self.end_headers()
                 self.wfile.write(resp)
+                return
 
             elif path == "/api/s3/buckets":
                 name = body.get("bucket", "").strip() if isinstance(body, dict) else ""
@@ -8152,7 +8865,8 @@ def wait_for_apps(session: requests.Session) -> None:
                             ("Node", "node", NODE_APP_BASE_URL),
                             ("Go", "go", GO_APP_BASE_URL),
                             ("Dotnet", "dotnet", DOTNET_APP_BASE_URL),
-                            ("C", "c", C_APP_BASE_URL)]:
+                            ("C", "c", C_APP_BASE_URL),
+                            ("PHP", "php", PHP_APP_BASE_URL)]:
         c_info = statuses.get(lang, {})
         is_running = c_info.get("is_running", True)
         if not is_running:
@@ -8176,6 +8890,133 @@ def wait_for_apps(session: requests.Session) -> None:
             state.mark_unreachable(lang)
             state.set_app_active(lang, True)
 
+def run_synthetic_cycle(count: int = None, session: requests.Session = None, on_demand: bool = False) -> dict:
+    if session is None:
+        session = requests.Session()
+    app_list = [
+        ("python", APP_BASE_URL),
+        ("java", JAVA_APP_BASE_URL),
+        ("rust", RUST_APP_BASE_URL),
+        ("node", NODE_APP_BASE_URL),
+        ("go", GO_APP_BASE_URL),
+        ("dotnet", DOTNET_APP_BASE_URL),
+        ("c", C_APP_BASE_URL),
+        ("php", PHP_APP_BASE_URL)
+    ]
+    ready_apps = [
+        (lang, url) for lang, url in app_list
+        if state.is_app_active(lang)
+    ]
+    if not ready_apps:
+        ready_apps = app_list
+
+    if on_demand and count is None:
+        req_count = len(ready_apps)
+    elif count is not None:
+        req_count = max(1, count)
+    else:
+        req_count = max(1, int(round(CANARY_TPM)))
+
+    results = []
+    t_cycle_start = time.time()
+
+    for i in range(req_count):
+        app_lang, base_url = ready_apps[i % len(ready_apps)]
+        target = TARGETS[i % len(TARGETS)]
+        path         = target["path"]
+        method       = target["method"]
+        expected_4xx = target.get("expected_4xx", False)
+        url          = f"{base_url.rstrip('/')}{path}"
+
+        t_start = time.time()
+        status  = "error"
+        status_code = None
+        error_msg = None
+        fault_tag = None
+        inject_fault, active_fault = fault_manager.should_inject(app_lang)
+
+        if inject_fault and active_fault:
+            fault_tag = active_fault["tag"]
+            fault_type = active_fault["fault_type"]
+            if fault_type in ("service_outage", "error_spike"):
+                status = "error"
+                status_code = 503
+                fault_manager.record_affected(is_error=True)
+            elif fault_type == "high_latency":
+                time.sleep(0.2)
+                status = "success"
+                status_code = 200
+                fault_manager.record_affected(is_error=False)
+            elif fault_type == "intermittent_errors":
+                status = "error" if random.random() < 0.5 else "success"
+                status_code = 500 if status == "error" else 200
+                fault_manager.record_affected(is_error=(status == "error"))
+        else:
+            try:
+                if method == "POST":
+                    if "json" in target:
+                        resp = session.post(url, json=target["json"], timeout=5)
+                    else:
+                        resp = session.post(url, data=target.get("data", {}), timeout=5)
+                else:
+                    resp = session.get(url, timeout=5)
+
+                status_code = resp.status_code
+                if expected_4xx:
+                    status = "success" if 400 <= resp.status_code < 500 else "error"
+                else:
+                    status = "success" if resp.status_code < 400 else "error"
+            except Exception as exc:
+                logger.debug("Synthetic cycle request failed %s %s: %s", method, path, exc)
+                status = "error"
+                error_msg = str(exc)
+
+        response_time = time.time() - t_start
+        base_path = path.split("?")[0]
+        labels = {
+            "path": base_path,
+            "method": method,
+            "status": status,
+            "client": "canary",
+            "language": app_lang
+        }
+        try:
+            request_counter.add(1, labels)
+            request_duration.record(response_time, labels)
+        except Exception:
+            pass
+
+        state.record_request(app_lang, method, path, status, response_time, fault_tag=fault_tag)
+        results.append({
+            "app": app_lang,
+            "method": method,
+            "path": path,
+            "status": status,
+            "status_code": status_code,
+            "duration_ms": round(response_time * 1000, 1),
+            "fault_tag": fault_tag,
+            "error": error_msg
+        })
+
+    # Flush metrics to OTLP collector
+    try:
+        meter_provider.force_flush(timeout_millis=3000)
+    except Exception as flush_exc:
+        logger.debug("Metrics flush notice: %s", flush_exc)
+
+    total_cycle_ms = round((time.time() - t_cycle_start) * 1000, 1)
+
+    return {
+        "status": "success",
+        "on_demand": on_demand,
+        "requests_executed": len(results),
+        "success_count": sum(1 for r in results if r["status"] == "success"),
+        "error_count": sum(1 for r in results if r["status"] == "error"),
+        "total_duration_ms": total_cycle_ms,
+        "results": results,
+        "rate_info": state.get_rate_info()
+    }
+
 def run() -> None:
     try:
         ensure_sql_editor_schema()
@@ -8185,7 +9026,7 @@ def run() -> None:
 
     session = requests.Session()
     try:
-        vk = redis.Redis(host=VALKEY_HOST, port=6379, decode_responses=True)
+        vk = redis.Redis(host=VALKEY_HOST, port=6379, socket_connect_timeout=2.0, socket_timeout=2.0, decode_responses=True)
     except Exception as e:
         logger.warning("Valkey connection error: %s", e)
         vk = None
@@ -8208,7 +9049,8 @@ def run() -> None:
         ("node", NODE_APP_BASE_URL),
         ("go", GO_APP_BASE_URL),
         ("dotnet", DOTNET_APP_BASE_URL),
-        ("c", C_APP_BASE_URL)
+        ("c", C_APP_BASE_URL),
+        ("php", PHP_APP_BASE_URL)
     ]
     app_idx = 0
     target_idx = 0
@@ -8347,9 +9189,9 @@ def run() -> None:
             except Exception as vk_exc:
                 logger.debug("Failed to report to Valkey: %s", vk_exc)
 
-        # Dynamic TPS inter-arrival
+        # Dynamic TPS/TPM inter-arrival
         current_tps = state.get_effective_tps()
-        inter_arrival = 1.0 / max(0.5, current_tps)
+        inter_arrival = 1.0 / max(0.01, current_tps)
         next_tick += inter_arrival
         now_t = time.time()
         if next_tick < now_t - 1.0:

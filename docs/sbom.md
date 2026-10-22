@@ -17,6 +17,7 @@ The machine-readable CycloneDX 1.5 standard SBOM is maintained at [`sbom/sbom-cy
 | **`observability-go-app`** | Application | 1.0.1 | Go 1.22 / net/http | BSD-3-Clause | `pkg:golang/github.com/observability-demo/go-app@1.0.1` | Concurrent Goroutine service, standard library minimalism, Go OTel SDK |
 | **`observability-dotnet-app`** | Application | 1.0.1 | .NET 8.0 / C# Minimal API | MIT | `pkg:nuget/ObservabilityDotnetApp@1.0.1` | Modern Linux containerized C# service, Kestrel engine, .NET OTel SDK |
 | **`observability-c-app`** | Application | 1.0.1 | POSIX C99 / pthreads / libpq | MIT | `pkg:generic/observability-c-app@1.0.1` | Pure C socket microservice, zero external framework, raw memory efficiency |
+| **`observability-php-app`** | Application | 1.0.1 | PHP 8.3 CLI / PDO pgsql | MIT | `pkg:generic/observability-php-app@1.0.1` | Lightweight PHP microservice, built-in multi-worker server, zero third-party dependencies |
 | **`observability-canary`** | Application | 1.0.1 | Python 3.11 / Canvas / Docker API | MIT | `pkg:docker/observability-canary@1.0.1` | Synthetic load generator, Chaos Fault Injection, Docker power manager, SQL data grid |
 | **`canary-observability-mobile`** | Application | 1.0.0 | React Native 0.74 / Expo 51 | MIT | `pkg:npm/canary-observability-mobile@1.0.0` | Cross-platform mobile/desktop client for Android, iOS, Windows, and Web |
 | **`postgres`** | Container | 18.6 | PostgreSQL Relational DB | PostgreSQL | `pkg:docker/postgres@18.6` | Relational audit log persistence, transactional integrity, JSONB metadata |
@@ -115,7 +116,17 @@ The machine-readable CycloneDX 1.5 standard SBOM is maintained at [`sbom/sbom-cy
 
 ---
 
-### 8. Canary Load Generator, Fault Injector & Operations Center (`observability-canary`)
+### 8. PHP Microservice (`observability-php-app`)
+* **How It Was Implemented**:
+  * Implemented in modern **PHP 8.3** utilizing the built-in multi-worker CLI server (`PHP_CLI_SERVER_WORKERS=4`) with zero external composer package dependencies.
+  * Features a recursive-descent mathematical parser, recursive Fibonacci, PostgreSQL persistence via native `PDO_PGSQL`, and OpenTelemetry OTLP HTTP/JSON telemetry exporter.
+  * Integrates seamlessly with AWS Lambda Web Adapter for sub-100ms cold starts on Graviton MicroVMs.
+* **Where the Inspiration Was From**:
+  * **Rasmus Lerdorf & Nikita Popov**: The practical elegance of PHP's request-per-worker model, raw execution speed in modern PHP 8.x JIT/OPcache, and serverless PHP architectures (Bref, AWS Lambda Web Adapter).
+
+---
+
+### 9. Canary Load Generator, Fault Injector & Operations Center (`observability-canary`)
 * **How It Was Implemented**:
   * Implemented in Python 3.11 with Python's standard library `HTTPServer`, multi-threading, and non-blocking sockets.
   * **Container Power Management**: Connects directly to the Docker Engine daemon over the Unix domain socket `/var/run/docker.sock` using standard library `http.client.HTTPConnection`. Shuts down, starts, and restarts unique language containers on demand, automatically adjusting synthetic traffic loops to prevent false failure alarms.
@@ -130,7 +141,7 @@ The machine-readable CycloneDX 1.5 standard SBOM is maintained at [`sbom/sbom-cy
 
 ---
 
-### 9. Cross-Platform Mobile Client (`canary-observability-mobile`)
+### 10. Cross-Platform Mobile Client (`canary-observability-mobile`)
 * **How It Was Implemented**:
   * Built using **React Native 0.74** and **Expo 51** with responsive Flexbox design.
   * Supports simultaneous deployment to **Android**, **iOS**, **Windows (React Native for Windows)**, and **Web**.

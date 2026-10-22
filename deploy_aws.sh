@@ -50,6 +50,10 @@ check_prereqs() {
     exit 1
   fi
 
+  if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+    eval $(aws configure export-credentials --format env 2>/dev/null || true)
+  fi
+
   # Auto-export credentials if using AWS CLI v2 login session
   eval $(aws configure export-credentials --format env 2>/dev/null || true)
 }
@@ -78,6 +82,7 @@ SERVICES=(
   "observability-go-app:go-app/Dockerfile"
   "observability-dotnet-app:dotnet-app/Dockerfile"
   "observability-c-app:c-app/Dockerfile"
+  "observability-php-app:php-app/Dockerfile"
   "observability-canary:canary/Dockerfile"
   "custom-telemetry-receiver:telemetry-receiver/Dockerfile"
 )
@@ -175,6 +180,7 @@ cmd_deploy() {
     "observability-go-app:observability-go-app"
     "observability-dotnet-app:observability-dotnet-app"
     "observability-c-app:observability-c-app"
+    "observability-php-app:observability-php-app"
     "observability-canary:observability-canary-dashboard"
     "custom-telemetry-receiver:observability-telemetry-collector"
   )
@@ -251,6 +257,7 @@ Available Services:
   - observability-go-app
   - observability-dotnet-app
   - observability-c-app
+  - observability-php-app
   - observability-canary
   - custom-telemetry-receiver
   - all (default)

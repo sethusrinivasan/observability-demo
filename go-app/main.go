@@ -59,12 +59,20 @@ func initDb() (*sql.DB, error) {
 	pgDB := getEnv("POSTGRES_DB", "observability")
 	pgUser := getEnv("POSTGRES_USER", "observability")
 	pgPass := getEnv("POSTGRES_PASSWORD", "observability")
+	sslMode := getEnv("POSTGRES_SSLMODE", "disable")
 
-	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable connect_timeout=5",
-		pgHost, pgPort, pgUser, pgPass, pgDB)
+	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=5",
+		pgHost, pgPort, pgUser, pgPass, pgDB, sslMode)
 
 	databaseUrl := os.Getenv("DATABASE_URL")
 	if databaseUrl != "" {
+		if !strings.Contains(databaseUrl, "sslmode=") {
+			sep := "?"
+			if strings.Contains(databaseUrl, "?") {
+				sep = "&"
+			}
+			databaseUrl += sep + "sslmode=" + sslMode
+		}
 		connStr = databaseUrl
 	}
 

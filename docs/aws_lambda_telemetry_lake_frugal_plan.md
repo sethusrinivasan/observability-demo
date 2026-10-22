@@ -1,5 +1,11 @@
 # Ultra-Frugal AWS Lambda MicroVM & Custom Telemetry Lake Architecture Plan
 
+> [!WARNING]
+> **AWS Cloud Usage & Cost Disclaimer**:
+> Deploying this infrastructure provisions live AWS cloud resources (Amazon S3, AWS Lambda, Amazon ECR, EventBridge, and PostgreSQL database connections). Running services in AWS incurs real billable charges ($$) based on your account usage, existing infrastructure, and traffic volume.
+>
+> **Important Note**: All cost estimates, tier calculations, and price breakdowns provided in this plan are **illustrative examples and benchmarks only**. Pricing varies by AWS region, transaction volume, database sizing, and individual billing tiers. **Anyone adopting, testing, or deploying this solution must independently evaluate their own infrastructure requirements, monitor their AWS Cost Explorer / billing console, and retest with their own traffic patterns to determine their exact numbers.**
+
 This plan outlines the end-to-end architecture, cost breakdown, and deployment roadmap to host the **Observability Demo** polyglot microservices in **AWS Lambda Firecracker MicroVMs** at the lowest tier (**128 MB RAM** on **AWS Graviton `arm64`**), sharing an existing **Aurora Serverless DB**, utilizing our **custom high-throughput telemetry collector**, and storing compacted Parquet files in **Amazon S3** with **DuckDB serverless analytics**.
 
 ---

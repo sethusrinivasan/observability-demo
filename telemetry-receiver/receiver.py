@@ -413,24 +413,28 @@ def parse_telemetry_request(telemetry_type):
 
 # API Endpoints
 @app.route("/v1/traces", methods=["POST"])
+@app.route("//v1/traces", methods=["POST"])
 def ingest_traces():
     events = parse_telemetry_request("trace")
     q_len = compactor.enqueue_events(events)
     return jsonify({"status": "accepted", "queued_events": q_len}), 200
 
 @app.route("/v1/metrics", methods=["POST"])
+@app.route("//v1/metrics", methods=["POST"])
 def ingest_metrics():
     events = parse_telemetry_request("metric")
     q_len = compactor.enqueue_events(events)
     return jsonify({"status": "accepted", "queued_events": q_len}), 200
 
 @app.route("/v1/logs", methods=["POST"])
+@app.route("//v1/logs", methods=["POST"])
 def ingest_logs():
     events = parse_telemetry_request("log")
     q_len = compactor.enqueue_events(events)
     return jsonify({"status": "accepted", "queued_events": q_len}), 200
 
 @app.route("/v1/telemetry", methods=["POST"])
+@app.route("//v1/telemetry", methods=["POST"])
 def ingest_generic():
     events = parse_telemetry_request("generic")
     q_len = compactor.enqueue_events(events)

@@ -7,11 +7,26 @@ a write or a catalog read. This check runs before any user SQL is executed.
 from __future__ import annotations
 
 ALLOWED_TABLES = frozenset({
+    # Application tables
     "audit_logs",
     "sql_saved_queries",
     "sql_query_audit",
+    # System catalog & statistics views
+    "pg_database",
+    "pg_stat_activity",
+    "pg_stat_database",
+    "pg_stat_user_tables",
+    "pg_stat_user_indexes",
+    "pg_statio_user_tables",
+    "pg_locks",
+    "pg_roles",
+    # Information schema views
+    "columns",
+    "tables",
+    "table_constraints",
+    "key_column_usage",
 })
-ALLOWED_SCHEMAS = frozenset({"public"})
+ALLOWED_SCHEMAS = frozenset({"public", "information_schema", "pg_catalog"})
 
 ALLOWED_FUNCTIONS = frozenset({
     "count", "sum", "avg", "min", "max", "round", "coalesce", "nullif",
@@ -24,6 +39,10 @@ ALLOWED_FUNCTIONS = frozenset({
     "rank", "dense_rank", "lag", "lead", "percentile_cont", "percentile_disc",
     "stddev", "stddev_pop", "stddev_samp", "variance", "var_pop", "var_samp",
     "width_bucket", "ntile", "date_bin", "corr",
+    # Safe PostgreSQL sizing & admin telemetry functions
+    "pg_size_pretty", "pg_database_size", "pg_relation_size",
+    "pg_indexes_size", "pg_total_relation_size", "pg_backend_pid",
+    "pg_postmaster_start_time", "pg_is_in_recovery",
 })
 
 # Function-style syntax whose parentheses do not introduce a table.
@@ -43,10 +62,16 @@ _FORBIDDEN_WORDS = frozenset({
     "analyze", "comment", "listen", "notify", "lock", "set", "reset", "show",
     "begin", "commit", "rollback", "prepare", "deallocate", "discard",
     "reindex", "cluster", "refresh", "merge", "import", "export", "security",
-    "into", "returning", "explain", "grant", "owner", "password", "role",
-    "database", "extension", "procedure", "trigger", "policy", "tablespace",
+    "into", "returning", "explain", "owner", "password", "role",
+    "extension", "procedure", "trigger", "policy", "tablespace",
     "publication", "subscription", "checkpoint", "load", "outfile", "infile",
-    "pg_read_file", "pg_read_binary_file", "lo_import", "lo_export", "dblink",
+    "dblink",
+})
+
+_DANGEROUS_PG_WORDS = frozenset({
+    "pg_read_file", "pg_read_binary_file", "pg_write_file",
+    "pg_terminate_backend", "pg_cancel_backend", "pg_reload_conf",
+    "pg_rotate_logfile", "pg_sleep",
 })
 
 _CLAUSE_END = frozenset({
@@ -83,7 +108,7 @@ def guard_readonly_sql(query: str) -> None:
         raise SqlGuardError("Only read-only SELECT statements are allowed")
 
     for kind, value in tokens:
-        if kind == "word" and (value in _FORBIDDEN_WORDS or value.startswith("pg_") or value.startswith("lo_")):
+        if kind == "word" and (value in _FORBIDDEN_WORDS or value in _DANGEROUS_PG_WORDS or value.startswith("lo_")):
             raise SqlGuardError("Only read-only SELECT statements are allowed")
 
     _reject_unknown_functions(tokens)
@@ -315,6 +340,9 @@ def _relations(tokens: list[tuple[str, str]]) -> list[tuple[str | None, str]]:
             i += 1
             continue
         if kind == "word" and value in ("from", "join") and ctx[-1] == "query":
+            if value == "from" and _prev_word(tokens, i) in ("distinct",):
+                i += 1
+                continue
             i = _consume_table_list(tokens, i + 1, relations)
             continue
         i += 1

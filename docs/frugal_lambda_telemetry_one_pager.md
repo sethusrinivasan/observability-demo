@@ -66,6 +66,9 @@ flowchart LR
 
 ## 4. Frugality Cost Model: Monthly Bill Breakdown
 
+> [!WARNING]
+> **AWS Cost Advisory**: All figures below represent an illustrative engineering estimate and benchmark. Deploying to AWS provisions live infrastructure and incurs real billable costs ($$). Users must independently evaluate their own account requirements, billing tiers, and traffic patterns.
+
 | Line Item | Resource / Metric | Unit Pricing | Estimated Monthly Cost |
 | :--- | :--- | :--- | :--- |
 | **Lambda Invocations** | 5,000,000 requests | 1M free, then $0.20/1M | **$0.80** |

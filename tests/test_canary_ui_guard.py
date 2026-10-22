@@ -206,13 +206,13 @@ global.confirm = () => true;
 
 
 def test_duckdb_query_editor_text_visibility(dashboard_html):
-    """Guard 7: Ensure Telemetry View query editor textarea text is visible (not transparent)."""
+    """Guard 7: Ensure Telemetry View query editor has syntax highlighting, cancellation, and role support."""
     assert 'id="duckdb-query-input"' in dashboard_html
-    assert 'class="sql-textarea duckdb-textarea"' in dashboard_html or 'class="duckdb-textarea"' in dashboard_html
-
-    # Ensure CSS defines explicit visible text color rather than inheriting color: transparent
-    assert ".duckdb-textarea" in dashboard_html
-    assert "color: #f8fafc !important" in dashboard_html or "color:#f8fafc !important" in dashboard_html
+    assert 'id="duckdb-highlight"' in dashboard_html
+    assert 'id="duckdb-cancel-btn"' in dashboard_html
+    assert 'id="sql-role-select"' in dashboard_html
+    assert 'observability_reader' in dashboard_html
+    assert 'observability_admin' in dashboard_html
 
 
 def test_dashboard_telemetry_target_pipeline_strip(dashboard_html):

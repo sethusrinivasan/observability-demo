@@ -193,6 +193,7 @@ docker build -t observability-node-app:latest ./node-app
 docker build -t observability-go-app:latest ./go-app
 docker build -t observability-dotnet-app:latest ./dotnet-app
 docker build -t observability-c-app:latest ./c-app
+docker build -t observability-php-app:latest ./php-app
 echo "  ✓ All images built"
 
 # ---------------------------------------------------------------------------
@@ -208,6 +209,7 @@ kind load docker-image observability-node-app:latest    --name "$CLUSTER_NAME"
 kind load docker-image observability-go-app:latest      --name "$CLUSTER_NAME"
 kind load docker-image observability-dotnet-app:latest  --name "$CLUSTER_NAME"
 kind load docker-image observability-c-app:latest       --name "$CLUSTER_NAME"
+kind load docker-image observability-php-app:latest     --name "$CLUSTER_NAME"
 echo "  ✓ Images loaded"
 
 # ---------------------------------------------------------------------------
@@ -277,6 +279,7 @@ wait_for_deployment observability-node-app   120
 wait_for_deployment observability-go-app     120
 wait_for_deployment observability-dotnet-app 120
 wait_for_deployment observability-c-app      120
+wait_for_deployment observability-php-app    120
 
 # ---------------------------------------------------------------------------
 # Step 8: Summary

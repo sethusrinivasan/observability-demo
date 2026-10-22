@@ -2,7 +2,8 @@
 
 <div align="center">
 
-[![Live Showcase](https://img.shields.io/badge/Live%20Showcase-Online%20Demo-00C7B7?style=for-the-badge&logo=cloudflare&logoColor=white)](https://volume-investigation-knife-pros.trycloudflare.com)
+[![Live Cloudflare Showcase](https://img.shields.io/badge/Live%20Showcase-Cloudflare%20Tunnel-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://volume-investigation-knife-pros.trycloudflare.com)
+[![Live AWS Deployment](https://img.shields.io/badge/Live%20AWS-Graviton%20MicroVMs-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws/)
 [![Live Verification](https://img.shields.io/github/actions/workflow/status/sethusrinivasan/observability-demo/live-verification.yml?branch=main&label=Live%20Tests&style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/sethusrinivasan/observability-demo/actions/workflows/live-verification.yml)
 [![Built with Google Antigravity](https://img.shields.io/badge/Built%20with-Google%20Antigravity-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://deepmind.google/technologies/)
 [![AI Assisted: Gemini](https://img.shields.io/badge/AI%20Assisted-Gemini%20CLI-8E75C4?style=for-the-badge&logo=google-gemini&logoColor=white)](https://deepmind.google/technologies/gemini/)
@@ -16,6 +17,7 @@
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
 [![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?style=for-the-badge&logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![C](https://img.shields.io/badge/C-POSIX%20C99-A8B9CC?style=for-the-badge&logo=c&logoColor=white)](https://en.wikipedia.org/wiki/C_(programming_language))
+[![PHP](https://img.shields.io/badge/PHP-8.3-777BB4?style=for-the-badge&logo=php&logoColor=white)](https://www.php.net/)
 
 <br/>
 
@@ -27,9 +29,9 @@
 
 ---
 
-An end-to-end polyglot observability playground demonstrating production-grade telemetry across **Python (Flask)**, **Java (Spring Boot)**, **Rust (Axum)**, **Node.js (Express)**, **Go (net/http)**, **C# .NET (ASP.NET Core)**, and **C (POSIX C99)** microservices. Telemetry (traces, metrics, logs) is collected via OpenTelemetry Collector and exported to the **Grafana LGTM stack** (Loki, Grafana, Tempo, Mimir), alongside a PostgreSQL audit layer and an interactive synthetic **Canary Traffic & Fault Injection Dashboard**.
+An end-to-end polyglot observability playground demonstrating production-grade telemetry across **Python (Flask)**, **Java (Spring Boot)**, **Rust (Axum)**, **Node.js (Express)**, **Go (net/http)**, **C# .NET (ASP.NET Core)**, **C (POSIX C99)**, and **PHP (CLI Server)** microservices. Telemetry (traces, metrics, logs) is collected via OpenTelemetry Collector and exported to the **Grafana LGTM stack** (Loki, Grafana, Tempo, Mimir), alongside a PostgreSQL audit layer and an interactive synthetic **Canary Traffic & Fault Injection Dashboard**.
 
-Deployable locally via **Docker Compose** or **Kubernetes (Kind)**.
+Deployable locally via **Docker Compose** or **Kubernetes (Kind)**, and to AWS via **Terraform-managed Graviton MicroVMs & S3 Telemetry Lake**.
 
 ---
 
@@ -49,10 +51,16 @@ Consolidated distributed tracing (Tempo), metrics (Mimir/Prometheus), logs (Loki
 
 ## Ultra-Frugal AWS Lambda MicroVM & Telemetry Lake Deployment
 
-The entire polyglot stack can be deployed to **AWS Lambda Firecracker MicroVMs** on **AWS Graviton (`arm64`)** with maximum frugality (**$0.00 on AWS Free Tier / < $4.00/month at scale**).
+> [!WARNING]
+> **AWS Cloud Usage & Cost Advisory**:
+> Deploying this infrastructure provisions live AWS cloud resources (Amazon S3, AWS Lambda, Amazon ECR, EventBridge rules, and database connections). While engineered for extreme frugality, **running services in AWS incurs billable charges ($$) based on your account usage, existing infrastructure, and traffic volume**.
+>
+> **Important Note**: All cost estimates, tier calculations, and price breakdowns provided in this repository are **illustrative examples and benchmarks only**. Pricing varies by AWS region, transaction volume, database sizing, and individual billing tiers. **Anyone adopting, testing, or deploying this solution must independently evaluate their own infrastructure requirements, monitor their AWS Cost Explorer / billing console, and retest with their own traffic patterns to determine their exact numbers.**
+
+The entire polyglot stack can be deployed to **AWS Lambda Firecracker MicroVMs** on **AWS Graviton (`arm64`)** with maximum frugality.
 
 ### Architectural Highlights
-- **128 MB Graviton MicroVMs**: All 7 services and the custom collector run in 128 MB MicroVMs using the AWS Lambda Web Adapter (LWA), leveraging the permanent monthly Free Tier of **400,000 GB-seconds** (3.2 million compute seconds free every month).
+- **128 MB Graviton MicroVMs**: All 8 polyglot services and the custom collector run in 128 MB MicroVMs using the AWS Lambda Web Adapter (LWA), leveraging the permanent monthly Free Tier of **400,000 GB-seconds** (3.2 million compute seconds free every month).
 - **Zero API Gateway Fees**: All ingress uses **Lambda Function URLs** with built-in HTTPS and CORS ($0.00).
 - **Shared Aurora Serverless**: Reuses your existing Aurora Serverless cluster via bounded connection pools (1–2 per MicroVM) without incurring new baseline costs.
 - **Custom S3 Parquet Lake**: Telemetry is buffered in `/tmp` and compacted into **>= 10 MB Snappy Parquet files** before uploading to S3, reducing S3 PUT API costs by **99.7%**.
@@ -66,43 +74,91 @@ The entire polyglot stack can be deployed to **AWS Lambda Firecracker MicroVMs**
 | **Canary Web Dashboard** | Lambda Web Adapter / Python 3.11 | [Canary Dashboard](https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws/) | `200 OK` (Green) |
 | **Telemetry Collector & Lake** | LWA / Snappy Parquet Compactor | [OTLP Ingest](https://67lv2o2bb26q6thqvfcep2re3i0sjrom.lambda-url.us-east-2.on.aws/) | `200 OK` (Green) |
 | **Python App** | 128 MB Graviton MicroVM / Flask | [Python App URL](https://2lwrbu2cc7bx7ay2ojapxsbqtq0andff.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **Go App** | 128 MB Graviton MicroVM / Go 1.25 | [Go App URL](https://vnh6kor267jkevye5uvvhcqfu40sffvo.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **Node.js App** | 128 MB Graviton MicroVM / Express | [Node App URL](https://7i7ewi4cvrpdzneou5qamrajsm0nwwkm.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **C App** | 128 MB Graviton MicroVM / POSIX C99 | [C App URL](https://daglnsziyvvlt572qmkzr2xmjm0unpef.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **.NET App** | 128 MB Graviton MicroVM / ASP.NET 8 | [.NET App URL](https://xppqo7vskzfjddbotn2mcaqgpe0wywzp.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **Rust App** | 128 MB Graviton MicroVM / Axum | [Rust App URL](https://rq6puxwjoxx2sp5eeg3g4duy4i0bdjzs.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
 | **Java App** | 1024 MB Graviton MicroVM / Spring Boot | [Java App URL](https://2sqsnt447ofmtmjkdpoo36itlm0tifhq.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Rust App** | 128 MB Graviton MicroVM / Axum | [Rust App URL](https://rq6puxwjoxx2sp5eeg3g4duy4i0bdjzs.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Node.js App** | 128 MB Graviton MicroVM / Express | [Node App URL](https://7i7ewi4cvrpdzneou5qamrajsm0nwwkm.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Go App** | 128 MB Graviton MicroVM / Go 1.25 | [Go App URL](https://vnh6kor267jkevye5uvvhcqfu40sffvo.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **.NET App** | 128 MB Graviton MicroVM / ASP.NET 8 | [.NET App URL](https://xppqo7vskzfjddbotn2mcaqgpe0wywzp.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **C App** | 128 MB Graviton MicroVM / POSIX C99 | [C App URL](https://daglnsziyvvlt572qmkzr2xmjm0unpef.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **PHP App** | 128 MB Graviton MicroVM / PHP 8.3 CLI | [PHP App URL](https://7izlc4ipjgw7uvgppjr7jiyymq0fxizg.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
 
-### One-Click AWS Deployment Script (`deploy_aws.sh`)
+### Deploying to AWS via Terraform & Automation Scripts
 
-Infrastructure is managed as code via **Terraform** (`terraform/`) and automated through the `./deploy_aws.sh` orchestration script:
+The entire cloud architecture is codified in **Terraform** (`terraform/`) and orchestrated via the `./deploy_aws.sh` CLI wrapper.
+
+#### Prerequisites
+- **AWS CLI v2** configured with active credentials (`aws sts get-caller-identity`).
+- **Terraform >= 1.5.0**.
+- **Docker** with `buildx` support enabled for multi-platform (`linux/arm64`) image compilation.
+
+#### Step-by-Step Deployment Guide
 
 ```bash
-# 1. Initialize Terraform
+# Set your target AWS region (defaults to us-east-2)
+export AWS_REGION="us-east-2"
+
+# 1. Initialize Terraform providers and state
 ./deploy_aws.sh init
 
-# 2. Review planned changes (enforces ApplicationName="Observability-Demo" tag)
+# 2. Review infrastructure execution plan
+# (Enforces mandatory ApplicationName="Observability-Demo" resource tag)
 ./deploy_aws.sh plan
 
-# 3. Provision S3 lake, ECR repos, IAM roles, and Lambda Function URLs
+# 3. Provision S3 telemetry lake, ECR repositories, IAM roles, and Lambda URLs
 ./deploy_aws.sh apply
 
-# 4. Build arm64 Graviton container images and push to Amazon ECR
-./deploy_aws.sh build-push all          # Build and push all 9 containers
-./deploy_aws.sh build-push observability-rust-app  # Or push a single service
+# 4. Build native Graviton arm64 container images and push to Amazon ECR
+./deploy_aws.sh build-push all                       # Build and push all 10 containers
+./deploy_aws.sh build-push observability-php-app    # Or build/push a single service
 
-# 5. Update Lambda function code
+# 5. Update Lambda function code across all microservices
 ./deploy_aws.sh deploy all
 
-# 6. Display live HTTPS Function URLs and deployment status
+# 6. View live HTTPS Function URLs and deployment outputs
 ./deploy_aws.sh status
+```
 
-# 7. Safe teardown
+#### Direct Terraform Commands
+
+If you prefer operating Terraform directly without the wrapper script:
+
+```bash
+cd terraform
+
+# 1. Initialize providers
+terraform init
+
+# 2. Plan deployment with custom Aurora DB host or default variables
+terraform plan \
+  -var="aws_region=us-east-2" \
+  -var="aurora_db_host=your-aurora-cluster.rds.amazonaws.com"
+
+# 3. Apply infrastructure
+terraform apply \
+  -var="aws_region=us-east-2" \
+  -var="aurora_db_host=your-aurora-cluster.rds.amazonaws.com" \
+  -auto-approve
+
+# 4. View Function URLs
+terraform output microservice_urls
+terraform output canary_dashboard_url
+```
+
+#### Safe Infrastructure Teardown
+
+To avoid incurring ongoing charges when testing is completed:
+
+```bash
+# Automated safe teardown (prompts for confirmation)
 ./deploy_aws.sh destroy
+
+# Or direct Terraform teardown
+cd terraform && terraform destroy -var="aws_region=us-east-2" -auto-approve
 ```
 
 For complete architectural documentation, cost formulas, and runtime sizing tables, see:
 - [`docs/aws_lambda_telemetry_lake_frugal_plan.md`](./docs/aws_lambda_telemetry_lake_frugal_plan.md)
+- [`docs/frugal_lambda_telemetry_one_pager.md`](./docs/frugal_lambda_telemetry_one_pager.md)
 - [`docs/frugal_lambda_telemetry_one_pager.md`](./docs/frugal_lambda_telemetry_one_pager.md)
 
 ---
@@ -159,6 +215,7 @@ Once deployment completes, access the services:
 | **Go App** | `http://<HOST_IP>:8086` | Go 1.23 + net/http (30008 on Kind) |
 | **.NET App** | `http://<HOST_IP>:8087` | C# .NET 8 + ASP.NET Core (30009 on Kind) |
 | **C App** | `http://<HOST_IP>:8088` | POSIX C99 Sockets + libpq (30010 on Kind) |
+| **PHP App** | `http://<HOST_IP>:8089` | PHP 8.3 CLI multi-worker server (30011 on Kind) |
 | **Prometheus** | `http://<HOST_IP>:9090` | Target scrapers & metrics |
 | **Grafana Mimir** | `http://<HOST_IP>:9009` | Long-term PromQL metrics engine |
 | **Grafana Tempo** | `http://<HOST_IP>:3200` | Distributed trace backend |
@@ -234,6 +291,7 @@ For detailed architecture diagrams, 24/7 power outage recovery, and systemd auto
 | [Go Service](./go-app) | `8086` (Docker) / `30008` (Kind) | Go net/http service, lib/pq connection pool, recursive-descent evaluator | `1.0.1` |
 | [.NET Service](./dotnet-app) | `8087` (Docker) / `30009` (Kind) | C# .NET 8 ASP.NET Core service, Npgsql connection pool, recursive-descent evaluator | `1.0.1` |
 | [C Service](./c-app) | `8088` (Docker) / `30010` (Kind) | POSIX C99 multi-threaded socket service, libpq, zero-dependency evaluator | `1.0.1` |
+| [PHP Service](./php-app) | `8089` (Docker) / `30011` (Kind) | PHP 8.3 CLI multi-worker server, PDO pgsql, recursive-descent evaluator | `1.0.1` |
 | [Canary Dashboard](./canary) | `8085` | Synthetic traffic generator, historical trend graphs, chaos fault injection | `1.0.1` |
 | [Canary Mobile App](./mobile) | — | Cross-platform React Native client for Android, iOS, Windows, Web | `1.0.0` |
 | [CycloneDX SBOM](./sbom/sbom-cyclonedx.json) | — | Software Bill of Materials & architectural acknowledgments | `1.5` |
@@ -298,7 +356,7 @@ If the Docker daemon restarts and containers lose bridge connectivity, bring the
 This project was developed, debugged, and enhanced with the assistance of modern agentic AI systems:
 
 * **[Google Antigravity](https://deepmind.google/technologies/)**: Autonomous engineering pair programmer used for end-to-end telemetry architecture, root-cause diagnosis of microservice anomalies, chaos engineering design, and full-stack dashboard implementation.
-* **[Gemini CLI](https://deepmind.google/technologies/gemini/)**: Advanced agentic coding workflows for polyglot code synchronization across Python, Java, Rust, Node.js, Go, C# .NET, and C, PromQL query optimization, and test automation.
+* **[Gemini CLI](https://deepmind.google/technologies/gemini/)**: Advanced agentic coding workflows for polyglot code synchronization across Python, Java, Rust, Node.js, Go, C# .NET, C, and PHP, PromQL query optimization, and test automation.
 
 ---
 

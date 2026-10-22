@@ -33,6 +33,11 @@ locals {
       port        = 8080
       memory_size = 128
     }
+    "php" = {
+      image_name  = "observability-php-app"
+      port        = 8080
+      memory_size = 128
+    }
     "java" = {
       image_name  = "observability-java-app"
       port        = 8080
@@ -68,7 +73,8 @@ resource "aws_lambda_function" "apps" {
       SPRING_DATASOURCE_USERNAME        = var.aurora_db_user
       SPRING_DATASOURCE_PASSWORD        = var.aurora_db_password
       MAX_DB_CONNECTIONS                = "2" # Frugal pool cap per MicroVM
-      OTEL_EXPORTER_OTLP_ENDPOINT       = aws_lambda_function_url.collector_url.function_url
+      OTEL_EXPORTER_OTLP_ENDPOINT       = trimsuffix(aws_lambda_function_url.collector_url.function_url, "/")
+      OTEL_EXPORTER_OTLP_PROTOCOL       = "http/protobuf"
     }
   }
 
@@ -154,9 +160,13 @@ resource "aws_lambda_function" "canary" {
       AWS_LWA_READINESS_CHECK_PATH      = "/health"
       AWS_LWA_INVOKE_MODE               = "buffered"
       AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS = "0"
+      CANARY_TPM                        = "6"
+      CANARY_RATE_UNIT                  = "TPM"
       S3_BUCKET_NAME                    = aws_s3_bucket.telemetry_lake.id
       S3_ENDPOINT_URL                   = "https://s3.${var.aws_region}.amazonaws.com"
-      TELEMETRY_RECEIVER_URL            = aws_lambda_function_url.collector_url.function_url
+      TELEMETRY_RECEIVER_URL            = trimsuffix(aws_lambda_function_url.collector_url.function_url, "/")
+      OTEL_EXPORTER_OTLP_ENDPOINT       = trimsuffix(aws_lambda_function_url.collector_url.function_url, "/")
+      OTEL_EXPORTER_OTLP_PROTOCOL       = "http/protobuf"
       POSTGRES_HOST                     = var.aurora_db_host
       POSTGRES_PORT                     = tostring(var.aurora_db_port)
       POSTGRES_DB                       = var.aurora_db_name
@@ -170,6 +180,7 @@ resource "aws_lambda_function" "canary" {
       PYTHON_APP_BASE_URL               = aws_lambda_function_url.apps_url["python"].function_url
       APP_BASE_URL                      = aws_lambda_function_url.apps_url["python"].function_url
       DOTNET_APP_BASE_URL               = aws_lambda_function_url.apps_url["dotnet"].function_url
+      PHP_APP_BASE_URL                  = aws_lambda_function_url.apps_url["php"].function_url
       JAVA_APP_BASE_URL                 = aws_lambda_function_url.apps_url["java"].function_url
     }
   }

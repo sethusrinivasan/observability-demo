@@ -105,6 +105,7 @@ docker build -t observability-node-app:latest ./node-app
 docker build -t observability-go-app:latest ./go-app
 docker build -t observability-dotnet-app:latest ./dotnet-app
 docker build -t observability-c-app:latest ./c-app
+docker build -t observability-php-app:latest ./php-app
 
 echo "=== Loading Images into Kind ==="
 kind load docker-image observability-python-app:latest --name "$CLUSTER_NAME"
@@ -115,6 +116,7 @@ kind load docker-image observability-node-app:latest --name "$CLUSTER_NAME"
 kind load docker-image observability-go-app:latest --name "$CLUSTER_NAME"
 kind load docker-image observability-dotnet-app:latest --name "$CLUSTER_NAME"
 kind load docker-image observability-c-app:latest --name "$CLUSTER_NAME"
+kind load docker-image observability-php-app:latest --name "$CLUSTER_NAME"
 
 echo "=== Creating ConfigMaps ==="
 kubectl create configmap otel-config --from-file=config.yaml=./config/otel-collector.yaml -o yaml --dry-run=client | kubectl apply -f -

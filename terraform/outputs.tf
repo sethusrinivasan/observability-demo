@@ -19,7 +19,7 @@ output "telemetry_collector_url" {
 }
 
 output "microservice_urls" {
-  description = "Map of direct HTTPS Function URLs for all 7 polyglot microservices"
+  description = "Map of direct HTTPS Function URLs for all 8 polyglot microservices"
   value = {
     for k, v in aws_lambda_function_url.apps_url : k => v.function_url
   }

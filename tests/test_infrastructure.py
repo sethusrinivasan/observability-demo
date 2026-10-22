@@ -36,6 +36,7 @@ NODE_APP_URL  = os.getenv("NODE_APP_URL", "http://localhost:8084")
 GO_APP_URL    = os.getenv("GO_APP_URL", "http://localhost:8086")
 DOTNET_APP_URL= os.getenv("DOTNET_APP_URL", "http://localhost:8087")
 C_APP_URL     = os.getenv("C_APP_URL", "http://localhost:8088")
+PHP_APP_URL   = os.getenv("PHP_APP_URL", "http://localhost:8089")
 OTEL_HTTP_URL = os.getenv("OTEL_HTTP_URL", "http://localhost:4318")
 TEMPO_URL     = os.getenv("TEMPO_URL", "http://localhost:3200")
 LOKI_URL      = os.getenv("LOKI_URL", "http://localhost:3100")
@@ -109,6 +110,11 @@ requires_dotnet = pytest.mark.skipif(
 requires_c = pytest.mark.skipif(
     not _http_ok(f"{C_APP_URL}/"),
     reason="C app not running"
+)
+
+requires_php = pytest.mark.skipif(
+    not _http_ok(f"{PHP_APP_URL}/"),
+    reason="PHP app not running"
 )
 
 requires_valkey = pytest.mark.skipif(
@@ -919,6 +925,55 @@ class TestCApp:
 
     def test_crash_thread_endpoint(self):
         resp = requests.post(f"{C_APP_URL}/crash?type=thread", timeout=5)
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["status"] == "crashed"
+        assert data["type"] == "thread"
+
+
+# ===========================================================================
+# 15c. observability-php-app (PHP 8.3 CLI Server)
+#      Core function: PHP microservice with recursive Fibonacci, zero-dependency
+#      math evaluator, PostgreSQL audit logs, and Actuator probes.
+# ===========================================================================
+
+@requires_php
+class TestPHPApp:
+    def test_home_returns_200(self):
+        resp = requests.get(f"{PHP_APP_URL}/", timeout=5)
+        assert resp.status_code == 200
+
+    def test_version_returns_php(self):
+        resp = requests.get(f"{PHP_APP_URL}/version", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["language"] == "php"
+        assert data["version"] == "1.0.1"
+
+    def test_selftest_passes(self):
+        resp = requests.get(f"{PHP_APP_URL}/selftest", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+
+    def test_compute_fibonacci(self):
+        resp = requests.get(f"{PHP_APP_URL}/compute/10", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["result"] == 55
+
+    def test_eval_expression(self):
+        resp = requests.post(f"{PHP_APP_URL}/eval", json={"expr": "2 + 3 * 4"}, timeout=5)
+        assert resp.status_code == 200
+        assert resp.json()["result"] == 14.0
+
+    def test_auditlog_get(self):
+        resp = requests.get(f"{PHP_APP_URL}/auditlog", timeout=5)
+        assert resp.status_code in [200, 201]
+        assert resp.json()["status"] == "ok"
+
+    def test_crash_thread_endpoint(self):
+        resp = requests.post(f"{PHP_APP_URL}/crash?type=thread", timeout=5)
         assert resp.status_code == 500
         data = resp.json()
         assert data["status"] == "crashed"
