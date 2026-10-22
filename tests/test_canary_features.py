@@ -144,3 +144,149 @@ def test_on_demand_synthetic_cycle():
     # Ensure all polyglot microservices were tested in the on-demand cycle
     expected_apps = {"python", "java", "rust", "node", "go", "dotnet", "c", "php"}
     assert expected_apps.issubset(apps_tested)
+
+    # Ensure every single app in the on-demand benchmark cycle was hit with the exact same fair endpoint & method
+    for res in cycle["results"]:
+        assert res["path"] == "/eval"
+        assert res["method"] == "POST"
+
+
+def test_3h_query_activity_retention_and_ui():
+    """Verify 3-hour query retention tables, saved queries, and UI elements exist."""
+    from canary.canary import SAVED_QUERIES, get_rds_cost_breakdown
+    from canary.sql_guard import ALLOWED_TABLES
+
+    # 1. Verify query_activity_snapshots is permitted in SQL guard
+    assert "query_activity_snapshots" in ALLOWED_TABLES
+    assert "pg_stat_statements" in ALLOWED_TABLES
+
+    # 2. Verify 3-hour saved queries are present
+    saved_ids = {q["id"] for q in SAVED_QUERIES}
+    assert "recent_3h_query_activity" in saved_ids
+    assert "top_3h_service_breakdown" in saved_ids
+
+    # 3. Verify HTML contains the 3-hour query activity table and tbody
+    html = render_dashboard_html()
+    assert "⏱️ Past 3 Hours Query Activity Log (Rolling Window)" in html
+    assert 'id="rds-3h-queries-tbody"' in html
+
+    # 4. Verify get_rds_cost_breakdown returns past_3h_queries list
+    data = get_rds_cost_breakdown()
+    assert "past_3h_queries" in data
+    assert isinstance(data["past_3h_queries"], list)
+
+
+def test_top_query_fingerprints_io_network_storage_and_costs():
+    """Verify top query fingerprints include compute, IO, storage, network, and cost drivers."""
+    from canary.canary import get_rds_cost_breakdown, render_dashboard_html
+    data = get_rds_cost_breakdown()
+    assert data["status"] == "success"
+    assert "top_queries" in data
+    assert isinstance(data["top_queries"], list)
+
+    # Verify HTML labels state "Database Cost Breakdown"
+    html = render_dashboard_html()
+    assert "💰 Database Cost Breakdown" in html
+    assert "🔍 Top Query Fingerprints &amp; Compute Drivers (pg_stat_statements)" in html
+    assert "Disk &amp; Buffer I/O" in html
+    assert "Temp &amp; WAL" in html
+    assert "Est. Network" in html
+    assert "Est. Cost ($)" in html
+
+
+def test_s3_browser_resilience_and_dashboard_error_logging():
+    """Verify S3 browser handles errors gracefully and logs to dashboard error subsystem."""
+    from canary.canary import s3_list_objects, log_dashboard_error, DASHBOARD_ERROR_RING
+    from canary.sql_guard import ALLOWED_TABLES
+
+    # 1. s3_list_objects should never raise UnboundLocalError even when boto3 or AWS credentials fail
+    res = s3_list_objects("test-bucket", "some/prefix")
+    assert isinstance(res, dict)
+    assert res["status"] in ("success", "error")
+    assert "folders" in res
+    assert "files" in res
+
+    # 2. Verify dashboard error logging
+    entry = log_dashboard_error(
+        component="s3_browser",
+        error_type="TestError",
+        message="Simulated non-JSON response from gateway",
+        details={"status_code": 502}
+    )
+    assert entry["component"] == "s3_browser"
+    assert entry["error_type"] == "TestError"
+    assert len(DASHBOARD_ERROR_RING) > 0
+    assert DASHBOARD_ERROR_RING[0]["component"] == "s3_browser"
+
+    # 3. Verify dashboard_error_logs is in SQL guard
+    assert "dashboard_error_logs" in ALLOWED_TABLES
+
+
+def test_audit_logs_deduplication_and_views():
+    """Verify audit_dimensions and deconstructed views are whitelisted and saved queries are present."""
+    from canary.sql_guard import ALLOWED_TABLES
+    from canary.canary import SAVED_QUERIES
+
+    assert "audit_dimensions" in ALLOWED_TABLES
+    assert "v_audit_logs" in ALLOWED_TABLES
+    assert "v_audit_dimension_analytics" in ALLOWED_TABLES
+
+    saved_ids = {q["id"] for q in SAVED_QUERIES}
+    assert "audit_dimensions_summary" in saved_ids
+    assert "v_audit_logs_deconstructed" in saved_ids
+    assert "v_audit_dimension_analytics" in saved_ids
+    assert "recent_dashboard_errors" in saved_ids
+
+
+def test_duckdb_s3_calls_and_bandwidth_tracking():
+    """Verify DuckDB queries return execution duration, s3 calls count, and bandwidth transferred."""
+    from canary.canary import execute_duckdb_query
+    res = execute_duckdb_query("SELECT 100 AS num;")
+    assert res["status"] == "success"
+    assert "s3_calls_count" in res
+    assert "bandwidth_transferred_bytes" in res
+    assert "bandwidth_transferred_display" in res
+    assert isinstance(res["s3_calls_count"], int)
+    assert isinstance(res["bandwidth_transferred_bytes"], int)
+
+
+def test_s3_browser_folder_approximation_zero_cost():
+    """Verify S3 folder listing provides approximate object count & size with 0 S3 request cost."""
+    from canary.canary import s3_list_objects
+    res = s3_list_objects("telemetry-lake", "")
+    assert res["status"] == "success"
+    assert "folders" in res
+    for f in res["folders"]:
+        assert "approx_objects" in f
+        assert "approx_size_formatted" in f
+        assert "0 S3 API calls" in f.get("cost_note", "")
+
+
+def test_ondemand_custom_target_and_swift_service():
+    """Verify On-Demand runs execute across all 9 services including Swift, and UI contains percentile controls."""
+    from canary.canary import run_synthetic_cycle, render_dashboard_html
+
+    # Execute on-demand cycle with custom target
+    custom_target = {"path": "/version", "method": "GET"}
+    res = run_synthetic_cycle(on_demand=True, custom_target=custom_target)
+    assert res["status"] == "success"
+    assert res["on_demand"] is True
+    assert len(res["results"]) >= 8
+    apps_tested = {r["app"] for r in res["results"]}
+    assert "swift" in apps_tested
+    assert "python" in apps_tested
+    assert "java" in apps_tested
+
+    # Verify UI contains API selector dropdown, copy button, and p50/p95/p99/p100 latencies
+    html = render_dashboard_html()
+    assert 'id="ondemand-api-select"' in html
+    assert 'POST /eval' in html
+    assert 'GET /compute/10' in html
+    assert 'GET /compute/20' in html
+    assert 'GET /version' in html
+    assert 'ondemand-p50' in html
+    assert 'ondemand-p95' in html
+    assert 'ondemand-p99' in html
+    assert 'ondemand-p100' in html
+    assert 'copyOnDemandResults()' in html
+    assert 'resetOnDemandMetrics()' in html

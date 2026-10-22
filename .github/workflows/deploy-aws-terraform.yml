@@ -1,0 +1,79 @@
+name: "Deploy AWS Terraform Infrastructure (OIDC)"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "deployment/terraform/**"
+      - ".github/workflows/deploy-aws-terraform.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "deployment/terraform/**"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Terraform action to execute"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+
+# Critical for AWS OIDC authentication: id-token write permission generates the signed JWT
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  terraform:
+    name: "Terraform Plan & Apply"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deployment/terraform
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OpenID Connect (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Zero secrets / static keys required: Assumes IAM role using GitHub Actions OIDC web identity token
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME || 'arn:aws:iam::596090776030:role/observability-demo-github-oidc-role' }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-2' }}
+          role-session-name: GitHubActions-Terraform-Deployment
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -diff
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -no-color \
+            -var="aws_region=${{ secrets.AWS_REGION || 'us-east-2' }}" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply')
+        run: terraform apply -auto-approve tfplan

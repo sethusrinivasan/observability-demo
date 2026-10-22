@@ -614,7 +614,7 @@ def auditlog_stats():
                     cursor.execute(
                         """
                         SELECT
-                            count(*) AS total_rows,
+                            COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'audit_logs'), (SELECT reltuples::bigint FROM pg_class WHERE relname = 'audit_logs'), 0) AS total_rows,
                             sum((status_code < 400)::int) AS success_count,
                             sum((status_code >= 400)::int) AS failure_count,
                             percentile_disc(0.5) WITHIN GROUP (ORDER BY response_time_seconds) AS p50_seconds,

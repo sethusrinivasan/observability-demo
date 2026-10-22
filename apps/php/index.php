@@ -52,13 +52,17 @@ function getDb(): ?PDO {
         }
     }
 
-    $dsn = "pgsql:host={$host};port={$port};dbname={$dbname};sslmode={$sslmode}";
+    $appName = getenv('APPLICATION_NAME') ?: 'observability-php-app';
+    $dsn = "pgsql:host={$host};port={$port};dbname={$dbname};sslmode={$sslmode};options='--application_name={$appName}'";
     try {
         $conn = new PDO($dsn, $user, $pass, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_TIMEOUT => 3,
         ]);
+        try {
+            $conn->exec("SET application_name = '" . addslashes($appName) . "';");
+        } catch (\Throwable $ign) {}
 
         $conn->exec("CREATE TABLE IF NOT EXISTS audit_logs (
             id SERIAL PRIMARY KEY,
@@ -259,7 +263,7 @@ try {
         $db = getDb();
         if ($db !== null) {
             try {
-                $stmt = $db->query('SELECT count(*) AS total_rows FROM audit_logs');
+                $stmt = $db->query("SELECT COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'audit_logs'), (SELECT reltuples::bigint FROM pg_class WHERE relname = 'audit_logs'), 0) AS total_rows");
                 if ($stmt && ($row = $stmt->fetch())) {
                     $totalRows = (int)$row['total_rows'];
                 }

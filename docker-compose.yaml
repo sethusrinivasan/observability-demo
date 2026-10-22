@@ -162,7 +162,7 @@ services:
     ports:
       - "9187:9187"
     environment:
-      - DATA_SOURCE_NAME=postgresql://observability:observability@postgres:5432/observability?sslmode=disable
+      - DATA_SOURCE_NAME=postgresql://observability:observability@postgres:5432/observability?sslmode=disable&application_name=postgres-exporter
       - PG_EXPORTER_DISABLE_SETTINGS_METRICS=false
       - PG_EXPORTER_DISABLE_DEFAULT_METRICS=false
       # Bitnami's image runs Go in FIPS-only mode, which rejects this demo password
@@ -239,6 +239,8 @@ services:
       - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/observability?ApplicationName=observability-java-app
       - SPRING_DATASOURCE_USERNAME=observability
       - SPRING_DATASOURCE_PASSWORD=observability
+      - SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE=2
+      - SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE=1
       - OTEL_RESOURCE_ATTRIBUTES=language=java,service.name=observability-java-app
       - OTEL_LOGS_EXPORTER=otlp
     healthcheck:
@@ -439,6 +441,39 @@ services:
     networks:
       - observability-network
 
+  # Swift observability app
+  observability-swift-app:
+    build: ./apps/swift
+    container_name: observability-swift-app
+    restart: unless-stopped
+    ports:
+      - "8091:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=observability
+      - POSTGRES_USER=observability
+      - POSTGRES_PASSWORD=observability
+      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?sslmode=disable&application_name=observability-swift-app
+      - PORT=8080
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      - otel-collector
+      - postgres
+    networks:
+      - observability-network
+
   # Synthetic canary — isolated container that exercises every endpoint
   # at a calibrated rate (24 TPS → ~50% saturation of one core).
   # Runs independently so canary failures never affect the app process.
@@ -458,6 +493,7 @@ services:
       - DOTNET_APP_BASE_URL=http://observability-dotnet-app:8080
       - C_APP_BASE_URL=http://observability-c-app:8080
       - PHP_APP_BASE_URL=http://observability-php-app:8080
+      - SWIFT_APP_BASE_URL=http://observability-swift-app:8080
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - MIMIR_URL=http://mimir:9009
       - POSTGRES_HOST=postgres
@@ -491,6 +527,7 @@ services:
       - observability-dotnet-app
       - observability-c-app
       - observability-php-app
+      - observability-swift-app
       - postgres
       - otel-collector
       - mimir

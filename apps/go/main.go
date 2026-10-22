@@ -60,9 +60,10 @@ func initDb() (*sql.DB, error) {
 	pgUser := getEnv("POSTGRES_USER", "observability")
 	pgPass := getEnv("POSTGRES_PASSWORD", "observability")
 	sslMode := getEnv("POSTGRES_SSLMODE", "disable")
+	appName := getEnv("APPLICATION_NAME", "observability-go-app")
 
-	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=5",
-		pgHost, pgPort, pgUser, pgPass, pgDB, sslMode)
+	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=5 fallback_application_name=%s application_name=%s",
+		pgHost, pgPort, pgUser, pgPass, pgDB, sslMode, appName, appName)
 
 	databaseUrl := os.Getenv("DATABASE_URL")
 	if databaseUrl != "" {
@@ -72,6 +73,13 @@ func initDb() (*sql.DB, error) {
 				sep = "&"
 			}
 			databaseUrl += sep + "sslmode=" + sslMode
+		}
+		if !strings.Contains(databaseUrl, "application_name=") {
+			sep := "?"
+			if strings.Contains(databaseUrl, "?") {
+				sep = "&"
+			}
+			databaseUrl += sep + "application_name=" + appName
 		}
 		connStr = databaseUrl
 	}
@@ -415,7 +423,7 @@ func handleAuditLogStats(w http.ResponseWriter, r *http.Request) {
 
 	totalRows := 1
 	if db != nil {
-		_ = db.QueryRow(`SELECT count(*) AS total_rows FROM audit_logs`).Scan(&totalRows)
+		_ = db.QueryRow(`SELECT COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'audit_logs'), (SELECT reltuples::bigint FROM pg_class WHERE relname = 'audit_logs'), 0) AS total_rows`).Scan(&totalRows)
 	}
 
 	writeJSON(w, http.StatusOK, withContextMap(map[string]interface{}{

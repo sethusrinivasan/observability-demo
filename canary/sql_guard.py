@@ -9,8 +9,13 @@ from __future__ import annotations
 ALLOWED_TABLES = frozenset({
     # Application tables
     "audit_logs",
+    "audit_dimensions",
+    "v_audit_logs",
+    "v_audit_dimension_analytics",
     "sql_saved_queries",
     "sql_query_audit",
+    "query_activity_snapshots",
+    "dashboard_error_logs",
     # System catalog & statistics views
     "pg_database",
     "pg_stat_activity",

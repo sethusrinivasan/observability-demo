@@ -377,7 +377,7 @@ class AppController {
         try {
             long totalRows = 1;
             try {
-                Map<String, Object> stats = jdbcTemplate.queryForMap("SELECT count(*) AS total_rows FROM audit_logs");
+                Map<String, Object> stats = jdbcTemplate.queryForMap("SELECT COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'audit_logs'), (SELECT reltuples::bigint FROM pg_class WHERE relname = 'audit_logs'), 0) AS total_rows");
                 if (stats.containsKey("total_rows")) {
                     totalRows = ((Number) stats.get("total_rows")).longValue();
                 }

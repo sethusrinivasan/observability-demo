@@ -115,6 +115,7 @@ string GetConnectionString()
             if (string.IsNullOrEmpty(db)) db = "observability";
             var port = uri.Port > 0 ? uri.Port : 5432;
 
+            var appName = Environment.GetEnvironmentVariable("APPLICATION_NAME") ?? "observability-dotnet-app";
             return new NpgsqlConnectionStringBuilder
             {
                 Host = uri.Host,
@@ -122,6 +123,7 @@ string GetConnectionString()
                 Username = user,
                 Password = pass,
                 Database = db,
+                ApplicationName = appName,
                 SslMode = SslMode.Disable,
                 Timeout = 5,
                 CommandTimeout = 5,
@@ -142,6 +144,7 @@ string GetConnectionString()
     var passEnv = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") ?? "observability";
     var dbEnv = Environment.GetEnvironmentVariable("POSTGRES_DB") ?? "observability";
 
+    var appNameEnv = Environment.GetEnvironmentVariable("APPLICATION_NAME") ?? "observability-dotnet-app";
     return new NpgsqlConnectionStringBuilder
     {
         Host = host,
@@ -149,6 +152,7 @@ string GetConnectionString()
         Username = userEnv,
         Password = passEnv,
         Database = dbEnv,
+        ApplicationName = appNameEnv,
         SslMode = SslMode.Disable,
         Timeout = 5,
         CommandTimeout = 5,
@@ -444,7 +448,7 @@ app.MapGet("/auditlog/stats", () =>
         {
             using var conn = dataSource.OpenConnection();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT count(*) FROM audit_logs";
+            cmd.CommandText = "SELECT COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'audit_logs'), (SELECT reltuples::bigint FROM pg_class WHERE relname = 'audit_logs'), 0) AS total_rows";
             totalRows = Convert.ToInt64(cmd.ExecuteScalar());
         }
         catch (Exception ex)

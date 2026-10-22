@@ -231,16 +231,17 @@ async fn main() -> anyhow::Result<()> {
         .with_callback(move |obs| obs.observe(cgroup_cpu_usage_ns(), &rl))
         .init());
 
+    let app_name = std::env::var("APPLICATION_NAME").unwrap_or_else(|_| "observability-rust-app".to_string());
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
         let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "postgres".to_string());
         let port = std::env::var("POSTGRES_PORT").unwrap_or_else(|_| "5432".to_string());
         let db = std::env::var("POSTGRES_DB").unwrap_or_else(|_| "observability".to_string());
         let user = std::env::var("POSTGRES_USER").unwrap_or_else(|_| "observability".to_string());
         let pass = std::env::var("POSTGRES_PASSWORD").unwrap_or_else(|_| "observability".to_string());
-        format!("postgres://{}:{}@{}:{}/{}", user, pass, host, port, db)
+        format!("postgres://{}:{}@{}:{}/{}?application_name={}", user, pass, host, port, db, app_name)
     });
     let db = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(2)
         .connect_lazy(&db_url)?;
 
     let state = AppState {
@@ -359,7 +360,7 @@ async fn audit_log(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn audit_log_stats(State(state): State<AppState>) -> impl IntoResponse {
     let t = Instant::now();
-    let row: Result<(i64,), _> = sqlx::query_as("SELECT count(*) FROM audit_logs")
+    let row: Result<(i64,), _> = sqlx::query_as("SELECT COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'audit_logs'), (SELECT reltuples::bigint FROM pg_class WHERE relname = 'audit_logs'), 0)::bigint AS total_rows")
         .fetch_one(&state.db)
         .await;
     let total_rows = row.map(|r| r.0).unwrap_or(1);

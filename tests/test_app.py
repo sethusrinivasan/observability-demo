@@ -305,7 +305,10 @@ class TestAuditlogStatsRoute:
     @requires_postgres
     def test_success_plus_failure_equals_total(self, client):
         data = client.get("/auditlog/stats").get_json()
-        assert data["success_count"] + data["failure_count"] == data["total_rows"]
+        # total_rows uses catalog statistics estimation (n_live_tup / reltuples) to prevent
+        # expensive full table scans; verify that estimated total is within close range of actual sum
+        sum_counts = data["success_count"] + data["failure_count"]
+        assert abs(sum_counts - data["total_rows"]) <= max(100, int(0.05 * (data["total_rows"] or 1)))
 
     def test_db_failure_returns_500(self, client):
         with mock.patch("app.get_pool", side_effect=Exception("db down")):

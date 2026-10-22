@@ -64,7 +64,7 @@ def test_rds_cost_breakdown_ui_elements_in_html():
     html = res.text
 
     # Tab button
-    assert "RDS Cost Breakdown" in html
+    assert "Database Cost Breakdown" in html
     assert "switchView('cost_breakdown', this)" in html
 
     # Section ID

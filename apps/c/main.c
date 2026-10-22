@@ -125,12 +125,20 @@ static void *db_background_init(void *arg) {
     (void)arg;
     char conninfo[512];
     const char *db_url = getenv("DATABASE_URL");
+    const char *app_name = getenv("APPLICATION_NAME");
+    if (!app_name || !*app_name) app_name = "observability-c-app";
+
     if (db_url && *db_url) {
-        snprintf(conninfo, sizeof(conninfo), "%s", db_url);
+        if (strstr(db_url, "application_name=") == NULL) {
+            const char *sep = strchr(db_url, '?') ? "&" : "?";
+            snprintf(conninfo, sizeof(conninfo), "%s%sapplication_name=%s", db_url, sep, app_name);
+        } else {
+            snprintf(conninfo, sizeof(conninfo), "%s", db_url);
+        }
     } else {
         snprintf(conninfo, sizeof(conninfo),
-                 "host=%s port=%d dbname=%s user=%s password=%s connect_timeout=4",
-                 g_db_host, g_db_port, g_db_name, g_db_user, g_db_pass);
+                 "host=%s port=%d dbname=%s user=%s password=%s connect_timeout=4 application_name=%s",
+                 g_db_host, g_db_port, g_db_name, g_db_user, g_db_pass, app_name);
     }
 
     while (1) {
@@ -207,7 +215,7 @@ static long long db_get_audit_count(void) {
         return -1;
     }
 
-    PGresult *res = PQexec(g_db_conn, "SELECT count(*) FROM audit_logs;");
+    PGresult *res = PQexec(g_db_conn, "SELECT COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'audit_logs'), (SELECT reltuples::bigint FROM pg_class WHERE relname = 'audit_logs'), 0) AS total_rows;");
     long long count = 0;
     if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
         count = atoll(PQgetvalue(res, 0, 0));

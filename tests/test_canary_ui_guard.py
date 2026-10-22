@@ -195,7 +195,8 @@ global.confirm = () => true;
 """ + combined_js
 
     proc = subprocess.run(
-        [node_path, "-e", mock_harness],
+        [node_path, "-"],
+        input=mock_harness,
         capture_output=True,
         text=True,
         timeout=10,

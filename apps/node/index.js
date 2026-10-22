@@ -156,7 +156,8 @@ const pool = new Pool({
   database: process.env.POSTGRES_DB || "observability",
   user: process.env.POSTGRES_USER || "observability",
   password: process.env.POSTGRES_PASSWORD || "observability",
-  max: 5,
+  application_name: process.env.APPLICATION_NAME || "observability-node-app",
+  max: 2,
 });
 
 async function initDb(retries = 10, delayMs = 3000) {
@@ -368,7 +369,7 @@ app.get("/auditlog/stats", async (req, res) => {
   try {
     let totalRows = 1;
     if (pool) {
-      const result = await pool.query("SELECT count(*) AS total_rows FROM audit_logs").catch(() => null);
+      const result = await pool.query("SELECT COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'audit_logs'), (SELECT reltuples::bigint FROM pg_class WHERE relname = 'audit_logs'), 0) AS total_rows").catch(() => null);
       if (result && result.rows && result.rows.length) {
         totalRows = parseInt(result.rows[0].total_rows, 10);
       }
