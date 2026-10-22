@@ -8,6 +8,7 @@ locals {
     "observability-dotnet-app",
     "observability-c-app",
     "observability-php-app",
+    "observability-swift-app",
     "observability-canary",
     "custom-telemetry-receiver"
   ]

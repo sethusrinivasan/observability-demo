@@ -187,6 +187,8 @@ def test_aws_all_seven_microservices_live_endpoints():
         "dotnet": "https://xppqo7vskzfjddbotn2mcaqgpe0wywzp.lambda-url.us-east-2.on.aws",
         "rust": "https://rq6puxwjoxx2sp5eeg3g4duy4i0bdjzs.lambda-url.us-east-2.on.aws",
         "java": "https://2sqsnt447ofmtmjkdpoo36itlm0tifhq.lambda-url.us-east-2.on.aws",
+        "php": "https://7izlc4ipjgw7uvgppjr7jiyymq0fxizg.lambda-url.us-east-2.on.aws",
+        "swift": "https://mk55snvnmmrerw22ptjwtusnly0rzuma.lambda-url.us-east-2.on.aws",
     }
 
     for lang, base_url in microservices.items():

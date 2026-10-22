@@ -5,8 +5,9 @@
 # allowing GitHub Actions workflow runners in repository 'sethusrinivasan/observability-demo'
 # to retrieve short-lived STS session credentials securely.
 
-# 1. GitHub OIDC Identity Provider in AWS IAM
+# 1. GitHub OIDC Identity Provider in AWS IAM (Conditional)
 resource "aws_iam_openid_connect_provider" "github" {
+  count          = var.create_github_oidc_provider ? 1 : 0
   url            = "https://token.actions.githubusercontent.com"
   client_id_list = ["sts.amazonaws.com"]
   thumbprint_list = [
@@ -20,6 +21,12 @@ resource "aws_iam_openid_connect_provider" "github" {
   }
 }
 
+locals {
+  github_oidc_provider_arn = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : (
+    var.github_oidc_provider_arn != "" ? var.github_oidc_provider_arn : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
+  )
+}
+
 # 2. IAM Role Assumed by GitHub Actions Runners
 resource "aws_iam_role" "github_actions_terraform" {
   name        = "observability-demo-github-oidc-role"
@@ -31,7 +38,7 @@ resource "aws_iam_role" "github_actions_terraform" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = aws_iam_openid_connect_provider.github.arn
+          Federated = local.github_oidc_provider_arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
@@ -39,7 +46,7 @@ resource "aws_iam_role" "github_actions_terraform" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:sethusrinivasan/observability-demo:*"
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:*"
           }
         }
       }

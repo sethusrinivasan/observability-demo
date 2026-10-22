@@ -38,6 +38,12 @@ locals {
       port        = 8080
       memory_size = 128
     }
+    "swift" = {
+      image_name   = "observability-swift-app"
+      port         = 8080
+      memory_size  = 128
+      architecture = "x86_64"
+    }
     "java" = {
       image_name  = "observability-java-app"
       port        = 8080
@@ -52,7 +58,7 @@ resource "aws_lambda_function" "apps" {
   role          = aws_iam_role.microservice_role.arn
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.services[each.value.image_name].repository_url}:latest"
-  architectures = ["arm64"]
+  architectures = [lookup(each.value, "architecture", "arm64")]
   memory_size   = each.value.memory_size
   timeout       = each.key == "java" ? 30 : 15
 
@@ -181,6 +187,7 @@ resource "aws_lambda_function" "canary" {
       APP_BASE_URL                      = aws_lambda_function_url.apps_url["python"].function_url
       DOTNET_APP_BASE_URL               = aws_lambda_function_url.apps_url["dotnet"].function_url
       PHP_APP_BASE_URL                  = aws_lambda_function_url.apps_url["php"].function_url
+      SWIFT_APP_BASE_URL                = aws_lambda_function_url.apps_url["swift"].function_url
       JAVA_APP_BASE_URL                 = aws_lambda_function_url.apps_url["java"].function_url
     }
   }

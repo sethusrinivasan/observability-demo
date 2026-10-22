@@ -84,6 +84,7 @@ SERVICES=(
   "observability-dotnet-app:apps/dotnet/Dockerfile"
   "observability-c-app:apps/c/Dockerfile"
   "observability-php-app:apps/php/Dockerfile"
+  "observability-swift-app:apps/swift/Dockerfile"
   "observability-canary:canary/Dockerfile"
   "custom-telemetry-receiver:apps/telemetry-receiver/Dockerfile"
 )

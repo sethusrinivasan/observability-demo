@@ -70,3 +70,21 @@ variable "java_memory_size" {
   type        = number
   default     = 1024
 }
+
+variable "github_repository" {
+  description = "GitHub repository (owner/repo) permitted to assume the OIDC role"
+  type        = string
+  default     = "sethusrinivasan/observability-demo"
+}
+
+variable "create_github_oidc_provider" {
+  description = "Whether to create the GitHub Actions OIDC provider in IAM (set to false if already created at account or AWS Organization root)"
+  type        = bool
+  default     = false # Defaulted to false when account is governed by AWS Organization SCP or pre-existing IdP
+}
+
+variable "github_oidc_provider_arn" {
+  description = "Optional custom GitHub OIDC provider ARN (used when create_github_oidc_provider is false)"
+  type        = string
+  default     = ""
+}
