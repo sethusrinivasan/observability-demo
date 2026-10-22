@@ -36,6 +36,7 @@ resource "aws_iam_role" "github_actions_terraform" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "GitHubOIDCAuth"
         Effect = "Allow"
         Principal = {
           Federated = local.github_oidc_provider_arn
@@ -49,6 +50,14 @@ resource "aws_iam_role" "github_actions_terraform" {
             "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:*"
           }
         }
+      },
+      {
+        Sid    = "GitHubActionsCIUserAuth"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action = "sts:AssumeRole"
       }
     ]
   })
