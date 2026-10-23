@@ -18,6 +18,7 @@
 [![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?style=for-the-badge&logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![C](https://img.shields.io/badge/C-POSIX%20C99-A8B9CC?style=for-the-badge&logo=c&logoColor=white)](https://en.wikipedia.org/wiki/C_(programming_language))
 [![PHP](https://img.shields.io/badge/PHP-8.3-777BB4?style=for-the-badge&logo=php&logoColor=white)](https://www.php.net/)
+[![Swift](https://img.shields.io/badge/Swift-5.10-F05138?style=for-the-badge&logo=swift&logoColor=white)](https://swift.org/)
 
 <br/>
 
@@ -29,7 +30,7 @@
 
 ---
 
-An end-to-end polyglot observability demo playground across **Python (Flask)**, **Java (Spring Boot)**, **Rust (Axum)**, **Node.js (Express)**, **Go (net/http)**, **C# .NET (ASP.NET Core)**, **C (POSIX C99)**, and **PHP (CLI Server)** microservices. Telemetry (traces, metrics, logs) is collected via OpenTelemetry Collector and exported to the **Grafana LGTM stack** (Loki, Grafana, Tempo, Mimir), alongside a PostgreSQL audit layer and an interactive synthetic **Canary Traffic & Fault Injection Dashboard**.
+An end-to-end polyglot observability demo playground across **Python (Flask)**, **Java (Spring Boot)**, **Rust (Axum)**, **Node.js (Express)**, **Go (net/http)**, **C# .NET (ASP.NET Core)**, **C (POSIX C99)**, **PHP (CLI Server)**, and **Swift** microservices. Telemetry (traces, metrics, logs) is collected via OpenTelemetry Collector and exported to the **Grafana LGTM stack** (Loki, Grafana, Tempo, Mimir), alongside a PostgreSQL audit layer and an interactive synthetic **Canary Traffic & Fault Injection Dashboard**.
 
 Deployable locally via **Docker Compose** or **Kubernetes (Kind)**, and to AWS via **Terraform-managed Graviton MicroVMs & S3 Telemetry Lake**.
 
@@ -60,7 +61,7 @@ Consolidated distributed tracing (Tempo), metrics (Mimir/Prometheus), logs (Loki
 The entire polyglot stack can be deployed to **AWS Lambda Firecracker MicroVMs** on **AWS Graviton (`arm64`)** with maximum frugality.
 
 ### Architectural Highlights
-- **128 MB Graviton MicroVMs**: All 8 polyglot services and the custom collector run in 128 MB MicroVMs using the AWS Lambda Web Adapter (LWA), leveraging the permanent monthly Free Tier of **400,000 GB-seconds** (3.2 million compute seconds free every month).
+- **128 MB MicroVMs**: All 9 polyglot services and the custom collector run in 128 MB MicroVMs using the AWS Lambda Web Adapter (LWA), leveraging the permanent monthly Free Tier of **400,000 GB-seconds** (3.2 million compute seconds free every month).
 - **Zero API Gateway Fees**: All ingress uses **Lambda Function URLs** with built-in HTTPS and CORS ($0.00).
 - **Shared Aurora Serverless**: Reuses your existing Aurora Serverless cluster via bounded connection pools (1–2 per MicroVM) without incurring new baseline costs.
 - **Custom S3 Parquet Lake**: Telemetry is buffered in `/tmp` and compacted into **>= 10 MB Snappy Parquet files** before uploading to S3, reducing S3 PUT API costs by **99.7%**.
@@ -81,6 +82,7 @@ The entire polyglot stack can be deployed to **AWS Lambda Firecracker MicroVMs**
 | **.NET App** | 128 MB Graviton MicroVM / ASP.NET 8 | [.NET App URL](https://xppqo7vskzfjddbotn2mcaqgpe0wywzp.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
 | **C App** | 128 MB Graviton MicroVM / POSIX C99 | [C App URL](https://daglnsziyvvlt572qmkzr2xmjm0unpef.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
 | **PHP App** | 128 MB Graviton MicroVM / PHP 8.3 CLI | [PHP App URL](https://7izlc4ipjgw7uvgppjr7jiyymq0fxizg.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Swift App** | 128 MB MicroVM / Swift | [Swift App URL](https://mk55snvnmmrerw22ptjwtusnly0rzuma.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
 
 ### Deploying to AWS via Terraform & Automation Scripts
 
