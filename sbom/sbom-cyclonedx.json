@@ -172,6 +172,24 @@
     },
     {
       "type": "application",
+      "name": "observability-swift-app",
+      "version": "1.0.1",
+      "description": "High-efficiency Swift 6.0 microservice implementing standard library HTTP parsing, recursive descent math evaluator, iterative Fibonacci, and AWS Lambda Web Adapter integration.",
+      "purl": "pkg:generic/observability-swift-app@1.0.1",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "properties": [
+        {
+          "name": "implementation",
+          "value": "Constructed with Swift 6.0 standard library and static stdlib compilation, zero third-party framework dependencies, custom socket server, and AWS Lambda Web Adapter for sub-10ms serverless Graviton MicroVM execution."
+        },
+        {
+          "name": "inspiration",
+          "value": "Inspired by Chris Lattner's Swift language safety and performance design, server-side Swift architectures, and minimalist systems programming."
+        }
+      ]
+    },
+    {
+      "type": "application",
       "name": "observability-canary",
       "version": "1.0.1",
       "description": "Synthetic traffic generator, Chaos Fault Injection coordinator, Docker lifecycle controller, PostgreSQL query engine, and real-time operations dashboard.",

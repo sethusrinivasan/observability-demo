@@ -71,7 +71,7 @@ if [ -n "$ids" ]; then
 fi
 
 # Force-remove known project containers by name (compose and the showcase tunnel).
-for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app observability-c-app observability-php-app \
+for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app observability-c-app observability-php-app observability-swift-app \
             canary otel-collector tempo redpanda mimir loki \
             grafana grafana-renderer postgres postgres-exporter prometheus valkey redis-exporter \
             cloudflared cloudflared-showcase; do
@@ -93,7 +93,7 @@ fi
 
 # Remove any leftover named containers that compose missed (e.g. manually
 # started containers or those whose PIDs were killed above)
-for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app observability-c-app observability-php-app \
+for name in observability-python-app observability-java-app observability-rust-app observability-node-app observability-go-app observability-dotnet-app observability-c-app observability-php-app observability-swift-app \
             canary otel-collector tempo redpanda mimir loki \
             grafana grafana-renderer postgres postgres-exporter prometheus valkey redis-exporter \
             cloudflared cloudflared-showcase; do
@@ -151,6 +151,7 @@ wait_for "http://localhost:8086/actuator/health/liveness" "Go"   40 3
 wait_for "http://localhost:8087/actuator/health/liveness" ".NET" 40 3
 wait_for "http://localhost:8088/actuator/health/liveness" "C" 40 3
 wait_for "http://localhost:8089/actuator/health/liveness" "PHP" 40 3
+wait_for "http://localhost:8091/health" "Swift" 40 3
 
 # Grafana runs DB migrations on first boot — takes longer
 echo -n "  Waiting for Grafana"
@@ -190,6 +191,7 @@ docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | \
     grep -E "NAMES|observability-|canary|grafana|prometheus|tempo|loki|mimir|otel|postgres|redpanda|valkey|redis-exporter"
 
 echo ""
+echo "  Canary:     http://localhost:8085"
 echo "  Python:     http://localhost:5000"
 echo "  Java:       http://localhost:8080"
 echo "  Rust:       http://localhost:8083"
@@ -198,6 +200,7 @@ echo "  Go:         http://localhost:8086"
 echo "  .NET:       http://localhost:8087"
 echo "  C:          http://localhost:8088"
 echo "  PHP:        http://localhost:8089"
+echo "  Swift:      http://localhost:8091"
 echo "  Grafana:    http://localhost:3000  (admin / admin)"
 echo "  Prometheus: http://localhost:9090"
 echo "  Tempo:      http://localhost:3200"

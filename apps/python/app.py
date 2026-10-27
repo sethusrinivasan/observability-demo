@@ -8,8 +8,12 @@ import signal
 import threading
 import json
 from datetime import datetime, timezone
-import psycopg2
-from psycopg2 import pool
+try:
+    import psycopg2
+    from psycopg2 import pool
+except ImportError:
+    psycopg2 = None
+    pool = None
 import urllib.parse
 from contextlib import contextmanager
 from evaluator import evaluate as eval_expr

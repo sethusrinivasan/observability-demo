@@ -179,6 +179,12 @@ nodes:
   - containerPort: 30010
     hostPort: 8088
     protocol: TCP
+  - containerPort: 30011
+    hostPort: 8089
+    protocol: TCP
+  - containerPort: 30012
+    hostPort: 8091
+    protocol: TCP
 KINDCONF
     echo "  ✓ Cluster created"
 fi
@@ -197,6 +203,7 @@ docker build -t observability-go-app:latest ./apps/go
 docker build -t observability-dotnet-app:latest ./apps/dotnet
 docker build -t observability-c-app:latest ./apps/c
 docker build -t observability-php-app:latest ./apps/php
+docker build -t observability-swift-app:latest ./apps/swift
 echo "  ✓ All images built"
 
 # ---------------------------------------------------------------------------
@@ -213,6 +220,7 @@ kind load docker-image observability-go-app:latest      --name "$CLUSTER_NAME"
 kind load docker-image observability-dotnet-app:latest  --name "$CLUSTER_NAME"
 kind load docker-image observability-c-app:latest       --name "$CLUSTER_NAME"
 kind load docker-image observability-php-app:latest     --name "$CLUSTER_NAME"
+kind load docker-image observability-swift-app:latest   --name "$CLUSTER_NAME"
 echo "  ✓ Images loaded"
 
 # ---------------------------------------------------------------------------
@@ -283,6 +291,7 @@ wait_for_deployment observability-go-app     120
 wait_for_deployment observability-dotnet-app 120
 wait_for_deployment observability-c-app      120
 wait_for_deployment observability-php-app    120
+wait_for_deployment observability-swift-app  120
 
 # ---------------------------------------------------------------------------
 # Step 8: Summary
@@ -299,6 +308,8 @@ echo "  Node App     http://localhost:8084"
 echo "  Go App       http://localhost:8086"
 echo "  Dotnet App   http://localhost:8087"
 echo "  C App        http://localhost:8088"
+echo "  PHP App      http://localhost:8089"
+echo "  Swift App    http://localhost:8091"
 echo "  Grafana      http://localhost:3000  (admin / admin)"
 echo "  Prometheus   http://localhost:9090"
 echo "  Tempo        http://localhost:3200"

@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest==9.0.3
+pytest-timeout>=2.3.1
+pyarrow>=15.0.0

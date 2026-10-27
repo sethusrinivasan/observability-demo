@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Live Cloudflare Showcase](https://img.shields.io/badge/Live%20Showcase-Cloudflare%20Tunnel-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://volume-investigation-knife-pros.trycloudflare.com)
+[![Live Cloudflare Showcase](https://img.shields.io/badge/Live%20Showcase-Cloudflare%20Tunnel-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws/)
 [![Live AWS Deployment](https://img.shields.io/badge/Live%20AWS-Graviton%20MicroVMs-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws/)
 [![Live Verification](https://img.shields.io/github/actions/workflow/status/sethusrinivasan/observability-demo/live-verification.yml?branch=main&label=Live%20Tests&style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/sethusrinivasan/observability-demo/actions/workflows/live-verification.yml)
 [![Built with Google Antigravity](https://img.shields.io/badge/Built%20with-Google%20Antigravity-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://deepmind.google/technologies/)
@@ -167,7 +167,7 @@ For complete architectural documentation, cost formulas, and runtime sizing tabl
 
 ## Features
 
-* **Multi-Language Telemetry Parity**: Identical endpoint semantics, custom OTel histograms/counters, and tracing context across Python, Java, Rust, Node.js, Go, C# .NET, and C (POSIX).
+* **Multi-Language Telemetry Parity**: Identical endpoint semantics, custom OTel histograms/counters, and tracing context across Python, Java, Rust, Node.js, Go, C# .NET, C (POSIX), PHP, and Swift.
 * **Canary Load & Operations Station**:
   * **Collapsible Controls Drawer**: Chaos fault injection, target crashes, TPS overrides, and container power controls are enclosed in an expandable drawer that is **collapsed by default** to preserve screen real estate for clean monitoring.
   * **Container Power & Resource Management**: Shut down and restart individual containers hosting specific languages directly from the dashboard or mobile app to conserve system resources. Canary synthetic workload automatically detects container states and suspends requests to stopped containers, preventing artificial failure spikes.
@@ -176,7 +176,7 @@ For complete architectural documentation, cost formulas, and runtime sizing tabl
   * **Historical Trend Graphs**: Availability (%), Error Rate (err/s), Response Latency (ms), and Throughput (TPS) queried directly from Mimir across 6 horizons (`5m`, `30m`, `1h`, `6h`, `1d`, `30d`).
   * **Fault Injection Testing (Chaos Drills)**: Induce `Error Spikes`, `High Latency (+1000ms)`, `Service Outage (Drops)`, or `Intermittent Errors` with custom event tagging.
   * **Chaos Crash Triggering (Thread / Process Crash)**: Directly issue requests from the dashboard to target test environments to trigger process crashes or worker thread crashes with tagged events.
-  * **Language-Specific Event Color Coding**: Fault events are visually tagged and overlaid on trend charts using distinct language color palettes (🟠 Java, 🔵 Python, 🟣 Rust, 🟢 Node, 🩵 Go, 💜 .NET, ⚙️ C, 🔴 All).
+  * **Language-Specific Event Color Coding**: Fault events are visually tagged and overlaid on trend charts using distinct language color palettes (🟠 Java, 🔵 Python, 🟣 Rust, 🟢 Node, 🩵 Go, 💜 .NET, ⚙️ C, 🐘 PHP, 🕊️ Swift, 🔴 All).
   * **Dynamic Load Controller**: Bump up Canary TPS from baseline (6 TPS) to higher rates (e.g., 12, 24, 48 TPS) with automatic expiration and reset controls.
 * **Cloudflare Tunnel Live Showcase Bridge (`scripts/showcase_tunnel.sh`)**: Zero-port-forwarding public HTTPS access engineered for hosting 24/7 live showcases on residential broadband connections from your internet service provider. Supports instant TryCloudflare quick tunnels (zero accounts or domains required) or permanent Cloudflare Zero Trust custom domains with automated TLS and DDoS protection. See [`docs/cloudflare-tunnel-showcase.md`](./docs/cloudflare-tunnel-showcase.md).
 * **Cross-Platform React Native Mobile App (`mobile/`)**: Native companion client for Android, iOS, Windows, and Web. Includes an interactive SVG QR code in the Canary dashboard for instant mobile scanning and connection pairing.
@@ -185,13 +185,23 @@ For complete architectural documentation, cost formulas, and runtime sizing tabl
 * **Metrics & Aggregations**: Standardized RED metrics (Rate, Errors, Duration) stored in Grafana Mimir.
 * **Structured Logging**: Unified OTLP log pipeline shipping structured JSON logs to Grafana Loki.
 * **PostgreSQL Audit Log**: Thread-safe connection pooling and automatic schema initialization recording audit events.
-* **Mathematical Expression Evaluator**: Clean zero-dependency AST parser implementing the Shunting-Yard / recursive-descent algorithm across all seven languages.
+* **Mathematical Expression Evaluator**: Clean zero-dependency AST parser implementing the Shunting-Yard / recursive-descent algorithm across all nine languages.
 
 ---
 
 ## Quick Start
 
-### Docker Compose
+### 1. New Machine Setup & Prerequisites
+
+If running on a fresh machine or setting up a new development environment, use the automated setup script to configure Docker, Python venv, test dependencies, and `.env`:
+
+```bash
+./setup.sh --check      # Diagnostic mode: view installed vs missing prerequisites
+./setup.sh              # Standard local setup (Docker Engine, Python venv, cloudflared)
+./setup.sh --full       # Full developer setup (+ kubectl, kind, terraform, aws-cli)
+```
+
+### 2. Local Docker Compose Stack
 
 ```bash
 ./launch_docker.sh --run               # Full teardown, build & deploy
@@ -199,6 +209,10 @@ For complete architectural documentation, cost formulas, and runtime sizing tabl
 ./launch_docker.sh --run --tunnel      # Deploy with live Cloudflare showcase tunnel
 ./scripts/showcase_tunnel.sh --quick   # Instant public HTTPS showcase link (zero config)
 ./launch_docker.sh --teardown-only     # Stop and clean up containers
+# Or quick shortcuts:
+./start.sh                             # Start containers in background
+./test.sh                              # Run smoke & integration tests
+./stop.sh                              # Stop containers preserving volumes
 ```
 
 Once deployment completes, access the services:
@@ -218,6 +232,7 @@ Once deployment completes, access the services:
 | **.NET App** | `http://<HOST_IP>:8087` | C# .NET 8 + ASP.NET Core (30009 on Kind) |
 | **C App** | `http://<HOST_IP>:8088` | POSIX C99 Sockets + libpq (30010 on Kind) |
 | **PHP App** | `http://<HOST_IP>:8089` | PHP 8.3 CLI multi-worker server (30011 on Kind) |
+| **Swift App** | `http://<HOST_IP>:8091` | Swift 6.0 Standard Library server (30012 on Kind) |
 | **Prometheus** | `http://<HOST_IP>:9090` | Target scrapers & metrics |
 | **Grafana Mimir** | `http://<HOST_IP>:9009` | Long-term PromQL metrics engine |
 | **Grafana Tempo** | `http://<HOST_IP>:3200` | Distributed trace backend |
@@ -288,7 +303,7 @@ The repository is cleanly organized into root functional groups:
 
 ```text
 observability-demo/
-├── apps/                         # Polyglot microservices (8 runtimes + mobile)
+├── apps/                         # Polyglot microservices (9 runtimes + mobile)
 │   ├── c/                        # POSIX C99 multi-threaded socket service
 │   ├── dotnet/                   # C# .NET 8 ASP.NET Core service
 │   ├── go/                       # Go 1.25 concurrent service
@@ -298,6 +313,7 @@ observability-demo/
 │   ├── php/                      # PHP 8.3 CLI multi-worker service
 │   ├── python/                   # Python 3.11 Flask service
 │   ├── rust/                     # Rust 1.77 Axum asynchronous service
+│   ├── swift/                    # Swift 6.0 Standard Library service
 │   └── telemetry-receiver/       # Ephemeral disk buffering OTLP receiver
 ├── canary/                       # Synthetic traffic injector & DuckDB OLAP dashboard
 ├── config/                       # Grafana LGTM, OTel collector, and DB configurations
@@ -317,6 +333,7 @@ observability-demo/
 ├── deploy_aws.sh                 # Root convenience wrapper -> deployment/deploy_aws.sh
 ├── launch_docker.sh              # Root convenience wrapper -> deployment/launch_docker.sh
 ├── launch_k8s.sh                 # Root convenience wrapper -> deployment/launch_k8s.sh
+├── setup.sh                      # Workstation prerequisite setup & health checker
 ├── start.sh / stop.sh / test.sh  # Developer shortcuts for local run & smoke test
 └── README.md                     # Documentation & live deployment showcase
 ```
@@ -335,6 +352,7 @@ observability-demo/
 | [.NET Service](./apps/dotnet) | `8087` (Docker) / `30009` (Kind) | C# .NET 8 ASP.NET Core service, Npgsql connection pool, recursive-descent evaluator | `1.0.1` |
 | [C Service](./apps/c) | `8088` (Docker) / `30010` (Kind) | POSIX C99 multi-threaded socket service, libpq, zero-dependency evaluator | `1.0.1` |
 | [PHP Service](./apps/php) | `8089` (Docker) / `30011` (Kind) | PHP 8.3 CLI multi-worker server, PDO pgsql, recursive-descent evaluator | `1.0.1` |
+| [Swift Service](./apps/swift) | `8091` (Docker) / `30012` (Kind) | Swift 6.0 standard library microservice, recursive-descent evaluator | `1.0.1` |
 | [Canary Dashboard](./canary) | `8085` | Synthetic traffic generator, historical trend graphs, chaos fault injection | `1.0.1` |
 | [Canary Mobile App](./apps/mobile) | — | Cross-platform React Native client for Android, iOS, Windows, Web | `1.0.0` |
 | [CycloneDX SBOM](./sbom/sbom-cyclonedx.json) | — | Software Bill of Materials & architectural acknowledgments | `1.5` |
@@ -399,7 +417,7 @@ If the Docker daemon restarts and containers lose bridge connectivity, bring the
 This project was developed, debugged, and enhanced with the assistance of modern agentic AI systems:
 
 * **[Google Antigravity](https://deepmind.google/technologies/)**: Autonomous engineering pair programmer used for end-to-end telemetry architecture, root-cause diagnosis of microservice anomalies, chaos engineering design, and full-stack dashboard implementation.
-* **[Gemini CLI](https://deepmind.google/technologies/gemini/)**: Advanced agentic coding workflows for polyglot code synchronization across Python, Java, Rust, Node.js, Go, C# .NET, C, and PHP, PromQL query optimization, and test automation.
+* **[Gemini CLI](https://deepmind.google/technologies/gemini/)**: Advanced agentic coding workflows for polyglot code synchronization across Python, Java, Rust, Node.js, Go, C# .NET, C, PHP, and Swift, PromQL query optimization, and test automation.
 
 ---
 

@@ -281,6 +281,44 @@ func handleRequest(method: String, fullPath: String, body: String) -> HTTPRespon
         ])
     }
 
+    if path == "/selftest" {
+        var testsRun = 0
+        var failures = 0
+
+        testsRun += 1
+        if fibonacci(5) != 5 || fibonacci(10) != 55 {
+            failures += 1
+        }
+
+        testsRun += 1
+        do {
+            let eval1 = MathEvaluator(expression: "2 + 3 * 4")
+            let res1 = try eval1.parse()
+            if abs(res1 - 14.0) > 0.001 { failures += 1 }
+        } catch {
+            failures += 1
+        }
+
+        testsRun += 1
+        do {
+            let eval2 = MathEvaluator(expression: "5 / 0")
+            _ = try eval2.parse()
+            failures += 1
+        } catch {
+            // Expected division by zero error
+        }
+
+        let success = (failures == 0)
+        return HTTPResponse(statusCode: success ? 200 : 500, statusText: success ? "OK" : "Internal Server Error", contentType: "application/json", json: [
+            "success": success,
+            "tests_run": testsRun,
+            "failures": failures,
+            "app_name": "observability-swift-app",
+            "language": appLanguage,
+            "version": appVersion
+        ])
+    }
+
     if path == "/health" || path == "/actuator/health" || path == "/actuator/health/liveness" || path == "/actuator/health/readiness" {
         let uptime = Date().timeIntervalSince(startTime)
         return HTTPResponse(json: [

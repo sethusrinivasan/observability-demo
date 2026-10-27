@@ -78,3 +78,9 @@ jobs:
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply')
         run: terraform apply -auto-approve tfplan
+
+      - name: Verify Live AWS Deployment & Telemetry Lake
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply')
+        run: |
+          python3 -m pip install requests pytest
+          pytest ../../tests/test_aws_canary_audit.py -v --tb=short

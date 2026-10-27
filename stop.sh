@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Stop the local stack and keep data volumes.
+# stop.sh — Stop the local observability stack while preserving data volumes.
 set -euo pipefail
-cd "$(dirname "$0")"
 
-if ! docker ps >/dev/null 2>&1; then
-    echo "ERROR: Cannot run Docker commands. Is the daemon up, and is this user in the docker group?"
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "ERROR: Docker is not installed or not in PATH."
     exit 1
 fi
 
+echo "Stopping observability stack..."
 docker compose --profile tunnel --profile showcase down --remove-orphans
-echo "Stack stopped. Volumes were kept."
-echo "To delete volumes as well: ./launch_docker.sh --teardown-only"
+
+echo "✓ Stack stopped. Database and telemetry volumes were preserved."
+echo "To clean up and wipe volumes: ./launch_docker.sh --teardown-only"

@@ -1076,7 +1076,7 @@ def log_dashboard_error(component: str, error_type: str, message: str, details: 
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "component": component or "unknown",
         "error_type": error_type or "GeneralError",
-        "message": (message or "")[:2000],
+        "message": str(message or "")[:2000],
         "details": details or {},
         "client_ip": client_ip or "internal",
         "user_agent": (user_agent or "")[:255]
@@ -1938,7 +1938,7 @@ def execute_duckdb_query(query_str: str, max_rows: int = 500):
             pass
 
     if duckdb is None:
-        log_dashboard_error("duckdb_query", "duckdb package is not installed in canary container", {"query": query_str})
+        log_dashboard_error("duckdb_query", "MissingDependency", "duckdb package is not installed in canary container", {"query": query_str})
         return {"status": "error", "error": "duckdb package is not installed in canary container"}
 
     clean_query = (query_str or "").strip()

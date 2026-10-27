@@ -46,8 +46,9 @@ def get_base_urls():
     dn = os.getenv("DOTNET_URL")
     c  = os.getenv("C_URL")
     php= os.getenv("PHP_URL")
-    if py and jv and rs and nd and go and dn and c and php:
-        return {"python": py, "java": jv, "rust": rs, "node": nd, "go": go, "dotnet": dn, "c": c, "php": php}
+    sw = os.getenv("SWIFT_URL")
+    if py and jv and rs and nd and go and dn and c and php and sw:
+        return {"python": py, "java": jv, "rust": rs, "node": nd, "go": go, "dotnet": dn, "c": c, "php": php, "swift": sw}
 
     # 2. CLI flags
     if "--k8s" in sys.argv:
@@ -60,6 +61,7 @@ def get_base_urls():
             "dotnet": "http://localhost:30009",
             "c": "http://localhost:30010",
             "php": "http://localhost:30011",
+            "swift": "http://localhost:30012",
         }
     if "--docker" in sys.argv:
         return {
@@ -71,6 +73,7 @@ def get_base_urls():
             "dotnet": "http://localhost:8087",
             "c": "http://localhost:8088",
             "php": "http://localhost:8089",
+            "swift": "http://localhost:8091",
         }
 
     # 3. Auto-detect: check if localhost:5000 is reachable
@@ -86,6 +89,7 @@ def get_base_urls():
                 "dotnet": "http://localhost:8087",
                 "c": "http://localhost:8088",
                 "php": "http://localhost:8089",
+                "swift": "http://localhost:8091",
             }
     except Exception:
         pass
@@ -100,6 +104,7 @@ def get_base_urls():
         "dotnet": "http://localhost:30009",
         "c": "http://localhost:30010",
         "php": "http://localhost:30011",
+        "swift": "http://localhost:30012",
     }
 
 

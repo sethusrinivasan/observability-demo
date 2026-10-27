@@ -90,6 +90,12 @@ nodes:
   - containerPort: 30010
     hostPort: 8088
     protocol: TCP
+  - containerPort: 30011
+    hostPort: 8089
+    protocol: TCP
+  - containerPort: 30012
+    hostPort: 8091
+    protocol: TCP
 KINDCONF
 else
     echo "Cluster $CLUSTER_NAME already exists."
@@ -106,6 +112,7 @@ docker build -t observability-go-app:latest ./apps/go
 docker build -t observability-dotnet-app:latest ./apps/dotnet
 docker build -t observability-c-app:latest ./apps/c
 docker build -t observability-php-app:latest ./apps/php
+docker build -t observability-swift-app:latest ./apps/swift
 
 echo "=== Loading Images into Kind ==="
 kind load docker-image observability-python-app:latest --name "$CLUSTER_NAME"
@@ -117,6 +124,7 @@ kind load docker-image observability-go-app:latest --name "$CLUSTER_NAME"
 kind load docker-image observability-dotnet-app:latest --name "$CLUSTER_NAME"
 kind load docker-image observability-c-app:latest --name "$CLUSTER_NAME"
 kind load docker-image observability-php-app:latest --name "$CLUSTER_NAME"
+kind load docker-image observability-swift-app:latest --name "$CLUSTER_NAME"
 
 echo "=== Creating ConfigMaps ==="
 kubectl create configmap otel-config --from-file=config.yaml=./config/otel-collector.yaml -o yaml --dry-run=client | kubectl apply -f -

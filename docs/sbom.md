@@ -18,6 +18,7 @@ The machine-readable CycloneDX 1.5 standard SBOM is maintained at [`sbom/sbom-cy
 | **`observability-dotnet-app`** | Application | 1.0.1 | .NET 8.0 / C# Minimal API | MIT | `pkg:nuget/ObservabilityDotnetApp@1.0.1` | Modern Linux containerized C# service, Kestrel engine, .NET OTel SDK |
 | **`observability-c-app`** | Application | 1.0.1 | POSIX C99 / pthreads / libpq | MIT | `pkg:generic/observability-c-app@1.0.1` | Pure C socket microservice, zero external framework, raw memory efficiency |
 | **`observability-php-app`** | Application | 1.0.1 | PHP 8.3 CLI / PDO pgsql | MIT | `pkg:generic/observability-php-app@1.0.1` | Lightweight PHP microservice, built-in multi-worker server, zero third-party dependencies |
+| **`observability-swift-app`** | Application | 1.0.1 | Swift 6.0 / Standard Library | MIT | `pkg:generic/observability-swift-app@1.0.1` | High-efficiency native compiled Swift service, static standard library, sub-millisecond Fibonacci |
 | **`observability-canary`** | Application | 1.0.1 | Python 3.11 / Canvas / Docker API | MIT | `pkg:docker/observability-canary@1.0.1` | Synthetic load generator, Chaos Fault Injection, Docker power manager, SQL data grid |
 | **`canary-observability-mobile`** | Application | 1.0.0 | React Native 0.74 / Expo 51 | MIT | `pkg:npm/canary-observability-mobile@1.0.0` | Cross-platform mobile/desktop client for Android, iOS, Windows, and Web |
 | **`postgres`** | Container | 18.6 | PostgreSQL Relational DB | PostgreSQL | `pkg:docker/postgres@18.6` | Relational audit log persistence, transactional integrity, JSONB metadata |
@@ -126,7 +127,17 @@ The machine-readable CycloneDX 1.5 standard SBOM is maintained at [`sbom/sbom-cy
 
 ---
 
-### 9. Canary Load Generator, Fault Injector & Operations Center (`observability-canary`)
+### 9. Swift Microservice (`observability-swift-app`)
+* **How It Was Implemented**:
+  * Implemented in **Swift 6.0** using standard library components with static stdlib compilation for zero external framework overhead.
+  * Features an iterative 64-bit Fibonacci algorithm (supporting $n \le 92$), recursive-descent math parser with operator precedence, in-process self-testing, and Actuator health probes.
+  * Integrates with the AWS Lambda Web Adapter to run natively on AWS Graviton (`arm64`) MicroVMs with sub-10ms response times.
+* **Where the Inspiration Was From**:
+  * **Chris Lattner & the Swift Core Team**: Fast, safe, modern systems programming and server-side Swift architectures.
+
+---
+
+### 10. Canary Load Generator, Fault Injector & Operations Center (`observability-canary`)
 * **How It Was Implemented**:
   * Implemented in Python 3.11 with Python's standard library `HTTPServer`, multi-threading, and non-blocking sockets.
   * **Container Power Management**: Connects directly to the Docker Engine daemon over the Unix domain socket `/var/run/docker.sock` using standard library `http.client.HTTPConnection`. Shuts down, starts, and restarts unique language containers on demand, automatically adjusting synthetic traffic loops to prevent false failure alarms.
@@ -141,7 +152,7 @@ The machine-readable CycloneDX 1.5 standard SBOM is maintained at [`sbom/sbom-cy
 
 ---
 
-### 10. Cross-Platform Mobile Client (`canary-observability-mobile`)
+### 11. Cross-Platform Mobile Client (`canary-observability-mobile`)
 * **How It Was Implemented**:
   * Built using **React Native 0.74** and **Expo 51** with responsive Flexbox design.
   * Supports simultaneous deployment to **Android**, **iOS**, **Windows (React Native for Windows)**, and **Web**.

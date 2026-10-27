@@ -113,7 +113,7 @@ new_url = sys.argv[4].rstrip("/")
 # 1. Update README.md badge
 readme_text = readme_path.read_text(encoding="utf-8")
 p_badge = re.compile(
-    r'(\[!\[Live Showcase\]\(https:\/\/img\.shields\.io\/badge\/Live%20Showcase-Online%20Demo-00C7B7\?style=for-the-badge&logo=cloudflare&logoColor=white\)\]\()(https:\/\/[a-zA-Z0-9.-]+\.trycloudflare\.com)(\))'
+    r'(\[!\[Live (?:Cloudflare )?Showcase\]\([^)]*badge\/Live%20Showcase[^)]*\)\]\()([^)]+)(\))'
 )
 readme_new, count_badge = p_badge.subn(r'\g<1>' + new_url + r'\3', readme_text)
 if count_badge > 0:
@@ -125,7 +125,7 @@ else:
 # 2. Update .github/workflows/live-verification.yml
 workflow_text = workflow_path.read_text(encoding="utf-8")
 p_wf = re.compile(
-    r"(LIVE_URL:\s*\${{\s*vars\.LIVE_SHOWCASE_URL\s*\|\|\s*')(https:\/\/[a-zA-Z0-9.-]+\.trycloudflare\.com)(')"
+    r"(LIVE_URL:\s*\${{\s*vars\.LIVE_SHOWCASE_URL\s*\|\|\s*')([^']+)(')"
 )
 wf_new, count_wf = p_wf.subn(r'\g<1>' + new_url + r'\3', workflow_text)
 if count_wf > 0:
@@ -137,7 +137,7 @@ else:
 # 3. Update tests/test_live_showcase.py
 test_text = test_path.read_text(encoding="utf-8")
 p_test = re.compile(
-    r'(LIVE_URL\s*=\s*os\.getenv\("CANARY_URL",\s*os\.getenv\("LIVE_URL",\s*")(https:\/\/[a-zA-Z0-9.-]+\.trycloudflare\.com)("\)\)\.rstrip\("\/"\))'
+    r'(LIVE_URL\s*=\s*os\.getenv\("CANARY_URL",\s*os\.getenv\("LIVE_URL",\s*")([^"]+)("\)\)\.rstrip\("\/"\))'
 )
 test_new, count_test = p_test.subn(r'\g<1>' + new_url + r'\3', test_text)
 if count_test > 0:
