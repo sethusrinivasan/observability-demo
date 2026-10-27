@@ -100,15 +100,39 @@ case "$ARCH" in
     *) ARCH_ALT="$ARCH" ;;
 esac
 
+can_run_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 run_root() {
     if [ "$(id -u)" -eq 0 ]; then
         "$@"
     elif command -v sudo >/dev/null 2>&1; then
-        sudo "$@"
+        if sudo -n true 2>/dev/null || [ -t 0 ]; then
+            sudo "$@"
+        else
+            log_err "Root privileges required for: $*"
+            log_err "Non-interactive shell without passwordless sudo. Please run command with root/sudo."
+            exit 1
+        fi
     else
         log_err "Root privileges required for: $*"
         log_err "Please run with sudo or install sudo."
         exit 1
+    fi
+}
+
+get_bin_dir() {
+    if [ -w "/usr/local/bin" ] || can_run_root; then
+        echo "/usr/local/bin"
+    else
+        mkdir -p "${HOME}/.local/bin"
+        echo "${HOME}/.local/bin"
     fi
 }
 
@@ -129,7 +153,11 @@ run_check() {
         local req="${3:-Required}"
         if command -v "$cmd" >/dev/null 2>&1; then
             local version
-            version="$($cmd --version 2>&1 | head -n 1 || echo "installed")"
+            if [ "$cmd" = "kubectl" ]; then
+                version="$(kubectl version --client 2>&1 | head -n 1 || echo "installed")"
+            else
+                version="$($cmd --version 2>&1 | head -n 1 || echo "installed")"
+            fi
             printf "  %-18s ${GREEN}✓ FOUND${NC}    %-12s (%s)\n" "$name" "[$req]" "$version"
         else
             if [ "$req" = "Required" ]; then
@@ -216,34 +244,51 @@ echo "Configuring development environment on: $OS_TYPE ($ARCH)"
 echo "Target User: $CURRENT_USER"
 
 # ------------------------------------------------------------------------------
-# Step 1: System Packages (Debian / Ubuntu)
+# Step 1: System Packages (Debian / Ubuntu / RHEL / Darwin)
 # ------------------------------------------------------------------------------
 if [ -f /etc/debian_version ]; then
     log_header "Step 1: Installing System Packages"
-    log_info "Updating apt package index..."
-    run_root apt-get update -qq
+    REQUIRED_PACKAGES=(ca-certificates curl gnupg git jq build-essential libpq-dev python3 python3-pip python3-venv)
+    MISSING_PACKAGES=()
+    for pkg in "${REQUIRED_PACKAGES[@]}"; do
+        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+            MISSING_PACKAGES+=("$pkg")
+        fi
+    done
 
-    log_info "Installing core utilities, python3-venv, and SSL certs..."
-    run_root apt-get install -y -qq \
-        ca-certificates \
-        curl \
-        gnupg \
-        git \
-        jq \
-        build-essential \
-        libpq-dev \
-        python3 \
-        python3-pip \
-        python3-venv \
-        python3-psycopg2 \
-        python3-full 2>/dev/null || run_root apt-get install -y -qq \
-        ca-certificates curl gnupg git jq build-essential libpq-dev python3 python3-pip python3-venv python3-psycopg2
-
-    log_success "Base system packages installed."
+    if [ ${#MISSING_PACKAGES[@]} -eq 0 ]; then
+        log_success "All core system packages are already installed."
+    else
+        log_info "Missing system packages: ${MISSING_PACKAGES[*]}"
+        if can_run_root || [ -t 0 ]; then
+            log_info "Updating apt package index..."
+            run_root apt-get update -qq
+            log_info "Installing missing packages..."
+            run_root apt-get install -y -qq "${MISSING_PACKAGES[@]}"
+            log_success "Base system packages installed."
+        else
+            log_err "Root privileges required to install missing packages: ${MISSING_PACKAGES[*]}"
+            log_err "Please run with sudo or run: sudo apt-get install -y ${MISSING_PACKAGES[*]}"
+            exit 1
+        fi
+    fi
 elif [ -f /etc/redhat-release ]; then
     log_header "Step 1: Installing System Packages (RHEL/Fedora)"
-    run_root dnf install -y curl git jq python3 python3-pip python3-devel gcc
-    log_success "Base system packages installed."
+    REQUIRED_PACKAGES=(curl git jq python3 python3-pip python3-devel gcc)
+    MISSING_PACKAGES=()
+    for pkg in "${REQUIRED_PACKAGES[@]}"; do
+        if ! rpm -q "$pkg" >/dev/null 2>&1; then
+            MISSING_PACKAGES+=("$pkg")
+        fi
+    done
+
+    if [ ${#MISSING_PACKAGES[@]} -eq 0 ]; then
+        log_success "All core system packages are already installed."
+    else
+        log_info "Installing missing packages: ${MISSING_PACKAGES[*]}..."
+        run_root dnf install -y "${MISSING_PACKAGES[@]}"
+        log_success "Base system packages installed."
+    fi
 elif [ "$OS_TYPE" = "Darwin" ]; then
     log_header "Step 1: Checking macOS Packages (Homebrew)"
     if ! command -v brew >/dev/null 2>&1; then
@@ -290,20 +335,34 @@ else
     fi
 fi
 
-# Start Docker daemon if systemd is active
-if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
-    log_info "Ensuring Docker daemon is active..."
-    run_root systemctl enable --now docker 2>/dev/null || true
+# Ensure Docker daemon is active
+if command -v docker >/dev/null 2>&1; then
+    if docker info >/dev/null 2>&1; then
+        log_success "Docker daemon is active and accessible."
+    elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet docker 2>/dev/null; then
+        log_success "Docker systemd service is active."
+    elif can_run_root || [ -t 0 ]; then
+        log_info "Ensuring Docker daemon is active..."
+        run_root systemctl enable --now docker 2>/dev/null || true
+    fi
 fi
 
 # Configure non-root docker group access
 if getent group docker >/dev/null 2>&1; then
-    if ! id -nG "$CURRENT_USER" | grep -qw "docker"; then
-        log_info "Adding user '$CURRENT_USER' to 'docker' group..."
-        run_root usermod -aG docker "$CURRENT_USER"
-        log_warn "User '$CURRENT_USER' added to 'docker' group. You may need to log out and back in, or run 'newgrp docker'."
+    if getent group docker | grep -qw "$CURRENT_USER" || id -nG "$CURRENT_USER" 2>/dev/null | grep -qw "docker"; then
+        log_success "User '$CURRENT_USER' is configured in the 'docker' group."
+        if ! id -nG 2>/dev/null | grep -qw "docker"; then
+            log_warn "Docker group is not active in the current shell session."
+            log_info "To use Docker without sudo in this shell, run: 'newgrp docker' or 'sg docker -c \"...\"'."
+        fi
     else
-        log_success "User '$CURRENT_USER' is already a member of the 'docker' group."
+        if can_run_root || [ -t 0 ]; then
+            log_info "Adding user '$CURRENT_USER' to 'docker' group..."
+            run_root usermod -aG docker "$CURRENT_USER"
+            log_warn "User '$CURRENT_USER' added to 'docker' group. Run 'newgrp docker' to activate."
+        else
+            log_warn "User '$CURRENT_USER' is not in the 'docker' group. Run: sudo usermod -aG docker $CURRENT_USER"
+        fi
     fi
 fi
 
@@ -319,6 +378,8 @@ if [ ! -d ".venv" ]; then
         python3 -m venv --without-pip .venv
         curl -sS https://bootstrap.pypa.io/get-pip.py | .venv/bin/python3
     }
+else
+    log_success "Python virtual environment already exists at .venv/."
 fi
 
 log_info "Upgrading pip and installing dev/test dependencies..."
@@ -327,6 +388,12 @@ log_info "Upgrading pip and installing dev/test dependencies..."
 if [ -f "canary/requirements.txt" ]; then
     log_info "Installing Canary & DuckDB test requirements..."
     .venv/bin/pip install -r canary/requirements.txt -q
+fi
+
+# Ensure protobuf compatibility with Python 3.14+
+PYTHON_MAJOR_MINOR="$(.venv/bin/python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+if [[ "$PYTHON_MAJOR_MINOR" > "3.13" || "$PYTHON_MAJOR_MINOR" == "3.14" ]]; then
+    .venv/bin/pip install "protobuf>=5.26.0" -q 2>/dev/null || true
 fi
 log_success "Python virtual environment configured with pytest, requests, boto3, and pyarrow."
 
@@ -344,20 +411,19 @@ else
         CLOUDFLARED_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${ARCH_ALT}.tgz"
     fi
 
-    TARGET_BIN="/usr/local/bin/cloudflared"
-    if [ ! -w "/usr/local/bin" ] && [ "$(id -u)" -ne 0 ]; then
-        if command -v sudo >/dev/null 2>&1; then
-            sudo curl -fsSL -o "$TARGET_BIN" "$CLOUDFLARED_URL"
-            sudo chmod +x "$TARGET_BIN"
-        else
-            mkdir -p "${HOME}/.local/bin"
-            TARGET_BIN="${HOME}/.local/bin/cloudflared"
-            curl -fsSL -o "$TARGET_BIN" "$CLOUDFLARED_URL"
-            chmod +x "$TARGET_BIN"
-        fi
+    TARGET_DIR="$(get_bin_dir)"
+    TARGET_BIN="${TARGET_DIR}/cloudflared"
+
+    if [ -w "$TARGET_DIR" ] || [ "$(id -u)" -eq 0 ]; then
+        curl -fsSL -o "$TARGET_BIN" "$CLOUDFLARED_URL"
+        chmod +x "$TARGET_BIN"
     else
         run_root curl -fsSL -o "$TARGET_BIN" "$CLOUDFLARED_URL"
         run_root chmod +x "$TARGET_BIN"
+    fi
+
+    if [[ ":$PATH:" != *":${TARGET_DIR}:"* ]]; then
+        export PATH="${TARGET_DIR}:$PATH"
     fi
     log_success "cloudflared installed to $TARGET_BIN."
 fi
@@ -368,24 +434,42 @@ fi
 if [ "$INSTALL_K8S" = true ]; then
     log_header "Step 5: Installing Kubernetes Tools (kubectl, kind)"
 
+    TARGET_DIR="$(get_bin_dir)"
+
     if ! command -v kubectl >/dev/null 2>&1; then
         log_info "Installing kubectl..."
         KUBECTL_URL="https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH_ALT}/kubectl"
-        run_root curl -fsSL -o /usr/local/bin/kubectl "$KUBECTL_URL"
-        run_root chmod +x /usr/local/bin/kubectl
-        log_success "kubectl installed."
+        TARGET_BIN="${TARGET_DIR}/kubectl"
+        if [ -w "$TARGET_DIR" ] || [ "$(id -u)" -eq 0 ]; then
+            curl -fsSL -o "$TARGET_BIN" "$KUBECTL_URL"
+            chmod +x "$TARGET_BIN"
+        else
+            run_root curl -fsSL -o "$TARGET_BIN" "$KUBECTL_URL"
+            run_root chmod +x "$TARGET_BIN"
+        fi
+        log_success "kubectl installed to $TARGET_BIN."
     else
-        log_success "kubectl already present."
+        log_success "kubectl already present: $(command -v kubectl)"
     fi
 
     if ! command -v kind >/dev/null 2>&1; then
         log_info "Installing kind..."
         KIND_URL="https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-${ARCH_ALT}"
-        run_root curl -fsSL -o /usr/local/bin/kind "$KIND_URL"
-        run_root chmod +x /usr/local/bin/kind
-        log_success "kind installed."
+        TARGET_BIN="${TARGET_DIR}/kind"
+        if [ -w "$TARGET_DIR" ] || [ "$(id -u)" -eq 0 ]; then
+            curl -fsSL -o "$TARGET_BIN" "$KIND_URL"
+            chmod +x "$TARGET_BIN"
+        else
+            run_root curl -fsSL -o "$TARGET_BIN" "$KIND_URL"
+            run_root chmod +x "$TARGET_BIN"
+        fi
+        log_success "kind installed to $TARGET_BIN."
     else
-        log_success "kind already present."
+        log_success "kind already present: $(command -v kind)"
+    fi
+
+    if [[ ":$PATH:" != *":${TARGET_DIR}:"* ]]; then
+        export PATH="${TARGET_DIR}:$PATH"
     fi
 fi
 
@@ -397,15 +481,40 @@ if [ "$INSTALL_CLOUD" = true ]; then
 
     if ! command -v terraform >/dev/null 2>&1; then
         log_info "Installing Terraform..."
-        if [ -f /etc/debian_version ]; then
-            run_root curl -fsSL https://apt.releases.hashicorp.com/gpg | run_root gpg --dearmor -o /etc/apt/keyrings/hashicorp-archive-keyring.gpg
+        if [ -f /etc/debian_version ] && can_run_root; then
+            run_root install -m 0755 -d /etc/apt/keyrings
+            run_root curl -fsSL https://apt.releases.hashicorp.com/gpg | run_root gpg --dearmor --yes -o /etc/apt/keyrings/hashicorp-archive-keyring.gpg
             echo "deb [signed-by=/etc/apt/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs 2>/dev/null || echo noble) main" | \
                 run_root tee /etc/apt/sources.list.d/hashicorp.list >/dev/null
             run_root apt-get update -qq && run_root apt-get install -y -qq terraform
-            log_success "Terraform installed."
+            log_success "Terraform installed via apt."
+        else
+            TARGET_DIR="$(get_bin_dir)"
+            TERRAFORM_VERSION="1.8.5"
+            TEMP_TF_DIR="$(mktemp -d)"
+            curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${ARCH_ALT}.zip" -o "${TEMP_TF_DIR}/terraform.zip"
+            unzip -q -o "${TEMP_TF_DIR}/terraform.zip" -d "${TEMP_TF_DIR}"
+            TARGET_BIN="${TARGET_DIR}/terraform"
+            if [ -w "$TARGET_DIR" ] || [ "$(id -u)" -eq 0 ]; then
+                cp -f "${TEMP_TF_DIR}/terraform" "$TARGET_BIN"
+                chmod +x "$TARGET_BIN"
+            elif can_run_root; then
+                run_root cp -f "${TEMP_TF_DIR}/terraform" "$TARGET_BIN"
+                run_root chmod +x "$TARGET_BIN"
+            else
+                mkdir -p "${HOME}/.local/bin"
+                TARGET_BIN="${HOME}/.local/bin/terraform"
+                cp -f "${TEMP_TF_DIR}/terraform" "$TARGET_BIN"
+                chmod +x "$TARGET_BIN"
+            fi
+            rm -rf "${TEMP_TF_DIR}"
+            if [[ ":$PATH:" != *":${TARGET_DIR}:"* ]]; then
+                export PATH="${TARGET_DIR}:$PATH"
+            fi
+            log_success "Terraform installed to $TARGET_BIN."
         fi
     else
-        log_success "Terraform already present."
+        log_success "Terraform already present: $(command -v terraform)"
     fi
 
     if ! command -v aws >/dev/null 2>&1; then
@@ -413,11 +522,19 @@ if [ "$INSTALL_CLOUD" = true ]; then
         TEMP_AWS_DIR="$(mktemp -d)"
         curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o "${TEMP_AWS_DIR}/awscliv2.zip"
         unzip -q -o "${TEMP_AWS_DIR}/awscliv2.zip" -d "${TEMP_AWS_DIR}"
-        run_root "${TEMP_AWS_DIR}/aws/install" --update 2>/dev/null || true
+        if can_run_root; then
+            run_root "${TEMP_AWS_DIR}/aws/install" --update 2>/dev/null || true
+        else
+            mkdir -p "${HOME}/.local/aws-cli" "${HOME}/.local/bin"
+            "${TEMP_AWS_DIR}/aws/install" -i "${HOME}/.local/aws-cli" -b "${HOME}/.local/bin" --update 2>/dev/null || true
+            if [[ ":$PATH:" != *":${HOME}/.local/bin:"* ]]; then
+                export PATH="${HOME}/.local/bin:$PATH"
+            fi
+        fi
         rm -rf "${TEMP_AWS_DIR}"
         log_success "AWS CLI v2 installed."
     else
-        log_success "AWS CLI already present."
+        log_success "AWS CLI already present: $(command -v aws)"
     fi
 fi
 
@@ -458,10 +575,17 @@ chmod 700 "$HOME/.ssh"
 
 if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ ! -f "$HOME/.ssh/id_rsa" ]; then
     log_info "Generating Ed25519 SSH key for GitHub..."
-    ssh-keygen -t ed25519 -C "$(git config --global user.email)" -f "$HOME/.ssh/id_ed25519" -N ""
+    ssh_email="$(git config --global user.email 2>/dev/null || echo "$CURRENT_USER@local")"
+    ssh-keygen -t ed25519 -C "$ssh_email" -f "$HOME/.ssh/id_ed25519" -N ""
     log_success "SSH key pair generated at ~/.ssh/id_ed25519"
 else
     log_success "SSH key pair already present."
+fi
+
+# Detect active key file
+SSH_KEY_NAME="id_ed25519"
+if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ -f "$HOME/.ssh/id_rsa" ]; then
+    SSH_KEY_NAME="id_rsa"
 fi
 
 if ! grep -q "github.com" "$HOME/.ssh/known_hosts" 2>/dev/null; then
@@ -471,15 +595,15 @@ if ! grep -q "github.com" "$HOME/.ssh/known_hosts" 2>/dev/null; then
 fi
 
 if [ ! -f "$HOME/.ssh/config" ] || ! grep -q "Host github.com" "$HOME/.ssh/config" 2>/dev/null; then
-    cat << 'EOF' >> "$HOME/.ssh/config"
+    cat << EOF >> "$HOME/.ssh/config"
 Host github.com
     HostName github.com
     User git
-    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile ~/.ssh/${SSH_KEY_NAME}
     IdentitiesOnly yes
 EOF
     chmod 600 "$HOME/.ssh/config"
-    log_success "Configured ~/.ssh/config for GitHub."
+    log_success "Configured ~/.ssh/config for GitHub with ~/.ssh/${SSH_KEY_NAME}."
 fi
 
 # ------------------------------------------------------------------------------

@@ -17,6 +17,11 @@
 
 set -euo pipefail
 
+# Auto-elevate group permissions if user is member of docker group in /etc/group
+if ! docker ps >/dev/null 2>&1 && command -v sg >/dev/null 2>&1 && sg docker -c "docker ps" >/dev/null 2>&1; then
+    exec sg docker -c "\"$0\" $*"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TF_DIR="${SCRIPT_DIR}/terraform"

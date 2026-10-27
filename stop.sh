@@ -4,6 +4,11 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+# Auto-elevate group permissions if user is member of docker group in /etc/group
+if ! docker ps >/dev/null 2>&1 && command -v sg >/dev/null 2>&1 && sg docker -c "docker ps" >/dev/null 2>&1; then
+    exec sg docker -c "\"$0\" $*"
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
     echo "ERROR: Docker is not installed or not in PATH."
     exit 1
