@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Live Cloudflare Showcase](https://img.shields.io/badge/Live%20Showcase-Cloudflare%20Tunnel-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws/)
+[![Live Cloudflare Showcase](https://img.shields.io/badge/Live%20Showcase-Cloudflare%20Tunnel-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://purse-nebraska-transition-accessibility.trycloudflare.com)
 [![Live AWS Deployment](https://img.shields.io/badge/Live%20AWS-Graviton%20MicroVMs-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws/)
 [![Live Verification](https://img.shields.io/github/actions/workflow/status/sethusrinivasan/observability-demo/live-verification.yml?branch=main&label=Live%20Tests&style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/sethusrinivasan/observability-demo/actions/workflows/live-verification.yml)
 [![Built with Google Antigravity](https://img.shields.io/badge/Built%20with-Google%20Antigravity-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://deepmind.google/technologies/)

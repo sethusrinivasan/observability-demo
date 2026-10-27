@@ -14,7 +14,7 @@ jobs:
     name: Verify Live Showcase
     runs-on: ubuntu-latest
     env:
-      LIVE_URL: ${{ vars.LIVE_SHOWCASE_URL || 'https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws' }}
+      LIVE_URL: ${{ vars.LIVE_SHOWCASE_URL || 'https://purse-nebraska-transition-accessibility.trycloudflare.com' }}
 
     steps:
       - name: Checkout repository

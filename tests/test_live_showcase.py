@@ -7,7 +7,7 @@ import os
 import requests
 import pytest
 
-LIVE_URL = os.getenv("CANARY_URL", os.getenv("LIVE_URL", "https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws")).rstrip("/")
+LIVE_URL = os.getenv("CANARY_URL", os.getenv("LIVE_URL", "https://purse-nebraska-transition-accessibility.trycloudflare.com")).rstrip("/")
 
 
 @pytest.fixture(scope="session")
