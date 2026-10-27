@@ -268,8 +268,15 @@ def test_ondemand_custom_target_and_swift_service():
     from canary.canary import run_synthetic_cycle, render_dashboard_html
 
     # Execute on-demand cycle with custom target
+    import unittest.mock as mock
+    mock_session = mock.MagicMock()
+    mock_resp = mock.MagicMock()
+    mock_resp.status_code = 200
+    mock_session.get.return_value = mock_resp
+    mock_session.post.return_value = mock_resp
+
     custom_target = {"path": "/version", "method": "GET"}
-    res = run_synthetic_cycle(on_demand=True, custom_target=custom_target)
+    res = run_synthetic_cycle(on_demand=True, custom_target=custom_target, session=mock_session)
     assert res["status"] == "success"
     assert res["on_demand"] is True
     assert len(res["results"]) >= 8
@@ -341,3 +348,163 @@ def test_container_power_manager_includes_swift():
     assert '.badge-fault-swift' in html
     assert '<option value="swift">🕊️ Swift</option>' in html
     assert "CRASH-SWIFT-PROC" in html
+
+
+def test_database_cost_breakdown_time_ranges_and_markdown():
+    """Verify time duration filtering and one-pager Markdown report generation."""
+    from canary.canary import get_rds_cost_breakdown, generate_rds_cost_markdown
+
+    # 1. Test duration options: 1h, 6h, 1d, 3d, all
+    for r in ("1h", "6h", "1d", "3d", "all"):
+        data = get_rds_cost_breakdown(monthly_budget=150.0, attribution_basis="compute", time_range=r)
+        assert data["time_range"] == r
+        assert "time_range_label" in data
+        assert "summary" in data
+        assert "app_breakdown" in data
+        assert "top_queries" in data
+        assert "active_sessions" in data
+        assert "past_3h_queries" in data
+        assert "activity_queries" in data
+
+    # 2. Test markdown generator outputs comprehensive sections
+    sample_data = {
+        "time_range": "6h",
+        "time_range_label": "Past 6 Hours",
+        "rds_host": "test-postgres.internal",
+        "database": "observability",
+        "attribution_basis": "compute",
+        "monthly_budget_usd": 120.0,
+        "timestamp": "2026-10-27T16:00:00Z",
+        "summary": {
+            "total_calls": 4500,
+            "total_time_ms": 12500.0,
+            "active_connections": 12,
+            "attributed_apps_count": 4,
+        },
+        "app_breakdown": [
+            {
+                "app_identifier": "observability-python-app",
+                "db_user": "observability_admin",
+                "calls": 2500,
+                "call_share_pct": 55.6,
+                "total_time_ms": 7000.0,
+                "compute_share_pct": 56.0,
+                "mean_time_ms": 2.8,
+                "attributed_cost_usd": 67.20,
+            },
+            {
+                "app_identifier": "observability-go-app",
+                "db_user": "observability_admin",
+                "calls": 2000,
+                "call_share_pct": 44.4,
+                "total_time_ms": 5500.0,
+                "compute_share_pct": 44.0,
+                "mean_time_ms": 2.75,
+                "attributed_cost_usd": 52.80,
+            },
+        ],
+        "top_queries": [
+            {
+                "query_preview": "SELECT * FROM audit_logs WHERE app_name = $1",
+                "calls": 1200,
+                "total_time_ms": 3200.0,
+                "mean_time_ms": 2.67,
+                "cache_hit_pct": 99.4,
+                "bottleneck": "Optimized (Cache)",
+                "total_cost": 0.00037,
+            }
+        ],
+        "active_sessions": [
+            {
+                "app_name": "observability-python-app",
+                "db_user": "observability_admin",
+                "connections": 4,
+                "active_queries": 1,
+                "idle_connections": 3,
+            }
+        ],
+    }
+
+    md = generate_rds_cost_markdown(sample_data)
+    assert "# 📊 Database Cost & Resource Attribution Report" in md
+    assert "Past 6 Hours" in md
+    assert "## 1. Executive Summary & KPIs" in md
+    assert "$120.00 USD" in md
+    assert "## 2. Application Cost & Resource Attribution" in md
+    assert "observability-python-app" in md
+    assert "$67.20" in md
+    assert "## 3. Top Query Fingerprints & Compute Drivers" in md
+    assert "SELECT * FROM audit_logs" in md
+    assert "## 4. Live Client Connections & Session State" in md
+    assert "## 5. Engineering Action Items & Optimization Recommendations" in md
+
+
+def test_database_cost_breakdown_sortable_and_filterable_grids():
+    """Verify UI includes duration buttons, one-pager modal, filter inputs, and sortable headers for all 4 grids."""
+    from canary.canary import render_dashboard_html
+
+    html = render_dashboard_html()
+
+    # 1. Duration selector buttons
+    assert 'onclick="setRdsTimeRange(\'1h\', this)"' in html
+    assert 'onclick="setRdsTimeRange(\'6h\', this)"' in html
+    assert 'onclick="setRdsTimeRange(\'1d\', this)"' in html
+    assert 'onclick="setRdsTimeRange(\'3d\', this)"' in html
+    assert 'onclick="setRdsTimeRange(\'all\', this)"' in html
+
+    # 2. Generate One-Pager button & Modal
+    assert "📄 Generate One-Pager (.md)" in html
+    assert 'onclick="openRdsMarkdownModal()"' in html
+    assert 'id="rds-markdown-modal"' in html
+    assert 'id="rds-markdown-preview"' in html
+    assert 'onclick="copyRdsMarkdown()"' in html
+    assert 'onclick="downloadRdsMarkdown()"' in html
+
+    # 3. All 4 grid tables have IDs, filter inputs, row count badges, and sortable headers
+    grids = [
+        ("rds-app-breakdown-table", "rds-app-count-badge"),
+        ("rds-sessions-table", "rds-sess-count-badge"),
+        ("rds-top-queries-table", "rds-top-count-badge"),
+        ("rds-3h-queries-table", "rds-3h-count-badge"),
+    ]
+    for table_id, count_badge in grids:
+        assert f'id="{table_id}"' in html
+        assert f'filterGridTable(\'{table_id}\'' in html
+        assert f'id="{count_badge}"' in html
+        assert f'sortGridTable(\'{table_id}\'' in html
+
+    # 4. Table header styling and sort icons
+    assert 'class="sortable-th"' in html
+    assert '<span class="sort-icon">↕</span>' in html
+    assert 'function sortGridTable' in html
+    assert 'function filterGridTable' in html
+
+
+def test_sql_query_least_privilege_enforcement():
+    """Verify that excessive permission roles cannot execute queries and admin users are excluded from the dropdown."""
+    import re
+    from canary.canary import execute_sql_query, render_dashboard_html
+
+    # 1. Backend rejects excessive-permission roles
+    disallowed_roles = ["observability", "observability_admin", "postgres", "rdsadmin", "root", "admin", "superuser"]
+    for role in disallowed_roles:
+        res = execute_sql_query("SELECT * FROM audit_logs LIMIT 1;", role=role)
+        assert res["status"] == "error"
+        assert "Security Policy Violation" in res["error"]
+        assert "excessive permissions" in res["error"]
+
+    # 2. UI dropdown contains only the least-privileged read-only role
+    html = render_dashboard_html()
+    match = re.search(r'<select id="sql-role-select"[^>]*>(.*?)</select>', html, re.DOTALL)
+    assert match is not None, "sql-role-select must exist in HTML"
+    select_content = match.group(1)
+
+    assert 'value="observability_reader"' in select_content
+    assert 'value="observability"' not in select_content
+    assert 'value="observability_admin"' not in select_content
+    assert 'value="postgres"' not in select_content
+
+    # 3. Client JS onSelectSavedQuery binds strictly to observability_reader
+    assert "roleSel.value = 'observability_reader';" in html
+
+

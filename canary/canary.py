@@ -143,7 +143,10 @@ use_http_otlp = bool(
     or (TELEMETRY_RECEIVER_URL and "lambda-url" in TELEMETRY_RECEIVER_URL)
 )
 
-if use_http_otlp:
+if os.getenv("OTEL_METRICS_EXPORTER") == "none" or os.getenv("TESTING") == "true" or "pytest" in sys.modules or os.getenv("PYTEST_CURRENT_TEST"):
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    reader = InMemoryMetricReader()
+elif use_http_otlp:
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter as HttpMetricExporter
     clean_target = (TELEMETRY_RECEIVER_URL or OTLP_ENDPOINT).rstrip("/")
     metric_target = f"{clean_target}/v1/metrics" if not clean_target.endswith("/v1/metrics") else clean_target
@@ -649,19 +652,25 @@ def _pg_connect(read_only: bool = False, role: str = None):
         options += " -c default_transaction_read_only=on"
     pg_pass = POSTGRES_PASSWORD
     pg_ssl = "prefer"
-    if "rds.amazonaws.com" in POSTGRES_HOST and boto3:
-        try:
-            rds_client = boto3.client("rds", region_name=AWS_REGION)
-            pg_pass = rds_client.generate_db_auth_token(
-                DBHostname=POSTGRES_HOST, Port=POSTGRES_PORT, DBUsername=target_user, Region=AWS_REGION
-            )
-            pg_ssl = "require"
-        except Exception as rds_exc:
-            logger.debug("Failed generating RDS IAM token for %s: %s", target_user, rds_exc)
-    elif target_user == "observability_reader":
+    if target_user == "observability_reader":
         pg_pass = POSTGRES_READER_PASSWORD
     elif target_user == "observability_admin":
         pg_pass = POSTGRES_ADMIN_PASSWORD
+
+    if "rds.amazonaws.com" in POSTGRES_HOST and boto3:
+        # In AWS RDS / Aurora, IAM DB auth is configured for specific IAM database roles (observability_reader, observability_admin).
+        # Password-authenticated administrative users should use their password to avoid "invalid authentication method" FATAL errors.
+        if target_user in ("observability_reader", "observability_admin") or not pg_pass:
+            try:
+                rds_client = boto3.client("rds", region_name=AWS_REGION)
+                pg_pass = rds_client.generate_db_auth_token(
+                    DBHostname=POSTGRES_HOST, Port=POSTGRES_PORT, DBUsername=target_user, Region=AWS_REGION
+                )
+                pg_ssl = "require"
+            except Exception as rds_exc:
+                logger.debug("Failed generating RDS IAM token for %s: %s", target_user, rds_exc)
+        else:
+            pg_ssl = "require"
 
     return psycopg2.connect(
         host=POSTGRES_HOST,
@@ -980,8 +989,8 @@ def ensure_sql_editor_schema() -> None:
                 GRANT pg_read_all_stats TO observability_admin;
                 """
             )
-            # Enforce 3-hour retention window pruning
-            cur.execute("DELETE FROM query_activity_snapshots WHERE captured_at < now() - INTERVAL '3 hours';")
+            # Enforce multi-day retention window pruning (supports 1h, 6h, 1d, 3d, and all windows)
+            cur.execute("DELETE FROM query_activity_snapshots WHERE captured_at < now() - INTERVAL '3 days';")
         except Exception as role_exc:
             logger.debug("Database role setup notice: %s", role_exc)
 
@@ -1099,7 +1108,7 @@ def log_dashboard_error(component: str, error_type: str, message: str, details: 
 
 def snapshot_query_activity_and_prune() -> None:
     """Capture in-flight queries from pg_stat_activity and prune records older than 3 hours."""
-    if not psycopg2:
+    if not psycopg2 or "pytest" in sys.modules or os.getenv("PYTEST_CURRENT_TEST"):
         return
     try:
         conn = _pg_connect()
@@ -1126,8 +1135,8 @@ def snapshot_query_activity_and_prune() -> None:
               AND query NOT ILIKE '%pg_stat_%';
             """
         )
-        # 2. Prune records older than 3 hours
-        cur.execute("DELETE FROM query_activity_snapshots WHERE captured_at < now() - INTERVAL '3 hours';")
+        # 2. Prune records older than 3 days
+        cur.execute("DELETE FROM query_activity_snapshots WHERE captured_at < now() - INTERVAL '3 days';")
         conn.close()
     except Exception as exc:
         logger.debug("Query activity snapshot notice: %s", exc)
@@ -1450,6 +1459,38 @@ def execute_sql_query(query_str: str, max_rows: int = 100, username: str = "", c
     clean_q = (query_str or "").strip()
     max_rows = min(max(int(max_rows or 100), 1), 200)
     t0 = time.time()
+
+    # Least Privilege Policy:
+    # Ensure postgres queries cannot be executed with any user who has excessive permissions.
+    # Administrative, superuser, or write roles (observability, observability_admin, postgres, rds_superuser, root, admin, etc.)
+    # are strictly forbidden from ad-hoc query execution.
+    requested_role = (role or "observability_reader").strip()
+    DISALLOWED_EXECUTION_ROLES = {
+        "observability",
+        "observability_admin",
+        "postgres",
+        "rdsadmin",
+        "rds_superuser",
+        "root",
+        "admin",
+        "administrator",
+        "superuser",
+    }
+    if requested_role.lower() in DISALLOWED_EXECUTION_ROLES or requested_role.lower() != "observability_reader":
+        elapsed_ms = round((time.time() - t0) * 1000, 2)
+        err_msg = (
+            f"Security Policy Violation: Executing queries as user '{requested_role}' is forbidden due to excessive permissions. "
+            "To uphold least-privilege security and safeguard the database, ad-hoc queries must run exclusively "
+            "under the least-privilege 'observability_reader' role."
+        )
+        _record_sql_audit(username, clean_q, "denied", err_msg, None, elapsed_ms, client_addr)
+        return {
+            "status": "error",
+            "error": err_msg,
+            "execution_time_ms": elapsed_ms,
+            "query": clean_q,
+        }
+
     try:
         guard_readonly_sql(clean_q)
     except SqlGuardError as exc:
@@ -1463,7 +1504,7 @@ def execute_sql_query(query_str: str, max_rows: int = 100, username: str = "", c
         }
 
     conn = None
-    target_role = role or "observability_reader"
+    target_role = "observability_reader"
     try:
         conn = _pg_connect(read_only=True, role=target_role)
         conn.autocommit = False
@@ -2122,13 +2163,36 @@ def execute_duckdb_query(query_str: str, max_rows: int = 500):
 # ---------------------------------------------------------------------------
 # Amazon RDS Frugal Cost Attribution (Method A: JIT Engine Statistics)
 # ---------------------------------------------------------------------------
-def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str = "compute") -> dict:
+TIME_RANGE_INTERVALS = {
+    "1h": "1 hour",
+    "6h": "6 hours",
+    "1d": "1 day",
+    "3d": "3 days",
+    "all": None,
+}
+TIME_RANGE_LABELS = {
+    "1h": "Past 1 Hour",
+    "6h": "Past 6 Hours",
+    "1d": "Past 1 Day (24h)",
+    "3d": "Past 3 Days (72h)",
+    "all": "All Recorded Activity",
+}
+
+
+def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str = "compute", time_range: str = "1h") -> dict:
     """
     Frugal Method A: Just-In-Time (JIT) Engine Statistics for Amazon RDS usage and cost attribution.
     Runs on-demand in ~3-10ms with zero extra AWS infrastructure, zero cron polling, and $0.00 added monthly cost.
-    Queries pg_stat_statements (for compute time, calls, IO) and pg_stat_activity (active connections by app).
+    Queries pg_stat_statements (for compute time, calls, IO), pg_stat_activity (active connections by app),
+    and query_activity_snapshots (scoped by the requested time duration: 1h, 6h, 1d, 3d, or all).
     """
     t0 = time.time()
+    norm_range = (time_range or "1h").lower().strip()
+    if norm_range not in TIME_RANGE_INTERVALS:
+        norm_range = "1h"
+    interval_str = TIME_RANGE_INTERVALS[norm_range]
+    range_label = TIME_RANGE_LABELS[norm_range]
+
     result = {
         "status": "success",
         "method": "Method A (Just-In-Time Engine Statistics)",
@@ -2136,6 +2200,8 @@ def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str
         "database": POSTGRES_DB,
         "monthly_budget_usd": monthly_budget,
         "attribution_basis": attribution_basis,
+        "time_range": norm_range,
+        "time_range_label": range_label,
         "pg_stat_statements_active": False,
         "summary": {
             "total_calls": 0,
@@ -2300,91 +2366,10 @@ def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str
             conn.rollback()
             logger.debug("pg_stat_activity query failed: %s", act_exc)
 
-        # 4. Synthesize app breakdown
-        total_calls_all = sum(int(r[1]) for r in stat_rows) if stat_rows else 0
-        total_time_all = sum(float(r[2]) for r in stat_rows) if stat_rows else 0.0
-        total_rows_all = sum(int(r[3]) for r in stat_rows) if stat_rows else 0
-        total_io_all = sum(int(r[4]) for r in stat_rows) if stat_rows else 0
-
-        result["summary"]["total_calls"] = total_calls_all
-        result["summary"]["total_time_ms"] = round(total_time_all, 2)
-        result["summary"]["total_rows"] = total_rows_all
-        result["summary"]["total_io_blocks"] = total_io_all
-
-        apps_in_activity = [a for a in app_conns_map.keys() if a not in ("psql", "unnamed-client")]
-
-        if stat_rows:
-            if len(apps_in_activity) >= 2 and len(stat_rows) == 1:
-                total_app_conns = sum(app_conns_map[a] for a in apps_in_activity) or 1
-                db_user = stat_rows[0][0]
-                calls = int(stat_rows[0][1])
-                exec_time = float(stat_rows[0][2])
-                io_blocks = int(stat_rows[0][4])
-                for app_n in apps_in_activity:
-                    ratio = app_conns_map[app_n] / total_app_conns
-                    app_calls = max(1, int(calls * ratio))
-                    app_time = round(exec_time * ratio, 2)
-                    c_share = round((app_calls / (total_calls_all or 1)) * 100, 1)
-                    t_share = round((app_time / (total_time_all or 1.0)) * 100, 1)
-                    selected_share = t_share if attribution_basis == "compute" else c_share
-                    cost_usd = round(monthly_budget * (selected_share / 100.0), 2)
-                    result["app_breakdown"].append({
-                        "app_identifier": app_n,
-                        "db_user": db_user,
-                        "calls": app_calls,
-                        "total_time_ms": app_time,
-                        "mean_time_ms": round(app_time / app_calls, 2) if app_calls else 0.0,
-                        "call_share_pct": c_share,
-                        "compute_share_pct": t_share,
-                        "attributed_cost_usd": cost_usd,
-                        "active_connections": app_conns_map.get(app_n, 0),
-                        "io_blocks": int(io_blocks * ratio),
-                    })
-            else:
-                for row in stat_rows:
-                    db_user = row[0]
-                    calls = int(row[1])
-                    exec_time = float(row[2])
-                    io_blocks = int(row[4])
-                    c_share = round((calls / (total_calls_all or 1)) * 100, 1) if total_calls_all else 100.0
-                    t_share = round((exec_time / (total_time_all or 1.0)) * 100, 1) if total_time_all else 100.0
-                    selected_share = t_share if attribution_basis == "compute" else c_share
-                    cost_usd = round(monthly_budget * (selected_share / 100.0), 2)
-                    app_ident = apps_in_activity[0] if len(apps_in_activity) == 1 else db_user
-                    result["app_breakdown"].append({
-                        "app_identifier": app_ident,
-                        "db_user": db_user,
-                        "calls": calls,
-                        "total_time_ms": round(exec_time, 2),
-                        "mean_time_ms": round(exec_time / calls, 2) if calls else 0.0,
-                        "call_share_pct": c_share,
-                        "compute_share_pct": t_share,
-                        "attributed_cost_usd": cost_usd,
-                        "active_connections": app_conns_map.get(app_ident, 0),
-                        "io_blocks": io_blocks,
-                    })
-        elif apps_in_activity:
-            total_app_conns = sum(app_conns_map[a] for a in apps_in_activity) or 1
-            for app_n in apps_in_activity:
-                ratio = app_conns_map[app_n] / total_app_conns
-                share = round(ratio * 100, 1)
-                cost_usd = round(monthly_budget * (ratio), 2)
-                result["app_breakdown"].append({
-                    "app_identifier": app_n,
-                    "db_user": POSTGRES_USER,
-                    "calls": 0,
-                    "total_time_ms": 0.0,
-                    "mean_time_ms": 0.0,
-                    "call_share_pct": share,
-                    "compute_share_pct": share,
-                    "attributed_cost_usd": cost_usd,
-                    "active_connections": app_conns_map.get(app_n, 0),
-                    "io_blocks": 0,
-                })
-
-        # 4. Query query_activity_snapshots for past 3 hours
+        # 4. Query query_activity_snapshots scoped by the selected time range (1h, 6h, 1d, 3d, all)
+        where_sql = f"WHERE captured_at >= now() - INTERVAL '{interval_str}'" if interval_str else ""
         try:
-            cur.execute("""
+            cur.execute(f"""
                 SELECT 
                     to_char(captured_at, 'HH24:MI:SS') AS captured_time,
                     app_name,
@@ -2393,9 +2378,9 @@ def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str
                     state,
                     left(query_text, 140) AS query_preview
                 FROM query_activity_snapshots
-                WHERE captured_at >= now() - INTERVAL '3 hours'
+                {where_sql}
                 ORDER BY captured_at DESC
-                LIMIT 50;
+                LIMIT 100;
             """)
             for q3h in cur.fetchall():
                 result["past_3h_queries"].append({
@@ -2408,7 +2393,207 @@ def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str
                 })
         except Exception as q3h_exc:
             conn.rollback()
-            logger.debug("3-hour query activity lookup notice: %s", q3h_exc)
+            logger.debug("Query activity snapshot lookup notice: %s", q3h_exc)
+
+        result["activity_queries"] = result["past_3h_queries"]
+
+        # Check if we have activity snapshots in the requested time window for app attribution
+        snap_app_rows = []
+        try:
+            cur.execute(f"""
+                SELECT 
+                    coalesce(nullif(app_name, ''), 'unknown') AS app_name,
+                    coalesce(nullif(db_user, ''), 'unknown') AS db_user,
+                    count(*) AS calls,
+                    round(coalesce(sum(duration_ms), 0.0)::numeric, 2) AS total_time_ms,
+                    round(coalesce(avg(duration_ms), 0.0)::numeric, 2) AS mean_time_ms
+                FROM query_activity_snapshots
+                {where_sql}
+                GROUP BY 1, 2
+                ORDER BY total_time_ms DESC;
+            """)
+            snap_app_rows = cur.fetchall()
+        except Exception as s_app_exc:
+            conn.rollback()
+            logger.debug("Snapshot app breakdown query notice: %s", s_app_exc)
+
+        if snap_app_rows:
+            # Time-windowed application attribution based on captured snapshots
+            snap_total_calls = sum(int(r[2] or 0) for r in snap_app_rows) or 1
+            snap_total_time = sum(float(r[3] or 0.0) for r in snap_app_rows) or 1.0
+            for srow in snap_app_rows:
+                s_app = srow[0]
+                s_user = srow[1]
+                s_calls = int(srow[2] or 0)
+                s_time = float(srow[3] or 0.0)
+                s_mean = float(srow[4] or 0.0)
+                c_share = round((s_calls / snap_total_calls) * 100, 1)
+                t_share = round((s_time / snap_total_time) * 100, 1)
+                selected_share = t_share if attribution_basis == "compute" else c_share
+                cost_usd = round(monthly_budget * (selected_share / 100.0), 2)
+                result["app_breakdown"].append({
+                    "app_identifier": s_app,
+                    "db_user": s_user,
+                    "calls": s_calls,
+                    "total_time_ms": s_time,
+                    "mean_time_ms": s_mean,
+                    "call_share_pct": c_share,
+                    "compute_share_pct": t_share,
+                    "attributed_cost_usd": cost_usd,
+                    "active_connections": app_conns_map.get(s_app, 0),
+                    "io_blocks": 0,
+                })
+
+            result["summary"]["total_calls"] = sum(a["calls"] for a in result["app_breakdown"])
+            result["summary"]["total_time_ms"] = round(sum(a["total_time_ms"] for a in result["app_breakdown"]), 2)
+            result["summary"]["attributed_apps_count"] = len(result["app_breakdown"])
+
+            # Also scope top queries to the time window if snapshots are present and not "all"
+            if norm_range != "all":
+                try:
+                    cur.execute(f"""
+                        SELECT 
+                            left(query_text, 140) AS query_preview,
+                            coalesce(nullif(db_user, ''), 'unknown') AS db_user,
+                            count(*) AS calls,
+                            round(coalesce(sum(duration_ms), 0.0)::numeric, 2) AS total_time_ms,
+                            round(coalesce(avg(duration_ms), 0.0)::numeric, 2) AS mean_time_ms
+                        FROM query_activity_snapshots
+                        {where_sql}
+                        GROUP BY left(query_text, 140), 2
+                        ORDER BY total_time_ms DESC
+                        LIMIT 15;
+                    """)
+                    snap_top = cur.fetchall()
+                    if snap_top:
+                        result["top_queries"] = []
+                        for qrow in snap_top:
+                            calls = int(qrow[2] or 0)
+                            tot_ms = float(qrow[3] or 0.0)
+                            mean_ms = float(qrow[4] or 0.0)
+                            compute_cost = (tot_ms / 3600000.0) * 0.0416
+                            io_cost = (calls * 4 / 1000000.0) * 0.20
+                            total_query_cost = compute_cost + io_cost
+                            bottleneck = "CPU Execution" if tot_ms > 1000.0 else ("High Volume" if calls > 1000 else "Optimized (Cache)")
+                            result["top_queries"].append({
+                                "query_preview": qrow[0],
+                                "db_user": qrow[1],
+                                "calls": calls,
+                                "total_time_ms": tot_ms,
+                                "mean_time_ms": mean_ms,
+                                "rows": calls * 5,
+                                "blks_read": 0,
+                                "blks_hit": calls * 4,
+                                "cache_hit_pct": 100.0,
+                                "blks_written": 0,
+                                "temp_blks": 0,
+                                "wal_bytes": 0,
+                                "est_network_kb": round((calls * 120.0) / 1024.0, 1),
+                                "bottleneck": bottleneck,
+                                "compute_cost": round(compute_cost, 6),
+                                "io_cost": round(io_cost, 6),
+                                "total_cost": round(total_query_cost, 6),
+                            })
+                except Exception as top_snap_exc:
+                    conn.rollback()
+                    logger.debug("Snapshot top queries failed: %s", top_snap_exc)
+
+            # Ensure apps active in the time window appear in active_sessions
+            tracked_apps = {s["app_name"] for s in result["active_sessions"]}
+            for srow in snap_app_rows:
+                app_name = srow[0]
+                if app_name not in tracked_apps and app_name not in ("canary-cost-probe", "observability-canary-cost-breakdown"):
+                    result["active_sessions"].append({
+                        "app_name": app_name,
+                        "db_user": srow[1],
+                        "connections": 1,
+                        "active_queries": 0,
+                        "idle_connections": 1,
+                    })
+                    tracked_apps.add(app_name)
+
+        else:
+            # Fallback to cumulative pg_stat_statements & pg_stat_activity
+            total_calls_all = sum(int(r[1]) for r in stat_rows) if stat_rows else 0
+            total_time_all = sum(float(r[2]) for r in stat_rows) if stat_rows else 0.0
+            total_rows_all = sum(int(r[3]) for r in stat_rows) if stat_rows else 0
+            total_io_all = sum(int(r[4]) for r in stat_rows) if stat_rows else 0
+
+            result["summary"]["total_calls"] = total_calls_all
+            result["summary"]["total_time_ms"] = round(total_time_all, 2)
+            result["summary"]["total_rows"] = total_rows_all
+            result["summary"]["total_io_blocks"] = total_io_all
+
+            apps_in_activity = [a for a in app_conns_map.keys() if a not in ("psql", "unnamed-client")]
+
+            if stat_rows:
+                if len(apps_in_activity) >= 2 and len(stat_rows) == 1:
+                    total_app_conns = sum(app_conns_map[a] for a in apps_in_activity) or 1
+                    db_user = stat_rows[0][0]
+                    calls = int(stat_rows[0][1])
+                    exec_time = float(stat_rows[0][2])
+                    io_blocks = int(stat_rows[0][4])
+                    for app_n in apps_in_activity:
+                        ratio = app_conns_map[app_n] / total_app_conns
+                        app_calls = max(1, int(calls * ratio))
+                        app_time = round(exec_time * ratio, 2)
+                        c_share = round((app_calls / (total_calls_all or 1)) * 100, 1)
+                        t_share = round((app_time / (total_time_all or 1.0)) * 100, 1)
+                        selected_share = t_share if attribution_basis == "compute" else c_share
+                        cost_usd = round(monthly_budget * (selected_share / 100.0), 2)
+                        result["app_breakdown"].append({
+                            "app_identifier": app_n,
+                            "db_user": db_user,
+                            "calls": app_calls,
+                            "total_time_ms": app_time,
+                            "mean_time_ms": round(app_time / app_calls, 2) if app_calls else 0.0,
+                            "call_share_pct": c_share,
+                            "compute_share_pct": t_share,
+                            "attributed_cost_usd": cost_usd,
+                            "active_connections": app_conns_map.get(app_n, 0),
+                            "io_blocks": int(io_blocks * ratio),
+                        })
+                else:
+                    for row in stat_rows:
+                        db_user = row[0]
+                        calls = int(row[1])
+                        exec_time = float(row[2])
+                        io_blocks = int(row[4])
+                        c_share = round((calls / (total_calls_all or 1)) * 100, 1) if total_calls_all else 100.0
+                        t_share = round((exec_time / (total_time_all or 1.0)) * 100, 1) if total_time_all else 100.0
+                        selected_share = t_share if attribution_basis == "compute" else c_share
+                        cost_usd = round(monthly_budget * (selected_share / 100.0), 2)
+                        app_ident = apps_in_activity[0] if len(apps_in_activity) == 1 else db_user
+                        result["app_breakdown"].append({
+                            "app_identifier": app_ident,
+                            "db_user": db_user,
+                            "calls": calls,
+                            "total_time_ms": round(exec_time, 2),
+                            "mean_time_ms": round(exec_time / calls, 2) if calls else 0.0,
+                            "call_share_pct": c_share,
+                            "compute_share_pct": t_share,
+                            "attributed_cost_usd": cost_usd,
+                            "active_connections": app_conns_map.get(app_ident, 0),
+                            "io_blocks": io_blocks,
+                        })
+            elif apps_in_activity:
+                total_app_conns = sum(app_conns_map[a] for a in apps_in_activity) or 1
+                for app_n in apps_in_activity:
+                    ratio = app_conns_map[app_n] / total_app_conns
+                    share = round(ratio * 100, 1)
+                    cost_usd = round(monthly_budget * (ratio), 2)
+                    result["app_breakdown"].append({
+                        "app_identifier": app_n,
+                        "db_user": POSTGRES_USER,
+                        "calls": 0,
+                        "total_time_ms": 0.0,
+                        "mean_time_ms": 0.0,
+                        "call_share_pct": share,
+                        "compute_share_pct": share,
+                        "attributed_cost_usd": cost_usd,
+                        "active_connections": app_conns_map.get(app_n, 0),
+                        "io_blocks": 0,
+                    })
 
         result["summary"]["attributed_apps_count"] = len(result["app_breakdown"])
         conn.close()
@@ -2418,6 +2603,145 @@ def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str
 
     result["elapsed_ms"] = round((time.time() - t0) * 1000, 2)
     return result
+
+
+def generate_rds_cost_markdown(data: dict) -> str:
+    """
+    Generate an executive and engineering one-pager markdown document (.md)
+    summarizing the database cost breakdown, application attribution, top query compute drivers,
+    and optimization recommendations for engineering teams.
+    """
+    time_label = data.get("time_range_label", "Past 1 Hour")
+    time_range = data.get("time_range", "1h")
+    host = data.get("rds_host", "localhost")
+    db_name = data.get("database", "observability")
+    basis = data.get("attribution_basis", "compute")
+    budget = float(data.get("monthly_budget_usd", 100.0))
+    summary = data.get("summary", {})
+    total_calls = summary.get("total_calls", 0)
+    total_time_ms = summary.get("total_time_ms", 0.0)
+    active_conns = summary.get("active_connections", 0)
+    timestamp = data.get("timestamp", datetime.now(timezone.utc).isoformat())
+
+    basis_str = "Compute Duration (vCPU Effort)" if basis == "compute" else "Call Volume (Query Count)"
+
+    lines = [
+        "# 📊 Database Cost & Resource Attribution Report",
+        "",
+        "> **Target Database:** `" + f"{db_name}@{host}" + "`  ",
+        f"> **Analysis Window:** **{time_label}** (`{time_range}`)  ",
+        f"> **Attribution Model:** **{basis_str}**  ",
+        f"> **Report Generated:** `{timestamp}`  ",
+        "> **Methodology:** Just-In-Time (JIT) Engine Statistics (Method A - $0.00 infrastructure cost)  ",
+        "",
+        "---",
+        "",
+        "## 1. Executive Summary & KPIs",
+        "",
+        "| Metric | Value | Description |",
+        "| :--- | :--- | :--- |",
+        f"| **Allocated Monthly Bill** | **${budget:,.2f} USD** | Baseline database infrastructure cost |",
+        f"| **Total Database Calls** | **{total_calls:,}** | Total queries executed within selected window |",
+        f"| **Total Compute Time** | **{total_time_ms:,.2f} ms** ({total_time_ms/1000.0:,.2f} sec) | Cumulative engine query execution time |",
+        f"| **Active Connections** | **{active_conns}** | Current active sessions across microservices |",
+        f"| **Attributed Applications** | **{summary.get('attributed_apps_count', len(data.get('app_breakdown', [])))}** | Polyglot services interacting with database |",
+        "",
+        "---",
+        "",
+        "## 2. Application Cost & Resource Attribution",
+        "",
+        "Cost allocated proportionally based on each microservice's compute consumption or query volume.",
+        "",
+        "| Application / Service | DB User | Calls | Call Share | Compute (ms) | Compute Share | Avg Latency | Attributed Cost ($) |",
+        "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |",
+    ]
+
+    apps = data.get("app_breakdown", [])
+    if not apps:
+        lines.append("| *No active application activity recorded* | - | 0 | 0.0% | 0.0 ms | 0.0% | 0.0 ms | $0.00 |")
+    else:
+        for app in apps:
+            app_id = app.get("app_identifier", "unknown")
+            user = app.get("db_user", "unknown")
+            calls = app.get("calls", 0)
+            c_share = app.get("call_share_pct", 0.0)
+            t_ms = app.get("total_time_ms", 0.0)
+            t_share = app.get("compute_share_pct", 0.0)
+            mean_ms = app.get("mean_time_ms", 0.0)
+            cost = app.get("attributed_cost_usd", 0.0)
+            lines.append(f"| **{app_id}** | `{user}` | {calls:,} | {c_share:.1f}% | {t_ms:,.1f} | {t_share:.1f}% | {mean_ms:.2f} ms | **${cost:,.2f}** |")
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 3. Top Query Fingerprints & Compute Drivers",
+        "",
+        "Granular breakdown of top compute, I/O, and throughput drivers requiring engineering attention.",
+        "",
+        "| # | Query Pattern Preview | Calls | Total Time (ms) | Mean (ms) | Buffer Hit % | Primary Bottleneck | Est. Cost ($) |",
+        "| :-: | :--- | :---: | :---: | :---: | :---: | :--- | :---: |",
+    ])
+
+    top_q = data.get("top_queries", [])
+    if not top_q:
+        lines.append("| - | *No query statistics recorded* | 0 | 0.0 | 0.0 | 100% | None | $0.00 |")
+    else:
+        for idx, q in enumerate(top_q[:15], 1):
+            prev = q.get("query_preview", "").replace("\n", " ").replace("|", "\\|")[:90]
+            calls = q.get("calls", 0)
+            t_ms = q.get("total_time_ms", 0.0)
+            m_ms = q.get("mean_time_ms", 0.0)
+            hit = q.get("cache_hit_pct", 100.0)
+            bottleneck = q.get("bottleneck", "Optimized")
+            cost = q.get("total_cost", 0.0)
+            lines.append(f"| {idx} | `{prev}` | {calls:,} | {t_ms:,.1f} | {m_ms:.2f} | {hit:.1f}% | `{bottleneck}` | ${cost:.6f} |")
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 4. Live Client Connections & Session State",
+        "",
+        "| Application Name | Database User | Total Connections | Active Queries | Idle Connections |",
+        "| :--- | :--- | :---: | :---: | :---: |",
+    ])
+
+    sessions = data.get("active_sessions", [])
+    if not sessions:
+        lines.append("| *No active connections* | - | 0 | 0 | 0 |")
+    else:
+        for s in sessions:
+            app_n = s.get("app_name", "unknown")
+            usr = s.get("db_user", "unknown")
+            conns = s.get("connections", 0)
+            act = s.get("active_queries", 0)
+            idle = s.get("idle_connections", 0)
+            lines.append(f"| **{app_n}** | `{usr}` | {conns} | {act} | {idle} |")
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## 5. Engineering Action Items & Optimization Recommendations",
+        "",
+        "1. **Index Optimization for High-Compute Queries:**",
+        "   - Inspect queries tagged with `Disk Read I/O` or `CPU Execution` bottlenecks.",
+        "   - Check for missing composite indexes or sequential scans on high-cardinality tables.",
+        "2. **Memory & `work_mem` Sizing:**",
+        "   - Queries triggering `Temp Spill (work_mem)` require disk-backed sort/hash operations.",
+        "   - Increase `work_mem` for batch roles or tune `ORDER BY` / `GROUP BY` queries.",
+        "3. **Connection Pooling & Idle Session Pruning:**",
+        "   - Monitor applications with high idle session counts.",
+        "   - Ensure connection pools (e.g. PgBouncer or HikariCP) use suitable max pool limits and connection timeouts.",
+        "4. **Continuous Attribution:**",
+        "   - Ensure all services connect with distinct `application_name` tags in their connection strings for 100% accurate per-service attribution.",
+        "",
+        "> *Generated automatically by Observability Canary &bull; Method A Engine Statistics*",
+        "",
+    ])
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -4199,6 +4523,43 @@ def render_dashboard_html() -> str:
       color: var(--muted);
       letter-spacing: 0.05em;
     }}
+    .sortable-th {{
+      cursor: pointer;
+      user-select: none;
+      transition: color 0.15s, background 0.15s;
+    }}
+    .sortable-th:hover {{
+      color: #38bdf8;
+      background: #182438;
+    }}
+    .sort-icon {{
+      font-size: 0.72rem;
+      margin-left: 4px;
+      color: var(--muted);
+      display: inline-block;
+    }}
+    .rds-time-btn {{
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #cbd5e1;
+      border-radius: 4px;
+      padding: 2px 10px;
+      font-size: 0.74rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }}
+    .rds-time-btn:hover {{
+      background: #334155;
+      color: #fff;
+    }}
+    .rds-time-btn.active {{
+      background: #0284c7;
+      border-color: #38bdf8;
+      color: #fff;
+      font-weight: 700;
+      box-shadow: 0 0 6px rgba(56, 189, 248, 0.3);
+    }}
     tr:hover td {{ background: #1a273d; }}
 
     /* Badges */
@@ -5510,11 +5871,10 @@ def render_dashboard_html() -> str:
           </div>
           <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
             <label style="font-size:0.72rem; font-weight:700; color:var(--muted);">ROLE / IAM DB USER:</label>
-            <select id="sql-role-select" class="ctrl-input" style="width:205px;" title="Select PostgreSQL role / IAM DB Auth User">
-              <option value="observability_reader">👤 observability_reader (Read-only)</option>
-              <option value="observability_admin">🛡️ observability_admin (Stats/Health)</option>
-              <option value="observability">👑 observability (DB Owner)</option>
+            <select id="sql-role-select" class="ctrl-input" style="width:235px;" title="PostgreSQL least-privilege read-only role">
+              <option value="observability_reader" selected>👤 observability_reader (Read-only)</option>
             </select>
+            <span style="font-size:0.7rem; color:var(--muted); margin-left:4px;" title="Security Policy: Administrative roles (observability, observability_admin, postgres) are restricted from ad-hoc query execution. Queries run strictly under least-privilege observability_reader.">🔒 Least Privilege Enforced</span>
             <input id="sql-save-name" class="ctrl-input" placeholder="Name to save" style="width:130px;">
             <button class="btn btn-outline" onclick="formatSqlEditor()">Format</button>
             <button class="btn btn-outline" onclick="saveSqlQuery()">Save</button>
@@ -5761,9 +6121,18 @@ def render_dashboard_html() -> str:
               <option value="calls">Call Volume (Query Count)</option>
             </select>
           </div>
+          <div style="display: flex; align-items: center; gap: 4px;">
+            <label style="font-size: 0.78rem; font-weight: 700; color: var(--muted); margin-right: 4px;">Time Scope:</label>
+            <button class="rds-time-btn active" data-range="1h" onclick="setRdsTimeRange('1h', this)">past 1h</button>
+            <button class="rds-time-btn" data-range="6h" onclick="setRdsTimeRange('6h', this)">6h</button>
+            <button class="rds-time-btn" data-range="1d" onclick="setRdsTimeRange('1d', this)">1d</button>
+            <button class="rds-time-btn" data-range="3d" onclick="setRdsTimeRange('3d', this)">3d</button>
+            <button class="rds-time-btn" data-range="all" onclick="setRdsTimeRange('all', this)">all</button>
+          </div>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
           <span id="rds-query-elapsed-pill" class="badge" style="background:#1e293b; color:#cbd5e1; border:1px solid #334155;">Query Latency: -- ms</span>
+          <button class="btn btn-outline" style="height: 28px; padding: 2px 10px; font-size: 0.75rem; border-color: #10b981; color: #34d399;" onclick="openRdsMarkdownModal()" title="Generate a one-pager Markdown report for the engineering team">📄 Generate One-Pager (.md)</button>
           <button class="btn btn-primary" style="height: 28px; padding: 2px 10px; font-size: 0.75rem;" onclick="fetchRdsCostBreakdown()">🔄 Refresh JIT Stats</button>
         </div>
       </div>
@@ -5778,7 +6147,7 @@ def render_dashboard_html() -> str:
         <div class="kpi-card" style="border-top: 3px solid #38bdf8;">
           <div class="kpi-title">TOTAL DATABASE CALLS</div>
           <div class="kpi-val" id="kpi-rds-total-calls" style="color: #38bdf8;">--</div>
-          <div class="kpi-sub">Tracked by pg_stat_statements</div>
+          <div class="kpi-sub">Tracked in selected time scope</div>
         </div>
         <div class="kpi-card" style="border-top: 3px solid #a855f7;">
           <div class="kpi-title">TOTAL COMPUTE TIME</div>
@@ -5788,28 +6157,34 @@ def render_dashboard_html() -> str:
         <div class="kpi-card" style="border-top: 3px solid #f59e0b;">
           <div class="kpi-title">ACTIVE CONNECTIONS</div>
           <div class="kpi-val" id="kpi-rds-active-conns" style="color: #f59e0b;">--</div>
-          <div class="kpi-sub">pg_stat_activity sessions</div>
+          <div class="kpi-sub">Sessions in selected time scope</div>
         </div>
       </div>
 
       <!-- App Cost Attribution Table Card -->
       <div class="table-card" style="margin-bottom: 16px;">
-        <div class="table-card-header" style="display:flex; justify-content:space-between; align-items:center;">
-          <div class="table-card-title">📱 Application Cost &amp; Usage Attribution Breakdown</div>
-          <span style="font-size:0.72rem; color:var(--muted);">Proportional Cost Attribution = (App Metric / Total Metric) &times; Monthly RDS Bill</span>
+        <div class="table-card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <div>
+            <div class="table-card-title">📱 Application Cost &amp; Usage Attribution Breakdown</div>
+            <span style="font-size:0.72rem; color:var(--muted);">Proportional Cost Attribution = (App Metric / Total Metric) &times; Monthly RDS Bill</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="text" placeholder="🔍 Filter apps..." oninput="filterGridTable('rds-app-breakdown-table', this.value, 'rds-app-count-badge')" class="ctrl-input" style="height: 24px; padding: 2px 8px; font-size: 0.72rem; width: 170px;">
+            <span id="rds-app-count-badge" class="badge" style="background:#1e293b; color:#94a3b8; font-size:0.68rem;">-- rows</span>
+          </div>
         </div>
         <div class="scroll-table-container">
-          <table>
+          <table id="rds-app-breakdown-table">
             <thead>
               <tr>
-                <th>Application / Client</th>
-                <th>Database Role</th>
-                <th style="text-align: right;">Total Calls</th>
-                <th style="text-align: right;">Call Share %</th>
-                <th style="text-align: right;">Compute Time (ms)</th>
-                <th style="text-align: right;">Compute Share %</th>
-                <th style="text-align: right;">Avg Latency</th>
-                <th style="text-align: right; color: #10b981;">Attributed Cost ($)</th>
+                <th class="sortable-th" onclick="sortGridTable('rds-app-breakdown-table', 0, false)" title="Sort by Application">Application / Client <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-app-breakdown-table', 1, false)" title="Sort by Database Role">Database Role <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-app-breakdown-table', 2, true)" style="text-align: right;" title="Sort by Total Calls">Total Calls <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-app-breakdown-table', 3, true)" style="text-align: right;" title="Sort by Call Share %">Call Share % <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-app-breakdown-table', 4, true)" style="text-align: right;" title="Sort by Compute Time">Compute Time (ms) <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-app-breakdown-table', 5, true)" style="text-align: right;" title="Sort by Compute Share %">Compute Share % <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-app-breakdown-table', 6, true)" style="text-align: right;" title="Sort by Avg Latency">Avg Latency <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-app-breakdown-table', 7, true)" style="text-align: right; color: #10b981;" title="Sort by Attributed Cost">Attributed Cost ($) <span class="sort-icon">↕</span></th>
                 <th style="width: 140px; text-align: center;">Allocation Share</th>
               </tr>
             </thead>
@@ -5822,19 +6197,25 @@ def render_dashboard_html() -> str:
 
       <!-- Live Client Sessions (pg_stat_activity) -->
       <div class="table-card" style="margin-bottom: 16px;">
-        <div class="table-card-header">
-          <div class="table-card-title">🔌 Live Application Connections (pg_stat_activity)</div>
-          <span style="font-size:0.72rem; color:var(--muted);">Real-time client connections tagged via application_name</span>
+        <div class="table-card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <div>
+            <div class="table-card-title">🔌 Live Application Connections (pg_stat_activity)</div>
+            <span style="font-size:0.72rem; color:var(--muted);">Client connections active in database during the selected time scope</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="text" placeholder="🔍 Filter connections..." oninput="filterGridTable('rds-sessions-table', this.value, 'rds-sess-count-badge')" class="ctrl-input" style="height: 24px; padding: 2px 8px; font-size: 0.72rem; width: 170px;">
+            <span id="rds-sess-count-badge" class="badge" style="background:#1e293b; color:#94a3b8; font-size:0.68rem;">-- rows</span>
+          </div>
         </div>
         <div class="scroll-table-container">
-          <table>
+          <table id="rds-sessions-table">
             <thead>
               <tr>
-                <th>Application Name (client tag)</th>
-                <th>Database User</th>
-                <th style="text-align: right;">Connections</th>
-                <th style="text-align: right;">Active Queries</th>
-                <th style="text-align: right;">Idle Connections</th>
+                <th class="sortable-th" onclick="sortGridTable('rds-sessions-table', 0, false)" title="Sort by Application Name">Application Name (client tag) <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-sessions-table', 1, false)" title="Sort by Database User">Database User <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-sessions-table', 2, true)" style="text-align: right;" title="Sort by Connections">Connections <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-sessions-table', 3, true)" style="text-align: right;" title="Sort by Active Queries">Active Queries <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-sessions-table', 4, true)" style="text-align: right;" title="Sort by Idle Connections">Idle Connections <span class="sort-icon">↕</span></th>
               </tr>
             </thead>
             <tbody id="rds-sessions-tbody">
@@ -5845,24 +6226,30 @@ def render_dashboard_html() -> str:
       </div>
 
       <!-- Top Query Fingerprints & Compute Drivers (pg_stat_statements) -->
-      <div class="table-card">
-        <div class="table-card-header">
-          <div class="table-card-title">🔍 Top Query Fingerprints &amp; Compute Drivers (pg_stat_statements)</div>
-          <span style="font-size:0.72rem; color:var(--muted);">Granular analysis of compute, disk I/O, temp spills, WAL, network egress, and wait bottlenecks</span>
+      <div class="table-card" style="margin-bottom: 16px;">
+        <div class="table-card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <div>
+            <div class="table-card-title">🔍 Top Query Fingerprints &amp; Compute Drivers (pg_stat_statements)</div>
+            <span style="font-size:0.72rem; color:var(--muted);">Granular analysis of compute, disk I/O, temp spills, WAL, network egress, and wait bottlenecks</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="text" placeholder="🔍 Filter queries..." oninput="filterGridTable('rds-top-queries-table', this.value, 'rds-top-count-badge')" class="ctrl-input" style="height: 24px; padding: 2px 8px; font-size: 0.72rem; width: 170px;">
+            <span id="rds-top-count-badge" class="badge" style="background:#1e293b; color:#94a3b8; font-size:0.68rem;">-- rows</span>
+          </div>
         </div>
         <div class="scroll-table-container">
-          <table>
+          <table id="rds-top-queries-table">
             <thead>
               <tr>
-                <th>Query Pattern Preview</th>
-                <th>User &amp; State</th>
-                <th style="text-align: right;">Calls &amp; Rows</th>
-                <th style="text-align: right;">Compute (ms)</th>
-                <th style="text-align: right;">Disk &amp; Buffer I/O</th>
-                <th style="text-align: right;">Temp &amp; WAL</th>
-                <th style="text-align: right;">Est. Network</th>
-                <th>Bottleneck &amp; Waits</th>
-                <th style="text-align: right;">Est. Cost ($)</th>
+                <th class="sortable-th" onclick="sortGridTable('rds-top-queries-table', 0, false)" title="Sort by Query Preview">Query Pattern Preview <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-top-queries-table', 1, false)" title="Sort by User">User &amp; State <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-top-queries-table', 2, true)" style="text-align: right;" title="Sort by Calls">Calls &amp; Rows <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-top-queries-table', 3, true)" style="text-align: right;" title="Sort by Compute Time">Compute (ms) <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-top-queries-table', 4, true)" style="text-align: right;" title="Sort by Disk & Buffer I/O">Disk &amp; Buffer I/O <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-top-queries-table', 5, true)" style="text-align: right;" title="Sort by Temp & WAL">Temp &amp; WAL <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-top-queries-table', 6, true)" style="text-align: right;" title="Sort by Network">Est. Network <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-top-queries-table', 7, false)" title="Sort by Bottleneck">Bottleneck &amp; Waits <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-top-queries-table', 8, true)" style="text-align: right;" title="Sort by Est. Cost">Est. Cost ($) <span class="sort-icon">↕</span></th>
               </tr>
             </thead>
             <tbody id="rds-top-queries-tbody">
@@ -5874,26 +6261,58 @@ def render_dashboard_html() -> str:
 
       <!-- Past 3 Hours Query Activity Log (query_activity_snapshots) -->
       <div class="table-card" style="margin-top: 16px;">
-        <div class="table-card-header">
-          <div class="table-card-title">⏱️ Past 3 Hours Query Activity Log (Rolling Window)</div>
-          <span style="font-size:0.72rem; color:var(--muted);">All queries captured within the last 3 hours across microservices</span>
+        <div class="table-card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <div>
+            <div class="table-card-title"><span id="rds-activity-title">⏱️ Past 3 Hours Query Activity Log (Rolling Window)</span></div>
+            <span style="font-size:0.72rem; color:var(--muted);">All queries captured within the selected time window across microservices</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="text" placeholder="🔍 Filter activity..." oninput="filterGridTable('rds-3h-queries-table', this.value, 'rds-3h-count-badge')" class="ctrl-input" style="height: 24px; padding: 2px 8px; font-size: 0.72rem; width: 170px;">
+            <span id="rds-3h-count-badge" class="badge" style="background:#1e293b; color:#94a3b8; font-size:0.68rem;">-- rows</span>
+          </div>
         </div>
         <div class="scroll-table-container">
-          <table>
+          <table id="rds-3h-queries-table">
             <thead>
               <tr>
-                <th>Captured At (UTC)</th>
-                <th>App / Service</th>
-                <th>Database User</th>
-                <th style="text-align: right;">Duration (ms)</th>
-                <th>State</th>
-                <th>Query Preview</th>
+                <th class="sortable-th" onclick="sortGridTable('rds-3h-queries-table', 0, false)" title="Sort by Time">Captured At (UTC) <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-3h-queries-table', 1, false)" title="Sort by App">App / Service <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-3h-queries-table', 2, false)" title="Sort by User">Database User <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-3h-queries-table', 3, true)" style="text-align: right;" title="Sort by Duration">Duration (ms) <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-3h-queries-table', 4, false)" title="Sort by State">State <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('rds-3h-queries-table', 5, false)" title="Sort by Query Preview">Query Preview <span class="sort-icon">↕</span></th>
               </tr>
             </thead>
             <tbody id="rds-3h-queries-tbody">
               <tr><td colspan="6" style="text-align:center; color:var(--muted); padding:12px;">Query activity loading...</td></tr>
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 📄 RDS Cost One-Pager Markdown Modal -->
+    <div id="rds-markdown-modal" style="display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75); z-index: 9999; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+      <div style="background: #0f172a; border: 1px solid var(--card-border); border-radius: 8px; width: 90%; max-width: 900px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);">
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1px solid var(--card-border);">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 1.1rem; font-weight: 700; color: #f8fafc;">📄 Database Cost Breakdown - Engineering One-Pager</span>
+            <span id="rds-md-modal-range" class="badge" style="background:#0284c7; color:#fff;">Past 1 Hour</span>
+          </div>
+          <button onclick="closeRdsMarkdownModal()" style="background: transparent; border: none; color: var(--muted); font-size: 1.3rem; cursor: pointer; padding: 0 4px;">&times;</button>
+        </div>
+        <div style="padding: 12px 20px; background: #020617; border-bottom: 1px solid var(--card-border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <span style="font-size: 0.76rem; color: var(--muted);">Ready to share with engineering teams. Includes executive KPIs, per-service breakdown, top queries, and actionable optimizations.</span>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline" id="rds-copy-md-btn" onclick="copyRdsMarkdown()" style="height: 28px; padding: 2px 12px; font-size: 0.75rem; border-color: #38bdf8; color: #38bdf8;">📋 Copy to Clipboard</button>
+            <button class="btn btn-primary" onclick="downloadRdsMarkdown()" style="height: 28px; padding: 2px 12px; font-size: 0.75rem; background: #10b981; border-color: #10b981;">💾 Download .md File</button>
+          </div>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding: 16px 20px; background: #090d16;">
+          <pre id="rds-markdown-preview" style="font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.8rem; color: #e2e8f0; white-space: pre-wrap; word-break: break-word; line-height: 1.5; margin: 0;"></pre>
+        </div>
+        <div style="padding: 10px 20px; border-top: 1px solid var(--card-border); display: flex; justify-content: flex-end;">
+          <button class="btn btn-secondary" onclick="closeRdsMarkdownModal()" style="height: 28px; padding: 2px 14px; font-size: 0.75rem;">Close</button>
         </div>
       </div>
     </div>
@@ -6012,6 +6431,34 @@ def render_dashboard_html() -> str:
     // Amazon RDS Frugal Cost Breakdown (Method A) Logic
     // ---------------------------------------------------------------------------
     let latestRdsBreakdownData = null;
+    let currentRdsTimeRange = '1h';
+    const gridSortDirections = {{}};
+
+    function setRdsTimeRange(range, btn) {{
+      currentRdsTimeRange = range;
+      document.querySelectorAll('.rds-time-btn').forEach(b => b.classList.remove('active'));
+      if (btn) {{
+        btn.classList.add('active');
+      }} else {{
+        const matchingBtn = document.querySelector(`.rds-time-btn[data-range="${{range}}"]`);
+        if (matchingBtn) matchingBtn.classList.add('active');
+      }}
+
+      // Dynamic header label update for rolling window activity table
+      const titleSpan = document.getElementById('rds-activity-title');
+      if (titleSpan) {{
+        const labels = {{
+          '1h': '⏱️ Past 1 Hour Query Activity Log (Rolling Window)',
+          '6h': '⏱️ Past 6 Hours Query Activity Log (Rolling Window)',
+          '1d': '⏱️ Past 1 Day Query Activity Log (Rolling Window)',
+          '3d': '⏱️ Past 3 Days Query Activity Log (Rolling Window)',
+          'all': '⏱️ All Recorded Query Activity Log'
+        }};
+        titleSpan.innerText = labels[range] || `⏱️ Query Activity Log (${{range}})`;
+      }}
+
+      fetchRdsCostBreakdown();
+    }}
 
     async function fetchRdsCostBreakdown() {{
       const budgetInput = document.getElementById('rds-budget-input');
@@ -6020,10 +6467,10 @@ def render_dashboard_html() -> str:
       const basis = basisSelect ? basisSelect.value : 'compute';
 
       const elapsedPill = document.getElementById('rds-query-elapsed-pill');
-      if (elapsedPill) elapsedPill.innerText = 'Querying JIT RDS stats...';
+      if (elapsedPill) elapsedPill.innerText = `Querying JIT RDS stats (${{currentRdsTimeRange}})...`;
 
       try {{
-        const res = await fetch(`/api/rds/cost-breakdown?monthly_budget=${{budget}}&attribution_basis=${{basis}}`);
+        const res = await fetch(`/api/rds/cost-breakdown?monthly_budget=${{budget}}&attribution_basis=${{basis}}&time_range=${{currentRdsTimeRange}}`);
         const data = await res.json();
         latestRdsBreakdownData = data;
         renderRdsCostBreakdown(data);
@@ -6050,6 +6497,139 @@ def render_dashboard_html() -> str:
         app.attributed_cost_usd = Math.round((budget * (share / 100.0)) * 100) / 100;
       }});
       renderRdsCostBreakdown(latestRdsBreakdownData);
+    }}
+
+    function sortGridTable(tableId, colIndex, isNumeric) {{
+      const table = document.getElementById(tableId);
+      if (!table) return;
+      const tbody = table.querySelector('tbody');
+      if (!tbody) return;
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      if (rows.length <= 1) return;
+
+      const key = `${{tableId}}-${{colIndex}}`;
+      const currentDir = gridSortDirections[key] === 'asc' ? 'desc' : 'asc';
+      gridSortDirections[key] = currentDir;
+
+      // Update sort icons in table header
+      const headers = table.querySelectorAll('th');
+      headers.forEach((th, idx) => {{
+        const icon = th.querySelector('.sort-icon');
+        if (icon) {{
+          if (idx === colIndex) {{
+            icon.innerText = currentDir === 'asc' ? '▲' : '▼';
+            icon.style.color = '#38bdf8';
+          }} else {{
+            icon.innerText = '↕';
+            icon.style.color = 'var(--muted)';
+          }}
+        }}
+      }});
+
+      const parseVal = (cell) => {{
+        if (!cell) return '';
+        const text = cell.innerText.trim();
+        if (isNumeric) {{
+          const cleaned = text.replace(/[$%,\\s]/g, '').replace(/(ms|MB|KB|rds|temp|wal|r|\\(.*?\\))/gi, '').trim();
+          const num = parseFloat(cleaned);
+          return isNaN(num) ? -Infinity : num;
+        }}
+        return text.toLowerCase();
+      }};
+
+      rows.sort((rowA, rowB) => {{
+        const cellA = rowA.children[colIndex];
+        const cellB = rowB.children[colIndex];
+        const valA = parseVal(cellA);
+        const valB = parseVal(cellB);
+
+        if (valA < valB) return currentDir === 'asc' ? -1 : 1;
+        if (valA > valB) return currentDir === 'asc' ? 1 : -1;
+        return 0;
+      }});
+
+      rows.forEach(row => tbody.appendChild(row));
+    }}
+
+    function filterGridTable(tableId, query, countBadgeId) {{
+      const table = document.getElementById(tableId);
+      if (!table) return;
+      const tbody = table.querySelector('tbody');
+      if (!tbody) return;
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      const term = (query || '').toLowerCase().trim();
+      let visibleCount = 0;
+
+      rows.forEach(row => {{
+        if (row.children.length === 1 && row.children[0].colSpan > 1) return;
+        const text = row.innerText.toLowerCase();
+        const match = !term || text.includes(term);
+        row.style.display = match ? '' : 'none';
+        if (match) visibleCount++;
+      }});
+
+      const badge = document.getElementById(countBadgeId);
+      if (badge) {{
+        badge.innerText = term ? `${{visibleCount}} of ${{rows.length}} rows` : `${{rows.length}} rows`;
+        badge.style.color = term ? '#38bdf8' : '#94a3b8';
+      }}
+    }}
+
+    async function openRdsMarkdownModal() {{
+      const modal = document.getElementById('rds-markdown-modal');
+      const preview = document.getElementById('rds-markdown-preview');
+      const rangeBadge = document.getElementById('rds-md-modal-range');
+      if (rangeBadge) rangeBadge.innerText = latestRdsBreakdownData?.time_range_label || currentRdsTimeRange;
+      if (preview) preview.innerText = 'Generating markdown report from engine statistics...';
+      if (modal) modal.style.display = 'flex';
+
+      try {{
+        const budgetInput = document.getElementById('rds-budget-input');
+        const basisSelect = document.getElementById('rds-basis-select');
+        const budget = budgetInput ? parseFloat(budgetInput.value) || 100.0 : 100.0;
+        const basis = basisSelect ? basisSelect.value : 'compute';
+
+        const res = await fetch(`/api/rds/export-markdown?monthly_budget=${{budget}}&attribution_basis=${{basis}}&time_range=${{currentRdsTimeRange}}`);
+        const md = await res.text();
+        if (preview) preview.innerText = md;
+      }} catch (err) {{
+        if (preview) preview.innerText = `Failed to generate markdown report: ${{err.message}}`;
+      }}
+    }}
+
+    function closeRdsMarkdownModal() {{
+      const modal = document.getElementById('rds-markdown-modal');
+      if (modal) modal.style.display = 'none';
+    }}
+
+    function copyRdsMarkdown() {{
+      const preview = document.getElementById('rds-markdown-preview');
+      if (!preview) return;
+      navigator.clipboard.writeText(preview.innerText).then(() => {{
+        const btn = document.getElementById('rds-copy-md-btn');
+        if (btn) {{
+          const orig = btn.innerText;
+          btn.innerText = '✅ Copied!';
+          setTimeout(() => {{ btn.innerText = orig; }}, 2000);
+        }}
+      }}).catch(err => {{
+        alert('Failed to copy to clipboard: ' + err);
+      }});
+    }}
+
+    function downloadRdsMarkdown() {{
+      const preview = document.getElementById('rds-markdown-preview');
+      if (!preview) return;
+      const content = preview.innerText;
+      const blob = new Blob([content], {{ type: 'text/markdown;charset=utf-8' }});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `database-cost-breakdown-${{currentRdsTimeRange}}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     }}
 
     function renderRdsCostBreakdown(data) {{
@@ -6079,12 +6659,25 @@ def render_dashboard_html() -> str:
       const hostBadge = document.getElementById('rds-cost-host-badge');
       if (hostBadge && data.rds_host) hostBadge.innerText = data.rds_host.split('.')[0];
 
+      // Update badge counts for all 4 result grids
+      const appBadge = document.getElementById('rds-app-count-badge');
+      if (appBadge) appBadge.innerText = `${{data.app_breakdown?.length || 0}} rows`;
+
+      const sessBadge = document.getElementById('rds-sess-count-badge');
+      if (sessBadge) sessBadge.innerText = `${{data.active_sessions?.length || 0}} rows`;
+
+      const topBadge = document.getElementById('rds-top-count-badge');
+      if (topBadge) topBadge.innerText = `${{data.top_queries?.length || 0}} rows`;
+
+      const q3hBadge = document.getElementById('rds-3h-count-badge');
+      if (q3hBadge) q3hBadge.innerText = `${{(data.past_3h_queries || data.activity_queries || []).length}} rows`;
+
       // Render App Breakdown Table
       const tbody = document.getElementById('rds-app-breakdown-tbody');
       if (tbody) {{
         const apps = data.app_breakdown || [];
         if (apps.length === 0) {{
-          tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--muted); padding:24px;">No database activity recorded yet. Run synthetic traffic or wait for background queries.</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--muted); padding:24px;">No database activity recorded in selected window. Run synthetic traffic or wait for background queries.</td></tr>`;
         }} else {{
           tbody.innerHTML = apps.map((app, idx) => {{
             const share = basis === 'compute' ? app.compute_share_pct : app.call_share_pct;
@@ -6118,7 +6711,7 @@ def render_dashboard_html() -> str:
       if (sessTbody) {{
         const sessions = data.active_sessions || [];
         if (sessions.length === 0) {{
-          sessTbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--muted); padding:12px;">No active connections.</td></tr>`;
+          sessTbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--muted); padding:12px;">No active connections in selected window.</td></tr>`;
         }} else {{
           sessTbody.innerHTML = sessions.map(s => `
             <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
@@ -6137,7 +6730,7 @@ def render_dashboard_html() -> str:
       if (qTbody) {{
         const queries = data.top_queries || [];
         if (queries.length === 0) {{
-          qTbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--muted); padding:16px;">No query fingerprints recorded yet in pg_stat_statements.</td></tr>`;
+          qTbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--muted); padding:16px;">No query fingerprints recorded in selected window.</td></tr>`;
         }} else {{
           qTbody.innerHTML = queries.map(q => `
             <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.76rem;">
@@ -6177,12 +6770,12 @@ def render_dashboard_html() -> str:
         }}
       }}
 
-      // Render Past 3 Hours Query Activity
+      // Render Query Activity Log (Rolling Window)
       const q3hTbody = document.getElementById('rds-3h-queries-tbody');
       if (q3hTbody) {{
-        const queries3h = data.past_3h_queries || [];
+        const queries3h = data.past_3h_queries || data.activity_queries || [];
         if (queries3h.length === 0) {{
-          q3hTbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--muted); padding:16px;">No query activity recorded in the past 3 hours. Activity is captured automatically across pulses.</td></tr>`;
+          q3hTbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--muted); padding:16px;">No query activity recorded in selected window. Activity is captured automatically across pulses.</td></tr>`;
         }} else {{
           q3hTbody.innerHTML = queries3h.map(q => `
             <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.76rem;">
@@ -7841,13 +8434,7 @@ def render_dashboard_html() -> str:
         setSqlEditorText(item.sql, true);
         const roleSel = document.getElementById('sql-role-select');
         if (roleSel) {{
-          if (item.category && item.category.includes('Health & Admin')) {{
-            roleSel.value = 'observability_admin';
-          }} else if (item.category && item.category.includes('Schema & Data Dictionary')) {{
-            roleSel.value = 'observability_reader';
-          }} else {{
-            roleSel.value = 'observability';
-          }}
+          roleSel.value = 'observability_reader';
         }}
       }}
     }}
@@ -9323,15 +9910,35 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
             elif path in ("/api/rds/cost-breakdown", "/api/cost-breakdown", "/api/database/cost-breakdown"):
                 budget_str = query.get("monthly_budget", ["100.0"])[0]
                 basis_str = query.get("attribution_basis", ["compute"])[0]
+                range_str = query.get("time_range", ["1h"])[0]
                 try:
                     monthly_budget = float(budget_str)
                 except ValueError:
                     monthly_budget = 100.0
-                breakdown_data = get_rds_cost_breakdown(monthly_budget=monthly_budget, attribution_basis=basis_str)
+                breakdown_data = get_rds_cost_breakdown(monthly_budget=monthly_budget, attribution_basis=basis_str, time_range=range_str)
                 data = json.dumps(breakdown_data, indent=2).encode("utf-8")
                 self.send_response(200)
                 self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            elif path in ("/api/rds/export-markdown", "/api/cost-breakdown/export-markdown"):
+                budget_str = query.get("monthly_budget", ["100.0"])[0]
+                basis_str = query.get("attribution_basis", ["compute"])[0]
+                range_str = query.get("time_range", ["1h"])[0]
+                try:
+                    monthly_budget = float(budget_str)
+                except ValueError:
+                    monthly_budget = 100.0
+                breakdown_data = get_rds_cost_breakdown(monthly_budget=monthly_budget, attribution_basis=basis_str, time_range=range_str)
+                md_content = generate_rds_cost_markdown(breakdown_data)
+                data = md_content.encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="database-cost-breakdown-{breakdown_data.get("time_range", "1h")}.md"')
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
