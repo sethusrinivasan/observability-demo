@@ -176,6 +176,20 @@ run_check() {
         printf "  %-18s ${YELLOW}○ MISSING${NC}  .venv (run ./setup.sh to create)\n" "VirtualEnv"
     fi
 
+    local git_user=$(git config --global user.name 2>/dev/null || echo "")
+    local git_email=$(git config --global user.email 2>/dev/null || echo "")
+    if [ -n "$git_user" ] && [ -n "$git_email" ]; then
+        printf "  %-18s ${GREEN}✓ CONFIGURED${NC} %s <%s>\n" "Git Identity" "$git_user" "$git_email"
+    else
+        printf "  %-18s ${YELLOW}○ UNSET${NC}    (git config --global user.name / user.email)\n" "Git Identity"
+    fi
+
+    if [ -f "$HOME/.ssh/id_ed25519.pub" ] || [ -f "$HOME/.ssh/id_rsa.pub" ]; then
+        printf "  %-18s ${GREEN}✓ READY${NC}    SSH key pair ready for GitHub\n" "Git SSH Key"
+    else
+        printf "  %-18s ${YELLOW}○ MISSING${NC}  No SSH key pair found in ~/.ssh/\n" "Git SSH Key"
+    fi
+
     echo ""
     if [ "$all_good" = true ]; then
         log_success "All core prerequisites are installed! You are ready to run the stack."
@@ -423,7 +437,53 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Step 8: Final Summary & Launch Guide
+# Step 8: Git & GitHub Configuration
+# ------------------------------------------------------------------------------
+log_header "Step 8: Git & GitHub SSH Configuration"
+
+if [ -z "$(git config --global user.name 2>/dev/null || true)" ]; then
+    log_info "Configuring default Git user identity..."
+    git config --global user.name "Sethu Srinivasan"
+    git config --global user.email "sethusrinivasan@gmail.com"
+    git config --global init.defaultBranch main
+    git config --global pull.rebase false
+    git config --global credential.helper store
+    log_success "Git identity configured globally (Sethu Srinivasan <sethusrinivasan@gmail.com>)."
+else
+    log_success "Git identity already configured: $(git config --global user.name) <$(git config --global user.email)>"
+fi
+
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh"
+
+if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ ! -f "$HOME/.ssh/id_rsa" ]; then
+    log_info "Generating Ed25519 SSH key for GitHub..."
+    ssh-keygen -t ed25519 -C "$(git config --global user.email)" -f "$HOME/.ssh/id_ed25519" -N ""
+    log_success "SSH key pair generated at ~/.ssh/id_ed25519"
+else
+    log_success "SSH key pair already present."
+fi
+
+if ! grep -q "github.com" "$HOME/.ssh/known_hosts" 2>/dev/null; then
+    log_info "Adding github.com to ~/.ssh/known_hosts..."
+    ssh-keyscan -t ed25519,rsa github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+    chmod 644 "$HOME/.ssh/known_hosts"
+fi
+
+if [ ! -f "$HOME/.ssh/config" ] || ! grep -q "Host github.com" "$HOME/.ssh/config" 2>/dev/null; then
+    cat << 'EOF' >> "$HOME/.ssh/config"
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+EOF
+    chmod 600 "$HOME/.ssh/config"
+    log_success "Configured ~/.ssh/config for GitHub."
+fi
+
+# ------------------------------------------------------------------------------
+# Step 9: Final Summary & Launch Guide
 # ------------------------------------------------------------------------------
 echo ""
 echo -e "${BOLD}${GREEN}=================================================================${NC}"
