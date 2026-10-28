@@ -244,6 +244,68 @@ cmd_destroy() {
   fi
 }
 
+archive_active_s3_bucket() {
+  check_prereqs
+  local account_id
+  account_id=$(get_aws_account_id)
+  local base_bucket="${S3_BUCKET_NAME:-observability-demo-telemetry-lake-${account_id}}"
+
+  log_info "Checking if active S3 bucket '${base_bucket}' exists..."
+  if ! aws s3api head-bucket --bucket "${base_bucket}" 2>/dev/null; then
+    log_info "Active bucket '${base_bucket}' does not exist. Skipping archive."
+    return 0
+  fi
+
+  local obj_count
+  obj_count=$(aws s3api list-objects-v2 --bucket "${base_bucket}" --max-items 1 --query "KeyCount" --output text 2>/dev/null || echo "0")
+  if [ "${obj_count}" = "0" ] || [ "${obj_count}" = "None" ]; then
+    log_info "Bucket '${base_bucket}' is empty. No objects to archive."
+    return 0
+  fi
+
+  local suffix=1
+  local archive_bucket="${base_bucket}-${suffix}"
+  while aws s3api head-bucket --bucket "${archive_bucket}" 2>/dev/null; do
+    suffix=$((suffix + 1))
+    archive_bucket="${base_bucket}-${suffix}"
+  done
+
+  log_info "Renaming active bucket with numbered suffix: archiving '${base_bucket}' -> '${archive_bucket}'..."
+  if [ "${AWS_REGION}" = "us-east-1" ]; then
+    aws s3api create-bucket --bucket "${archive_bucket}" --region "${AWS_REGION}"
+  else
+    aws s3api create-bucket --bucket "${archive_bucket}" --region "${AWS_REGION}" \
+      --create-bucket-configuration LocationConstraint="${AWS_REGION}"
+  fi
+
+  aws s3api put-bucket-tagging --bucket "${archive_bucket}" --tagging \
+    "TagSet=[{Key=ApplicationName,Value=${APP_TAG}},{Key=ArchivedFrom,Value=${base_bucket}},{Key=ArchiveIndex,Value=${suffix}}]" 2>/dev/null || true
+
+  log_info "Syncing objects from '${base_bucket}' to '${archive_bucket}'..."
+  aws s3 sync "s3://${base_bucket}" "s3://${archive_bucket}"
+
+  log_info "Clearing non-state objects from active bucket '${base_bucket}' prior to destroy..."
+  aws s3 rm "s3://${base_bucket}" --recursive --exclude "terraform/state/*" 2>/dev/null || true
+  log_success "Active bucket archived as '${archive_bucket}' with all objects preserved."
+}
+
+cmd_redeploy() {
+  check_prereqs
+  echo -e "${RED}${BOLD}WARNING: This will archive S3 data with a numbered suffix, destroy all AWS resources created for ${APP_TAG}, and redeploy fully!${NC}"
+  read -r -p "Type 'DESTROY' to confirm: " confirm
+  if [ "${confirm}" = "DESTROY" ]; then
+    archive_active_s3_bucket
+    terraform -chdir="${TF_DIR}" destroy -auto-approve -var="aws_region=${AWS_REGION}"
+    log_success "All resources destroyed. Redeploying infrastructure..."
+    terraform -chdir="${TF_DIR}" plan -var="aws_region=${AWS_REGION}"
+    terraform -chdir="${TF_DIR}" apply -auto-approve -var="aws_region=${AWS_REGION}"
+    log_success "Redeployment completed."
+    cmd_status
+  else
+    log_info "Redeploy cancelled."
+  fi
+}
+
 cmd_help() {
   cat <<EOF
 Usage: ./deploy_aws.sh [COMMAND] [ARGS]
@@ -256,6 +318,7 @@ Commands:
   deploy [SERVICE]         Build, push to ECR, and update Lambda function code
   status                   Display live HTTPS Function URLs & outputs
   destroy                  Tear down AWS resources safely
+  destroy-and-redeploy     Destroy and redeploy AWS infrastructure fully
   help                     Show this help message
 
 Options / Environment Variables:
@@ -287,6 +350,7 @@ case "${1:-help}" in
   deploy)     shift; cmd_deploy "${1:-all}" ;;
   status)     cmd_status ;;
   destroy)    cmd_destroy ;;
+  redeploy|destroy-and-redeploy) cmd_redeploy ;;
   help|--help|-h) cmd_help ;;
   *)
     log_error "Unknown command: $1"

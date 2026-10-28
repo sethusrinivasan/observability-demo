@@ -367,10 +367,12 @@ class AppController {
                         "INSERT INTO audit_logs (endpoint, status_code, details) VALUES (?, ?, ?::jsonb)",
                         endpoint, statusCode, "{\"language\": \"java\", \"service\": \"observability-java-app\"}"
                 );
+                return ResponseEntity.status(HttpStatus.CREATED).body(withContext(Map.of("status", "ok")));
             } catch (Exception dbEx) {
-                logger.warn("Auditlog DB write notice: {}", dbEx.getMessage());
+                logger.error("Failed to write audit log to Postgres", dbEx);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(withContext(Map.of("status", "error", "message", "Failed to write audit log")));
             }
-            return ResponseEntity.status(HttpStatus.CREATED).body(withContext(Map.of("status", "ok")));
         } finally {
             span.end();
         }

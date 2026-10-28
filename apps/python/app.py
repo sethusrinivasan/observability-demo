@@ -591,7 +591,7 @@ def auditlog():
                     conn.commit()
         except Exception as exc:
             logger.exception("Failed to write audit log to Postgres")
-            return jsonify({"status": "error", "message": "Failed to write audit log", "error": str(exc)}), 500
+            return jsonify({"status": "error", "message": "Failed to write audit log"}), 500
 
         return jsonify({
             "status": "ok",
@@ -685,7 +685,7 @@ def auditlog_stats():
             }), 200
         except Exception as exc:
             logger.exception("Failed to read audit log statistics from Postgres")
-            return jsonify({"status": "error", "message": "Failed to read audit log statistics", "error": str(exc)}), 500
+            return jsonify({"status": "error", "message": "Failed to read audit log statistics"}), 500
 
 
 @app.route('/eval', methods=['GET', 'POST'])

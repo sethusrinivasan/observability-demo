@@ -98,3 +98,57 @@ def test_terraform_fmt_and_validate():
         text=True
     )
     assert val_proc.returncode == 0, f"Terraform validation failed:\n{val_proc.stderr}"
+
+
+def test_deploy_workflow_actions_configuration():
+    """Verify deploy-aws-terraform.yml supports Destroy and redeploy manually while push runs apply."""
+    import yaml
+    workflow_path = REPO_ROOT / ".github" / "workflows" / "deploy-aws-terraform.yml"
+    assert workflow_path.exists(), "deploy-aws-terraform.yml does not exist"
+
+    raw = workflow_path.read_text()
+    data = yaml.safe_load(raw)
+
+    # In YAML 1.1, on: is parsed as True
+    on_triggers = data.get("on") or data.get(True)
+    assert on_triggers is not None, "Workflow triggers missing"
+
+    # Push on main must be configured for incremental updates
+    assert "push" in on_triggers
+    assert "main" in on_triggers["push"]["branches"]
+
+    # workflow_dispatch must include 'Destroy and redeploy' option
+    assert "workflow_dispatch" in on_triggers
+    inputs = on_triggers["workflow_dispatch"]["inputs"]
+    assert "action" in inputs
+    options = inputs["action"]["options"]
+    assert "Destroy and redeploy" in options
+    assert "apply" in options
+    assert "plan" in options
+    assert "destroy" in options
+
+    # Inspect job steps
+    steps = data["jobs"]["terraform"]["steps"]
+    step_map = {s.get("id", s.get("name")): s for s in steps}
+
+    # Destroy step must exist and be guarded to manual triggers only
+    destroy_step = step_map.get("destroy")
+    assert destroy_step is not None, "Destroy step missing"
+    assert "Destroy and redeploy" in destroy_step["if"]
+    assert "github.event_name == 'push'" not in destroy_step["if"], "Destroy step must never run on push"
+
+    # S3 numbered suffix archive step must exist prior to destroy
+    archive_step = step_map.get("archive_s3")
+    assert archive_step is not None, "Archive S3 step missing"
+    assert "Destroy and redeploy" in archive_step["if"]
+    assert "github.event_name == 'push'" not in archive_step["if"], "Archive step must never run on push"
+
+    # Verify archive step comes before destroy step in execution sequence
+    step_ids = [s.get("id") for s in steps]
+    assert step_ids.index("archive_s3") < step_ids.index("destroy"), "S3 archive step must run before destroy step"
+
+    # Apply step must run on push and on Destroy and redeploy
+    apply_step = step_map.get("apply")
+    assert apply_step is not None, "Apply step missing"
+    assert "github.event_name == 'push'" in apply_step["if"]
+    assert "Destroy and redeploy" in apply_step["if"]

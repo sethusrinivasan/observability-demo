@@ -145,9 +145,9 @@ services:
     restart: unless-stopped
     command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"]
     environment:
-      - POSTGRES_USER=observability
-      - POSTGRES_PASSWORD=observability
-      - POSTGRES_DB=observability
+      - POSTGRES_USER=${POSTGRES_USER:-observability}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-observability}
+      - POSTGRES_DB=${POSTGRES_DB:-observability}
     volumes:
       - postgres-data:/var/lib/postgresql
     ports:
@@ -162,7 +162,7 @@ services:
     ports:
       - "9187:9187"
     environment:
-      - DATA_SOURCE_NAME=postgresql://observability:observability@postgres:5432/observability?sslmode=disable&application_name=postgres-exporter
+      - DATA_SOURCE_NAME=postgresql://${POSTGRES_USER:-observability}:${POSTGRES_PASSWORD:-observability}@postgres:5432/${POSTGRES_DB:-observability}?sslmode=disable&application_name=postgres-exporter
       - PG_EXPORTER_DISABLE_SETTINGS_METRICS=false
       - PG_EXPORTER_DISABLE_DEFAULT_METRICS=false
       # Bitnami's image runs Go in FIPS-only mode, which rejects this demo password
@@ -208,9 +208,9 @@ services:
       - OTEL_SERVICE_NAME=observability-python-app
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - POSTGRES_DB=observability
-      - POSTGRES_USER=observability
-      - POSTGRES_PASSWORD=observability
+      - POSTGRES_DB=${POSTGRES_DB:-observability}
+      - POSTGRES_USER=${POSTGRES_USER:-observability}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-observability}
       - APPLICATION_NAME=observability-python-app
     depends_on:
       - otel-collector
@@ -269,7 +269,7 @@ services:
           memory: 256M
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?application_name=observability-rust-app
+      - DATABASE_URL=postgres://${POSTGRES_USER:-observability}:${POSTGRES_PASSWORD:-observability}@postgres:5432/${POSTGRES_DB:-observability}?application_name=observability-rust-app
     depends_on:
       - otel-collector
       - postgres
@@ -293,10 +293,10 @@ services:
       - OTEL_SERVICE_NAME=observability-node-app
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - POSTGRES_DB=observability
-      - POSTGRES_USER=observability
-      - POSTGRES_PASSWORD=observability
-      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?application_name=observability-node-app
+      - POSTGRES_DB=${POSTGRES_DB:-observability}
+      - POSTGRES_USER=${POSTGRES_USER:-observability}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-observability}
+      - DATABASE_URL=postgres://${POSTGRES_USER:-observability}:${POSTGRES_PASSWORD:-observability}@postgres:5432/${POSTGRES_DB:-observability}?application_name=observability-node-app
       - OTEL_RESOURCE_ATTRIBUTES=language=nodejs,service.name=observability-node-app
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health/liveness"]
@@ -327,10 +327,10 @@ services:
       - OTEL_SERVICE_NAME=observability-go-app
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - POSTGRES_DB=observability
-      - POSTGRES_USER=observability
-      - POSTGRES_PASSWORD=observability
-      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?application_name=observability-go-app
+      - POSTGRES_DB=${POSTGRES_DB:-observability}
+      - POSTGRES_USER=${POSTGRES_USER:-observability}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-observability}
+      - DATABASE_URL=postgres://${POSTGRES_USER:-observability}:${POSTGRES_PASSWORD:-observability}@postgres:5432/${POSTGRES_DB:-observability}?application_name=observability-go-app
       - OTEL_RESOURCE_ATTRIBUTES=language=golang,service.name=observability-go-app
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health/liveness"]
@@ -356,10 +356,10 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - POSTGRES_DB=observability
-      - POSTGRES_USER=observability
-      - POSTGRES_PASSWORD=observability
-      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?application_name=observability-dotnet-app
+      - POSTGRES_DB=${POSTGRES_DB:-observability}
+      - POSTGRES_USER=${POSTGRES_USER:-observability}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-observability}
+      - DATABASE_URL=postgres://${POSTGRES_USER:-observability}:${POSTGRES_PASSWORD:-observability}@postgres:5432/${POSTGRES_DB:-observability}?application_name=observability-dotnet-app
       - OTEL_RESOURCE_ATTRIBUTES=language=csharp,service.name=observability-dotnet-app
       - ASPNETCORE_HTTP_PORTS=8080
       - ASPNETCORE_ENVIRONMENT=Production
@@ -391,10 +391,10 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - POSTGRES_DB=observability
-      - POSTGRES_USER=observability
-      - POSTGRES_PASSWORD=observability
-      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?application_name=observability-c-app
+      - POSTGRES_DB=${POSTGRES_DB:-observability}
+      - POSTGRES_USER=${POSTGRES_USER:-observability}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-observability}
+      - DATABASE_URL=postgres://${POSTGRES_USER:-observability}:${POSTGRES_PASSWORD:-observability}@postgres:5432/${POSTGRES_DB:-observability}?application_name=observability-c-app
       - PORT=8080
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health/liveness"]
@@ -424,10 +424,10 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - POSTGRES_DB=observability
-      - POSTGRES_USER=observability
-      - POSTGRES_PASSWORD=observability
-      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?sslmode=disable&application_name=observability-php-app
+      - POSTGRES_DB=${POSTGRES_DB:-observability}
+      - POSTGRES_USER=${POSTGRES_USER:-observability}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-observability}
+      - DATABASE_URL=postgres://${POSTGRES_USER:-observability}:${POSTGRES_PASSWORD:-observability}@postgres:5432/${POSTGRES_DB:-observability}?sslmode=disable&application_name=observability-php-app
       - PORT=8080
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health/liveness"]
@@ -457,10 +457,10 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - POSTGRES_DB=observability
-      - POSTGRES_USER=observability
-      - POSTGRES_PASSWORD=observability
-      - DATABASE_URL=postgres://observability:observability@postgres:5432/observability?sslmode=disable&application_name=observability-swift-app
+      - POSTGRES_DB=${POSTGRES_DB:-observability}
+      - POSTGRES_USER=${POSTGRES_USER:-observability}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-observability}
+      - DATABASE_URL=postgres://${POSTGRES_USER:-observability}:${POSTGRES_PASSWORD:-observability}@postgres:5432/${POSTGRES_DB:-observability}?sslmode=disable&application_name=observability-swift-app
       - PORT=8080
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || bash -c 'echo > /dev/tcp/127.0.0.1/8080' || exit 1"]
@@ -498,9 +498,9 @@ services:
       - MIMIR_URL=http://mimir:9009
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - POSTGRES_DB=observability
-      - POSTGRES_USER=observability
-      - POSTGRES_PASSWORD=observability
+      - POSTGRES_DB=${POSTGRES_DB:-observability}
+      - POSTGRES_USER=${POSTGRES_USER:-observability}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-observability}
       - APPLICATION_NAME=observability-canary-dashboard
       - TEMPO_URL=http://tempo:3200
       - LOKI_URL=http://loki:3100

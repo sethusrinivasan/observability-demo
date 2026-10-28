@@ -168,24 +168,24 @@ class TestComputeRoute:
         assert data["input"] == 10
         assert data["result"] == 55
 
-    def test_boundary_n_25_returns_200(self, client):
-        resp = client.get("/compute/25")
+    def test_boundary_n_92_returns_200(self, client):
+        resp = client.get("/compute/92")
         assert resp.status_code == 200
-        assert resp.get_json()["result"] == fibonacci(25)
+        assert resp.get_json()["result"] == fibonacci(92)
 
     def test_n_too_large_returns_400(self, client):
-        resp = client.get("/compute/26")
+        resp = client.get("/compute/93")
         assert resp.status_code == 400
         data = resp.get_json()
         assert "error" in data
-        assert "25" in data["error"]
+        assert "92" in data["error"]
 
     def test_n_large_value_returns_error_message(self, client):
         resp = client.get("/compute/1000")
         assert resp.status_code == 400
         data = resp.get_json()
         assert "error" in data
-        assert "25" in data["error"]
+        assert "92" in data["error"]
 
     def test_zero_input(self, client):
         resp = client.get("/compute/0")

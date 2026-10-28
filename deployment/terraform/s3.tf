@@ -7,7 +7,7 @@ locals {
 
 resource "aws_s3_bucket" "telemetry_lake" {
   bucket        = local.bucket_name
-  force_destroy = false
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_versioning" "telemetry_lake" {

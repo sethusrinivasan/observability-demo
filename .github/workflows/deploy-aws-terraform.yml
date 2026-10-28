@@ -4,24 +4,24 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "deployment/terraform/**"
-      - ".github/workflows/deploy-aws-terraform.yml"
   pull_request:
     branches:
       - main
     paths:
       - "deployment/terraform/**"
+      - ".github/workflows/deploy-aws-terraform.yml"
   workflow_dispatch:
     inputs:
       action:
         description: "Terraform action to execute"
         required: true
-        default: "plan"
+        default: "apply"
         type: choice
         options:
-          - plan
           - apply
+          - plan
+          - "Destroy and redeploy"
+          - destroy
 
 # Critical for AWS OIDC authentication: id-token write permission generates the signed JWT
 permissions:
@@ -68,19 +68,73 @@ jobs:
         id: validate
         run: terraform validate -no-color
 
+      - name: Archive Active S3 Bucket with Numbered Suffix
+        id: archive_s3
+        if: github.ref == 'refs/heads/main' && (github.event.inputs.action == 'Destroy and redeploy' || github.event.inputs.action == 'destroy-and-redeploy' || github.event.inputs.action == 'destroy')
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text 2>/dev/null || echo "596090776030")
+          REGION="${{ secrets.AWS_REGION || 'us-east-2' }}"
+          BASE_BUCKET="${{ secrets.AWS_S3_BUCKET || '' }}"
+          if [ -z "$BASE_BUCKET" ]; then
+            BASE_BUCKET="observability-demo-telemetry-lake-${ACCOUNT_ID}"
+          fi
+          echo "Checking active S3 bucket: ${BASE_BUCKET}"
+          if aws s3api head-bucket --bucket "${BASE_BUCKET}" 2>/dev/null; then
+            OBJ_COUNT=$(aws s3api list-objects-v2 --bucket "${BASE_BUCKET}" --max-items 1 --query "KeyCount" --output text 2>/dev/null || echo "0")
+            if [ "$OBJ_COUNT" != "0" ] && [ "$OBJ_COUNT" != "None" ]; then
+              SUFFIX=1
+              ARCHIVE_BUCKET="${BASE_BUCKET}-${SUFFIX}"
+              while aws s3api head-bucket --bucket "${ARCHIVE_BUCKET}" 2>/dev/null; do
+                SUFFIX=$((SUFFIX + 1))
+                ARCHIVE_BUCKET="${BASE_BUCKET}-${SUFFIX}"
+              done
+              echo "Archiving active bucket ${BASE_BUCKET} -> ${ARCHIVE_BUCKET}"
+              if [ "$REGION" = "us-east-1" ]; then
+                aws s3api create-bucket --bucket "${ARCHIVE_BUCKET}" --region "${REGION}"
+              else
+                aws s3api create-bucket --bucket "${ARCHIVE_BUCKET}" --region "${REGION}" \
+                  --create-bucket-configuration LocationConstraint="${REGION}"
+              fi
+              aws s3api put-bucket-tagging --bucket "${ARCHIVE_BUCKET}" --tagging \
+                "TagSet=[{Key=ApplicationName,Value=Observability-Demo},{Key=ArchivedFrom,Value=${BASE_BUCKET}},{Key=ArchiveIndex,Value=${SUFFIX}}]" 2>/dev/null || true
+              echo "Syncing all telemetry data and state to ${ARCHIVE_BUCKET}..."
+              aws s3 sync "s3://${BASE_BUCKET}" "s3://${ARCHIVE_BUCKET}"
+              echo "Emptying non-state objects in ${BASE_BUCKET}..."
+              aws s3 rm "s3://${BASE_BUCKET}" --recursive --exclude "terraform/state/*" 2>/dev/null || true
+              echo "Archive completed successfully: ${ARCHIVE_BUCKET}"
+            else
+              echo "Bucket is empty. No archiving needed."
+            fi
+          else
+            echo "Bucket ${BASE_BUCKET} does not exist. Skipping archive."
+          fi
+
+      - name: Terraform Destroy (Clean Slate)
+        id: destroy
+        if: github.ref == 'refs/heads/main' && (github.event.inputs.action == 'Destroy and redeploy' || github.event.inputs.action == 'destroy-and-redeploy' || github.event.inputs.action == 'destroy')
+        run: |
+          terraform destroy -auto-approve \
+            -var="aws_region=${{ secrets.AWS_REGION || 'us-east-2' }}"
+
       - name: Terraform Plan
         id: plan
+        if: github.event.inputs.action != 'destroy'
         run: |
           terraform plan -no-color \
             -var="aws_region=${{ secrets.AWS_REGION || 'us-east-2' }}" \
             -out=tfplan
 
       - name: Terraform Apply
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply')
+        id: apply
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply' || github.event.inputs.action == 'Destroy and redeploy' || github.event.inputs.action == 'destroy-and-redeploy')
         run: terraform apply -auto-approve tfplan
 
       - name: Verify Live AWS Deployment & Telemetry Lake
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply')
+        id: verify
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply' || github.event.inputs.action == 'Destroy and redeploy' || github.event.inputs.action == 'destroy-and-redeploy')
         run: |
           python3 -m pip install requests pytest
+          export AWS_CANARY_URL=$(terraform output -raw canary_dashboard_url 2>/dev/null || echo "")
+          export AWS_COLLECTOR_URL=$(terraform output -raw telemetry_collector_url 2>/dev/null || echo "")
+          export AWS_S3_BUCKET=$(terraform output -raw s3_telemetry_lake_bucket 2>/dev/null || echo "")
           pytest ../../tests/test_aws_canary_audit.py -v --tb=short
