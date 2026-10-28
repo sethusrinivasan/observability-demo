@@ -23,6 +23,7 @@ import math
 import os
 import random
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -116,6 +117,10 @@ POSTGRES_ADMIN_PASSWORD  = os.getenv("POSTGRES_ADMIN_PASSWORD",  "observability_
 DOCKER_SOCKET_PATH   = os.getenv("DOCKER_SOCKET_PATH",  "/var/run/docker.sock")
 CANARY_DEMO_USER     = os.getenv("CANARY_DEMO_USER",     "demouser")
 CANARY_DEMO_PASSWORD = os.getenv("CANARY_DEMO_PASSWORD", "demo")
+CANARY_DEMO_ENABLED  = os.getenv("CANARY_DEMO_ENABLED",  "true").lower() in ("true", "1", "yes")
+CANARY_AUTO_LOGIN    = (os.getenv("CANARY_AUTO_LOGIN",   "true").lower() in ("true", "1", "yes")) if CANARY_DEMO_ENABLED else False
+CANARY_AUTH_DB       = os.getenv("CANARY_AUTH_DB",       "/tmp/canary_auth.sqlite3")
+CANARY_SESSION_TTL_SECONDS = int(os.getenv("CANARY_SESSION_TTL_SECONDS", "604800")) # 7 days
 TEMPO_URL            = os.getenv("TEMPO_URL",           "http://tempo:3200")
 LOKI_URL             = os.getenv("LOKI_URL",            "http://loki:3100")
 PROMETHEUS_URL       = os.getenv("PROMETHEUS_URL",      "http://prometheus:9090")
@@ -721,7 +726,22 @@ def ensure_sql_editor_schema() -> None:
                 row_count INTEGER,
                 execution_time_ms DOUBLE PRECISION,
                 client_addr TEXT
-            )
+            );
+            CREATE TABLE IF NOT EXISTS canary_users (
+                username VARCHAR(64) PRIMARY KEY,
+                password_hash VARCHAR(256) NOT NULL,
+                salt VARCHAR(64) NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                is_demo BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            CREATE TABLE IF NOT EXISTS canary_sessions (
+                token VARCHAR(128) PRIMARY KEY,
+                username VARCHAR(64) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                expires_at TIMESTAMPTZ NOT NULL
+            );
             """
         )
         cur.execute(
@@ -979,13 +999,14 @@ def ensure_sql_editor_schema() -> None:
                 GRANT USAGE ON SCHEMA public TO observability_reader;
                 GRANT SELECT ON ALL TABLES IN SCHEMA public TO observability_reader;
                 GRANT SELECT, INSERT ON TABLE query_activity_snapshots, dashboard_error_logs, audit_dimensions TO observability_reader;
+                GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE canary_users, canary_sessions TO observability_reader;
                 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO observability_reader;
                 GRANT pg_read_all_stats TO observability_reader;
 
                 GRANT CONNECT ON DATABASE observability TO observability_admin;
                 GRANT USAGE ON SCHEMA public TO observability_admin;
                 GRANT SELECT ON ALL TABLES IN SCHEMA public TO observability_admin;
-                GRANT ALL ON TABLE query_activity_snapshots, dashboard_error_logs, audit_dimensions TO observability_admin;
+                GRANT ALL ON TABLE query_activity_snapshots, dashboard_error_logs, audit_dimensions, canary_users, canary_sessions TO observability_admin;
                 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO observability_admin;
                 GRANT pg_read_all_stats TO observability_admin;
                 """
@@ -5387,6 +5408,7 @@ def render_dashboard_html() -> str:
         <button class="btn btn-ondemand" id="btn-ondemand-pulse" style="height:26px; padding:2px 10px; font-size:0.72rem;" onclick="triggerOnDemandPulse()" title="Forcefully run one complete iteration across all polyglot microservices">⚡ Run Once (On-Demand)</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="openQrModal()" title="Mobile App & QR Code">📱 Connect / QR</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="fetchTrendsAndRefresh()" title="Refresh now">🔄</button>
+        <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="logoutCanary()" title="Sign out">🔒 Sign out</button>
       </div>
     </header>
 
@@ -9618,38 +9640,411 @@ def render_dashboard_html() -> str:
     return html_page.replace("__SHOWCASE_FOOTER__", _showcase_footer_html())
 
 # ---------------------------------------------------------------------------
-# Demo login. One shared account until real authentication exists.
+# Persistent Hashed Authentication & Session Store (Survives Restarts)
 # ---------------------------------------------------------------------------
-_sessions: dict[str, str] = {}
+_sessions_cache: dict[str, tuple[str, float]] = {}
 _sessions_lock = threading.Lock()
+_auth_initialized = False
 
 
-def _secret_eq(left: str, right: str) -> bool:
-    return hmac.compare_digest(
-        hashlib.sha256(left.encode("utf-8")).digest(),
-        hashlib.sha256(right.encode("utf-8")).digest(),
+def hash_password(password: str, salt: str = None) -> tuple[str, str]:
+    """Derives a PBKDF2-HMAC-SHA256 hash using 100,000 iterations and a cryptographically secure salt."""
+    if not salt:
+        salt = secrets.token_hex(16)
+    key = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        100000,
     )
+    return key.hex(), salt
+
+
+def verify_password(password: str, password_hash: str, salt: str) -> bool:
+    """Verifies a plaintext password against a stored PBKDF2 hash using constant-time comparison."""
+    key = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        100000,
+    )
+    return hmac.compare_digest(key.hex(), password_hash)
+
+
+def _init_sqlite_auth() -> None:
+    """Initializes local SQLite tables for persistent users and sessions."""
+    try:
+        db_dir = os.path.dirname(CANARY_AUTH_DB)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        con = sqlite3.connect(CANARY_AUTH_DB, timeout=5)
+        with con:
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS canary_users (
+                    username TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL,
+                    salt TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    is_demo INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS canary_sessions (
+                    token TEXT PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL
+                );
+            """)
+        con.close()
+    except Exception as exc:
+        logger.debug("SQLite auth init notice: %s", exc)
+
+
+def init_auth_store() -> None:
+    """Ensures persistent auth store is initialized with the configured demo account if enabled."""
+    global _auth_initialized
+    if _auth_initialized:
+        return
+    _init_sqlite_auth()
+    if CANARY_DEMO_ENABLED:
+        save_user(CANARY_DEMO_USER, CANARY_DEMO_PASSWORD, is_demo=True, is_active=True)
+    _auth_initialized = True
+
+
+def get_user(username: str) -> dict | None:
+    """Retrieves user record by username from PostgreSQL or SQLite fallback."""
+    init_auth_store()
+    if psycopg2:
+        try:
+            conn = _pg_connect(user="observability_reader")
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT username, password_hash, salt, is_active, is_demo FROM canary_users WHERE username = %s LIMIT 1;",
+                        (username,)
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        conn.close()
+                        return {
+                            "username": row[0],
+                            "password_hash": row[1],
+                            "salt": row[2],
+                            "is_active": bool(row[3]),
+                            "is_demo": bool(row[4]),
+                        }
+            conn.close()
+        except Exception as pg_exc:
+            logger.debug("PostgreSQL get_user notice (falling back to SQLite): %s", pg_exc)
+
+    try:
+        con = sqlite3.connect(CANARY_AUTH_DB, timeout=5)
+        cur = con.cursor()
+        cur.execute(
+            "SELECT username, password_hash, salt, is_active, is_demo FROM canary_users WHERE username = ? LIMIT 1;",
+            (username,)
+        )
+        row = cur.fetchone()
+        con.close()
+        if row:
+            return {
+                "username": row[0],
+                "password_hash": row[1],
+                "salt": row[2],
+                "is_active": bool(row[3]),
+                "is_demo": bool(row[4]),
+            }
+    except Exception as sqlite_exc:
+        logger.debug("SQLite get_user notice: %s", sqlite_exc)
+
+    return None
+
+
+def list_users() -> list[dict]:
+    """Lists registered users and their metadata."""
+    init_auth_store()
+    users = []
+    if psycopg2:
+        try:
+            conn = _pg_connect(user="observability_reader")
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT username, is_active, is_demo, created_at, updated_at FROM canary_users ORDER BY username;")
+                    for row in cur.fetchall():
+                        users.append({
+                            "username": row[0],
+                            "is_active": bool(row[1]),
+                            "is_demo": bool(row[2]),
+                            "created_at": str(row[3]),
+                            "updated_at": str(row[4]),
+                        })
+            conn.close()
+            return users
+        except Exception:
+            pass
+
+    try:
+        con = sqlite3.connect(CANARY_AUTH_DB, timeout=5)
+        cur = con.cursor()
+        cur.execute("SELECT username, is_active, is_demo, created_at, updated_at FROM canary_users ORDER BY username;")
+        for row in cur.fetchall():
+            users.append({
+                "username": row[0],
+                "is_active": bool(row[1]),
+                "is_demo": bool(row[2]),
+                "created_at": str(row[3]),
+                "updated_at": str(row[4]),
+            })
+        con.close()
+        return users
+    except Exception:
+        pass
+    return users
+
+
+def save_user(username: str, password: str, is_demo: bool = False, is_active: bool = True) -> bool:
+    """Creates or updates a user with a hashed password and salt."""
+    p_hash, salt = hash_password(password)
+
+    # 1. Save to SQLite
+    try:
+        con = sqlite3.connect(CANARY_AUTH_DB, timeout=5)
+        with con:
+            con.execute(
+                """
+                INSERT INTO canary_users (username, password_hash, salt, is_active, is_demo, updated_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(username) DO UPDATE SET
+                    password_hash = excluded.password_hash,
+                    salt = excluded.salt,
+                    is_active = excluded.is_active,
+                    is_demo = excluded.is_demo,
+                    updated_at = datetime('now');
+                """,
+                (username, p_hash, salt, 1 if is_active else 0, 1 if is_demo else 0)
+            )
+        con.close()
+    except Exception as exc:
+        logger.debug("Failed saving user to SQLite: %s", exc)
+
+    # 2. Save to PostgreSQL
+    if psycopg2:
+        try:
+            conn = _pg_connect(user="observability_admin")
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO canary_users (username, password_hash, salt, is_active, is_demo, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, now())
+                        ON CONFLICT (username) DO UPDATE SET
+                            password_hash = EXCLUDED.password_hash,
+                            salt = EXCLUDED.salt,
+                            is_active = EXCLUDED.is_active,
+                            is_demo = EXCLUDED.is_demo,
+                            updated_at = now();
+                        """,
+                        (username, p_hash, salt, is_active, is_demo)
+                    )
+            conn.close()
+        except Exception as exc:
+            logger.debug("Failed saving user to PostgreSQL: %s", exc)
+
+    return True
+
+
+def rotate_demo_user(new_password: str = None, enabled: bool = True) -> bool:
+    """Rotates the demo user's password or toggles demo account active status."""
+    global CANARY_DEMO_ENABLED, CANARY_AUTO_LOGIN
+    CANARY_DEMO_ENABLED = enabled
+    if not enabled:
+        CANARY_AUTO_LOGIN = False
+    new_pw = new_password or secrets.token_urlsafe(16)
+    return save_user(CANARY_DEMO_USER, new_pw, is_demo=True, is_active=enabled)
+
+
+def disable_demo_user() -> bool:
+    """Disables the default demo user account and suppresses auto-login."""
+    global CANARY_DEMO_ENABLED, CANARY_AUTO_LOGIN
+    CANARY_DEMO_ENABLED = False
+    CANARY_AUTO_LOGIN = False
+    try:
+        con = sqlite3.connect(CANARY_AUTH_DB, timeout=5)
+        with con:
+            con.execute("UPDATE canary_users SET is_active = 0 WHERE is_demo = 1;")
+        con.close()
+    except Exception:
+        pass
+    if psycopg2:
+        try:
+            conn = _pg_connect(user="observability_admin")
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE canary_users SET is_active = FALSE WHERE is_demo = TRUE;")
+            conn.close()
+        except Exception:
+            pass
+    return True
+
+
+def authenticate_user(username: str, password: str) -> bool:
+    """Authenticates username and password against the hashed user store."""
+    user = get_user(username)
+    if not user or not user.get("is_active"):
+        return False
+    return verify_password(password, user["password_hash"], user["salt"])
 
 
 def issue_session(username: str) -> str:
+    """Generates a secure session token and persists it with expiration."""
+    init_auth_store()
     token = secrets.token_urlsafe(32)
+    now = time.time()
+    expires_at = now + CANARY_SESSION_TTL_SECONDS
+    expires_iso = datetime.fromtimestamp(expires_at, timezone.utc).isoformat()
+
     with _sessions_lock:
-        if len(_sessions) > 200:
-            _sessions.clear()
-        _sessions[token] = username
+        if len(_sessions_cache) > 500:
+            _sessions_cache.clear()
+        _sessions_cache[token] = (username, expires_at)
+
+    try:
+        con = sqlite3.connect(CANARY_AUTH_DB, timeout=5)
+        with con:
+            con.execute(
+                "INSERT INTO canary_sessions (token, username, expires_at) VALUES (?, ?, ?);",
+                (token, username, expires_iso)
+            )
+        con.close()
+    except Exception as exc:
+        logger.debug("Failed saving session to SQLite: %s", exc)
+
+    if psycopg2:
+        try:
+            conn = _pg_connect(user="observability_admin")
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO canary_sessions (token, username, expires_at) VALUES (%s, %s, %s);",
+                        (token, username, expires_iso)
+                    )
+            conn.close()
+        except Exception as exc:
+            logger.debug("Failed saving session to PostgreSQL: %s", exc)
+
     return token
 
 
 def session_user(token: str) -> str | None:
+    """Validates session token and returns username if unexpired, querying persistent store on cache miss."""
     if not token:
         return None
+    init_auth_store()
+    now = time.time()
+
+    # 1. Fast in-memory cache check
     with _sessions_lock:
-        return _sessions.get(token)
+        cached = _sessions_cache.get(token)
+        if cached:
+            username, expires_at = cached
+            if now < expires_at:
+                return username
+            else:
+                _sessions_cache.pop(token, None)
+                drop_session(token)
+                return None
+
+    # 2. Check PostgreSQL (survives restarts)
+    if psycopg2:
+        try:
+            conn = _pg_connect(user="observability_reader")
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT username, expires_at FROM canary_sessions WHERE token = %s LIMIT 1;",
+                        (token,)
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        u, exp = row[0], row[1]
+                        if hasattr(exp, "timestamp"):
+                            exp_ts = exp.timestamp()
+                        elif isinstance(exp, str):
+                            try:
+                                exp_ts = datetime.fromisoformat(exp).timestamp()
+                            except Exception:
+                                exp_ts = now + 3600
+                        else:
+                            exp_ts = float(exp)
+                        conn.close()
+                        if now < exp_ts:
+                            with _sessions_lock:
+                                _sessions_cache[token] = (u, exp_ts)
+                            return u
+                        else:
+                            drop_session(token)
+                            return None
+            conn.close()
+        except Exception:
+            pass
+
+    # 3. Check SQLite (survives restarts)
+    try:
+        con = sqlite3.connect(CANARY_AUTH_DB, timeout=5)
+        cur = con.cursor()
+        cur.execute(
+            "SELECT username, expires_at FROM canary_sessions WHERE token = ? LIMIT 1;",
+            (token,)
+        )
+        row = cur.fetchone()
+        con.close()
+        if row:
+            u, exp_str = row[0], row[1]
+            try:
+                exp_dt = datetime.fromisoformat(exp_str)
+                exp_ts = exp_dt.timestamp()
+            except Exception:
+                exp_ts = now + 3600
+            if now < exp_ts:
+                with _sessions_lock:
+                    _sessions_cache[token] = (u, exp_ts)
+                return u
+            else:
+                drop_session(token)
+                return None
+    except Exception:
+        pass
+
+    return None
 
 
 def drop_session(token: str) -> None:
+    """Invalidates and deletes a session token from cache and persistent stores."""
+    if not token:
+        return
     with _sessions_lock:
-        _sessions.pop(token, None)
+        _sessions_cache.pop(token, None)
+
+    try:
+        con = sqlite3.connect(CANARY_AUTH_DB, timeout=5)
+        with con:
+            con.execute("DELETE FROM canary_sessions WHERE token = ?;", (token,))
+        con.close()
+    except Exception:
+        pass
+
+    if psycopg2:
+        try:
+            conn = _pg_connect(user="observability_admin")
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM canary_sessions WHERE token = %s;", (token,))
+            conn.close()
+        except Exception:
+            pass
 
 
 def render_login_html() -> str:
@@ -9674,7 +10069,7 @@ def render_login_html() -> str:
 <body>
   <form id="login-form">
     <h1>Canary dashboard</h1>
-    <p>Demo account: <strong>demouser</strong> / <strong>demo</strong>. This is a placeholder login, not real authentication.</p>
+    <p>Sign in with your Canary credentials or demo account if enabled.</p>
     <input id="username" name="username" autocomplete="username" placeholder="Username" required>
     <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Password" required>
     <button type="submit">Sign in</button>
@@ -9721,13 +10116,15 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                     return part.split("=", 1)[1]
             return ""
 
-        def _user(self) -> str:
+        def _user(self) -> str | None:
             token = self._cookie_token()
             user = session_user(token)
             if user:
                 return user
-            # If no auth was specified, automatically authenticate as demo user
-            return CANARY_DEMO_USER
+            # If no auth was specified, automatically authenticate as demo user if auto-login is on and demo enabled
+            if CANARY_AUTO_LOGIN and CANARY_DEMO_ENABLED:
+                return CANARY_DEMO_USER
+            return None
 
         def _send_bytes(self, status: int, payload: bytes, content_type: str, extra_headers=None) -> None:
             self.send_response(status)
@@ -9749,8 +10146,12 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
         def _send_login_page(self) -> None:
             self._send_bytes(200, render_login_html().encode("utf-8"), "text/html; charset=utf-8")
 
-        def _require_user(self) -> str:
-            return self._user()
+        def _require_user(self) -> str | None:
+            user = self._user()
+            if not user:
+                self._send_bytes(401, b'{"error":"login required"}', "application/json")
+                return None
+            return user
 
         def do_OPTIONS(self):
             self.send_response(204)
@@ -9771,12 +10172,29 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
 
             if path in ("/login",):
                 token = self._cookie_token()
-                extra_headers = [("Location", "/")]
-                if not session_user(token):
+                if session_user(token):
+                    self._send_bytes(302, b"", "text/html", [("Location", "/")])
+                    return
+                if CANARY_AUTO_LOGIN and CANARY_DEMO_ENABLED:
                     token = issue_session(CANARY_DEMO_USER)
-                    extra_headers.append(("Set-Cookie", self._session_cookie(token)))
-                self._send_bytes(302, b"", "text/html", extra_headers)
+                    extra_headers = [("Location", "/"), ("Set-Cookie", self._session_cookie(token))]
+                    self._send_bytes(302, b"", "text/html", extra_headers)
+                    return
+                self._send_login_page()
                 return
+
+            if path == "/api/auth/status":
+                token = self._cookie_token()
+                curr_user = session_user(token)
+                data = json.dumps({
+                    "authenticated": bool(curr_user or (CANARY_AUTO_LOGIN and CANARY_DEMO_ENABLED)),
+                    "username": curr_user or (CANARY_DEMO_USER if (CANARY_AUTO_LOGIN and CANARY_DEMO_ENABLED) else None),
+                    "demo_enabled": CANARY_DEMO_ENABLED,
+                    "auto_login": CANARY_AUTO_LOGIN,
+                }).encode("utf-8")
+                self._send_bytes(200, data, "application/json")
+                return
+
             if path in ("/health", "/api/trigger-cycle", "/api/canary/run-once"):
                 if path in ("/api/trigger-cycle", "/api/canary/run-once"):
                     on_demand = query.get("on_demand", ["false"])[0].lower() in ("true", "1", "yes") or path == "/api/canary/run-once"
@@ -9799,6 +10217,11 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                     return
             elif not self._user():
                 self._send_bytes(401, b'{"error":"login required"}', "application/json")
+                return
+
+            if path == "/api/auth/users":
+                data = json.dumps({"users": list_users()}).encode("utf-8")
+                self._send_bytes(200, data, "application/json")
                 return
 
             if path.startswith("/open/"):
@@ -9828,10 +10251,16 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
 
             if path == "/" or path == "/index.html":
                 token = self._cookie_token()
+                curr_user = session_user(token)
                 extra_headers = []
-                if not session_user(token):
-                    token = issue_session(CANARY_DEMO_USER)
-                    extra_headers.append(("Set-Cookie", self._session_cookie(token)))
+                if not curr_user:
+                    if CANARY_AUTO_LOGIN and CANARY_DEMO_ENABLED:
+                        token = issue_session(CANARY_DEMO_USER)
+                        curr_user = CANARY_DEMO_USER
+                        extra_headers.append(("Set-Cookie", self._session_cookie(token)))
+                    else:
+                        self._send_bytes(302, b"", "text/html", [("Location", "/login")])
+                        return
                 body = render_dashboard_html().encode("utf-8")
                 self.send_response(200)
                 self._send_cors_headers()
@@ -10103,9 +10532,9 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                     creds = json.loads(raw_body.decode("utf-8") or "{}")
                 except Exception:
                     creds = {}
-                username = str(creds.get("username") or "")
+                username = str(creds.get("username") or "").strip()
                 password = str(creds.get("password") or "")
-                if _secret_eq(username, CANARY_DEMO_USER) and _secret_eq(password, CANARY_DEMO_PASSWORD):
+                if authenticate_user(username, password):
                     token = issue_session(username)
                     payload = json.dumps({"status": "ok", "username": username}).encode("utf-8")
                     self._send_bytes(200, payload, "application/json", [
@@ -10173,6 +10602,41 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 except Exception:
                     body = urllib.parse.parse_qs(post_data)
                     body = {k: v[0] for k, v in body.items()}
+
+            if path == "/api/auth/users":
+                username = str(body.get("username") or "").strip()
+                password = str(body.get("password") or "")
+                is_active = bool(body.get("is_active", True))
+                if not username or not password:
+                    self._send_bytes(400, b'{"error":"username and password are required"}', "application/json")
+                    return
+                save_user(username, password, is_demo=False, is_active=is_active)
+                self._send_bytes(200, json.dumps({"status": "created", "username": username}).encode("utf-8"), "application/json")
+                return
+
+            elif path == "/api/auth/rotate-demo":
+                new_pw = body.get("password")
+                enabled = bool(body.get("enabled", True))
+                if not enabled:
+                    disable_demo_user()
+                else:
+                    rotate_demo_user(new_password=new_pw, enabled=True)
+                data = json.dumps({"status": "ok", "demo_enabled": CANARY_DEMO_ENABLED}).encode("utf-8")
+                self._send_bytes(200, data, "application/json")
+                return
+
+            elif path == "/api/auth/change-password":
+                cur_pw = str(body.get("current_password") or "")
+                new_pw = str(body.get("new_password") or "")
+                if not authenticate_user(user, cur_pw):
+                    self._send_bytes(403, b'{"error":"current password incorrect"}', "application/json")
+                    return
+                if not new_pw:
+                    self._send_bytes(400, b'{"error":"new password required"}', "application/json")
+                    return
+                save_user(user, new_pw, is_demo=(user == CANARY_DEMO_USER))
+                self._send_bytes(200, b'{"status":"password updated"}', "application/json")
+                return
 
             if path == "/api/fault/start":
                 tag = body.get("tag", "FAULT-DRILL")
