@@ -69,26 +69,108 @@ jobs:
           if [ -z "$STATE_BUCKET" ]; then
             STATE_BUCKET="observability-demo-telemetry-lake-${ACCOUNT_ID}"
           fi
+          ROLE_NAME="observability-demo-github-oidc-role"
 
-          echo "=== 1. Checking Foundational S3 Backend Bucket: ${STATE_BUCKET} ==="
+          echo "=== 1. Checking & Ensuring OIDC / CI IAM Role: ${ROLE_NAME} ==="
+          if ! aws iam get-role --role-name "$ROLE_NAME" 2>/dev/null; then
+            echo "OIDC role $ROLE_NAME was destroyed. Restoring baseline role..."
+            aws iam create-role --role-name "$ROLE_NAME" \
+              --assume-role-policy-document '{
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Principal": { "AWS": "arn:aws:iam::'"$ACCOUNT_ID"':root" },
+                    "Action": ["sts:AssumeRole", "sts:TagSession"]
+                  },
+                  {
+                    "Effect": "Allow",
+                    "Principal": { "Federated": "arn:aws:iam::'"$ACCOUNT_ID"':oidc-provider/token.actions.githubusercontent.com" },
+                    "Action": "sts:AssumeRoleWithWebIdentity",
+                    "Condition": {
+                      "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
+                      "StringLike": { "token.actions.githubusercontent.com:sub": "repo:sethusrinivasan/observability-demo:*" }
+                    }
+                  }
+                ]
+              }' \
+              --tags Key=ApplicationName,Value=Observability-Demo 2>/dev/null || true
+
+            aws iam attach-role-policy --role-name "$ROLE_NAME" \
+              --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess" 2>/dev/null || true
+            echo "Restored baseline $ROLE_NAME role."
+          else
+            echo "Updating trust policy on $ROLE_NAME to ensure root and GitHub OIDC access..."
+            aws iam update-assume-role-policy --role-name "$ROLE_NAME" \
+              --policy-document '{
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Principal": { "AWS": "arn:aws:iam::'"$ACCOUNT_ID"':root" },
+                    "Action": ["sts:AssumeRole", "sts:TagSession"]
+                  },
+                  {
+                    "Effect": "Allow",
+                    "Principal": { "Federated": "arn:aws:iam::'"$ACCOUNT_ID"':oidc-provider/token.actions.githubusercontent.com" },
+                    "Action": "sts:AssumeRoleWithWebIdentity",
+                    "Condition": {
+                      "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
+                      "StringLike": { "token.actions.githubusercontent.com:sub": "repo:sethusrinivasan/observability-demo:*" }
+                    }
+                  }
+                ]
+              }' 2>/dev/null || true
+            echo "Verified OIDC role $ROLE_NAME."
+          fi
+
+          echo "=== 2. Activating Assumed Role Credentials with Admin Permissions ==="
+          CALLER_ARN=$(aws sts get-caller-identity --query "Arn" --output text 2>/dev/null || echo "")
+          echo "Current execution identity: ${CALLER_ARN}"
+
+          if [[ "$CALLER_ARN" != *":assumed-role/${ROLE_NAME}/"* ]]; then
+            echo "Assuming ${ROLE_NAME} to elevate permissions..."
+            ASSUME_OUT=$(aws sts assume-role \
+              --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}" \
+              --role-session-name "GitHubActions-Terraform-Deployment" \
+              --output json 2>/dev/null || true)
+
+            if [ -n "$ASSUME_OUT" ]; then
+              EXP_AK=$(echo "$ASSUME_OUT" | jq -r .Credentials.AccessKeyId)
+              EXP_SK=$(echo "$ASSUME_OUT" | jq -r .Credentials.SecretAccessKey)
+              EXP_ST=$(echo "$ASSUME_OUT" | jq -r .Credentials.SessionToken)
+              export AWS_ACCESS_KEY_ID="$EXP_AK"
+              export AWS_SECRET_ACCESS_KEY="$EXP_SK"
+              export AWS_SESSION_TOKEN="$EXP_ST"
+              echo "AWS_ACCESS_KEY_ID=$EXP_AK" >> $GITHUB_ENV
+              echo "AWS_SECRET_ACCESS_KEY=$EXP_SK" >> $GITHUB_ENV
+              echo "AWS_SESSION_TOKEN=$EXP_ST" >> $GITHUB_ENV
+              echo "Successfully elevated runner credentials to assumed role ${ROLE_NAME}."
+            else
+              echo "Note: Direct assume-role did not return new tokens; proceeding with active credentials."
+            fi
+          fi
+
+          echo "=== 3. Checking Foundational S3 Backend Bucket: ${STATE_BUCKET} ==="
           if ! aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>/dev/null; then
-            echo "Backend bucket ${STATE_BUCKET} does not exist or requires creation. Attempting..."
+            echo "Backend bucket ${STATE_BUCKET} does not exist. Creating..."
             if [ "$REGION" = "us-east-1" ]; then
-              aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}" 2>/dev/null || echo "Note: s3:CreateBucket skipped or delegated."
+              aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}"
             else
               aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}" \
-                --create-bucket-configuration LocationConstraint="${REGION}" 2>/dev/null || echo "Note: s3:CreateBucket skipped or delegated."
+                --create-bucket-configuration LocationConstraint="${REGION}"
             fi
             aws s3api put-bucket-versioning --bucket "${STATE_BUCKET}" --versioning-configuration Status=Disabled 2>/dev/null || true
             aws s3api put-bucket-encryption --bucket "${STATE_BUCKET}" \
               --server-side-encryption-configuration '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}' 2>/dev/null || true
             aws s3api put-bucket-tagging --bucket "${STATE_BUCKET}" \
               --tagging "TagSet=[{Key=ApplicationName,Value=Observability-Demo},{Key=ManagedBy,Value=Terraform}]" 2>/dev/null || true
+            echo "Created foundational backend bucket: ${STATE_BUCKET}"
           else
             echo "Foundational backend bucket ${STATE_BUCKET} is active and ready."
           fi
 
-          echo "=== 2. Checking ECR Repositories & Base Images ==="
+          echo "=== 4. Checking ECR Repositories & Base Images ==="
           LOGIN_PASS=$(aws ecr get-login-password --region "$REGION" 2>/dev/null || true)
           if [ -n "$LOGIN_PASS" ]; then
             echo "$LOGIN_PASS" | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com" 2>/dev/null || true
@@ -128,28 +210,6 @@ jobs:
               docker push "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${svc}:latest" 2>/dev/null || true
             fi
           done
-
-          echo "=== 3. Checking OIDC / CI IAM Role ==="
-          ROLE_NAME="observability-demo-github-oidc-role"
-          if ! aws iam get-role --role-name "$ROLE_NAME" 2>/dev/null; then
-            echo "OIDC role $ROLE_NAME was destroyed. Restoring baseline role..."
-            aws iam create-role --role-name "$ROLE_NAME" \
-              --assume-role-policy-document '{
-                "Version": "2012-10-17",
-                "Statement": [
-                  {
-                    "Effect": "Allow",
-                    "Principal": { "AWS": "arn:aws:iam::'"$ACCOUNT_ID"':root" },
-                    "Action": ["sts:AssumeRole", "sts:TagSession"]
-                  }
-                ]
-              }' \
-              --tags Key=ApplicationName,Value=Observability-Demo 2>/dev/null || true
-
-            aws iam attach-role-policy --role-name "$ROLE_NAME" \
-              --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess" 2>/dev/null || true
-            echo "Restored baseline $ROLE_NAME role."
-          fi
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
