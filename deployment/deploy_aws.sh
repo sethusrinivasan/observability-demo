@@ -43,6 +43,25 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
 log_warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+run_with_retry() {
+  local max_attempts="${1:-5}"
+  local initial_delay="${2:-5}"
+  shift 2
+  local delay="${initial_delay}"
+  for attempt in $(seq 1 "${max_attempts}"); do
+    if "$@"; then
+      return 0
+    fi
+    if [ "${attempt}" -eq "${max_attempts}" ]; then
+      log_error "Command failed after ${max_attempts} attempts: $*"
+      return 1
+    fi
+    log_warn "Command failed (attempt ${attempt}/${max_attempts}). Backing off for ${delay}s before retrying..."
+    sleep "${delay}"
+    delay=$((delay * 2))
+  done
+}
+
 check_prereqs() {
   local missing=()
   command -v terraform >/dev/null 2>&1 || missing+=("terraform (https://www.terraform.io)")
@@ -160,21 +179,21 @@ cmd_foundation_apply() {
 
 cmd_init() {
   check_prereqs
-  log_info "Initializing Terraform in ${TF_DIR}..."
-  terraform -chdir="${TF_DIR}" init
+  log_info "Initializing Terraform in ${TF_DIR} with backoff..."
+  run_with_retry 5 5 terraform -chdir="${TF_DIR}" init
   log_success "Terraform initialized."
 }
 
 cmd_plan() {
   check_prereqs
   log_info "Running Terraform Plan (Enforcing default tag: ApplicationName=${APP_TAG})..."
-  terraform -chdir="${TF_DIR}" plan -var="aws_region=${AWS_REGION}"
+  run_with_retry 3 5 terraform -chdir="${TF_DIR}" plan -var="aws_region=${AWS_REGION}"
 }
 
 cmd_apply() {
   check_prereqs
   log_info "Applying Terraform Infrastructure for ${BOLD}${APP_TAG}${NC} in ${AWS_REGION}..."
-  terraform -chdir="${TF_DIR}" apply -auto-approve -var="aws_region=${AWS_REGION}"
+  run_with_retry 3 10 terraform -chdir="${TF_DIR}" apply -auto-approve -var="aws_region=${AWS_REGION}"
   log_success "Terraform apply completed."
   cmd_status
 }
@@ -258,7 +277,7 @@ cmd_destroy() {
   echo -e "${RED}${BOLD}WARNING: This will destroy all AWS resources created for ${APP_TAG}!${NC}"
   read -r -p "Type 'DESTROY' to confirm: " confirm
   if [ "${confirm}" = "DESTROY" ]; then
-    terraform -chdir="${TF_DIR}" destroy -auto-approve -var="aws_region=${AWS_REGION}"
+    run_with_retry 3 10 terraform -chdir="${TF_DIR}" destroy -auto-approve -var="aws_region=${AWS_REGION}"
     log_success "All resources destroyed."
   else
     log_info "Destroy cancelled."
@@ -317,11 +336,11 @@ cmd_redeploy() {
   read -r -p "Type 'DESTROY' to confirm: " confirm
   if [ "${confirm}" = "DESTROY" ]; then
     archive_active_s3_bucket
-    log_info "Destroying application workload resources in ${TF_DIR}..."
-    terraform -chdir="${TF_DIR}" destroy -auto-approve -var="aws_region=${AWS_REGION}"
+    log_info "Destroying application workload resources in ${TF_DIR} with backoff..."
+    run_with_retry 3 10 terraform -chdir="${TF_DIR}" destroy -auto-approve -var="aws_region=${AWS_REGION}"
     log_success "Workload resources torn down cleanly. Redeploying infrastructure..."
-    terraform -chdir="${TF_DIR}" plan -var="aws_region=${AWS_REGION}"
-    terraform -chdir="${TF_DIR}" apply -auto-approve -var="aws_region=${AWS_REGION}"
+    run_with_retry 3 5 terraform -chdir="${TF_DIR}" plan -var="aws_region=${AWS_REGION}"
+    run_with_retry 3 10 terraform -chdir="${TF_DIR}" apply -auto-approve -var="aws_region=${AWS_REGION}"
     log_success "Redeployment completed."
     cmd_status
   else

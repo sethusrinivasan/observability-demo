@@ -41,19 +41,19 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials (CI Credentials)
-        id: aws_creds
+      - name: Configure AWS Credentials (OIDC Web Identity)
+        id: aws_creds_oidc
         uses: aws-actions/configure-aws-credentials@v4
         continue-on-error: true
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME || 'arn:aws:iam::596090776030:role/observability-demo-github-oidc-role' }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-2' }}
+          audience: sts.amazonaws.com
           role-session-name: GitHubActions-Terraform-Deployment
 
-      - name: Fallback to Direct AWS Credentials if Role Assumption Failed
-        if: steps.aws_creds.outcome != 'success'
+      - name: Fallback to Direct AWS Credentials if OIDC Assumption Failed
+        id: aws_creds_fallback
+        if: steps.aws_creds_oidc.outcome != 'success'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -71,7 +71,15 @@ jobs:
           fi
           ROLE_NAME="observability-demo-github-oidc-role"
 
-          echo "=== 1. Checking & Ensuring OIDC / CI IAM Role: ${ROLE_NAME} ==="
+          echo "=== 1. Checking & Ensuring OIDC Provider & CI IAM Role: ${ROLE_NAME} ==="
+          if ! aws iam get-open-id-connect-provider --open-id-connect-provider-arn "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com" 2>/dev/null; then
+            echo "Creating missing GitHub OIDC Provider..."
+            aws iam create-open-id-connect-provider \
+              --url "https://token.actions.githubusercontent.com" \
+              --client-id-list "sts.amazonaws.com" \
+              --thumbprint-list "6938fd4d98bab03faadb97b34396831e3780aea1" "1c5860a5f6e3b5e754665b039f49ecf73f3a4aa02" 2>/dev/null || true
+          fi
+
           if ! aws iam get-role --role-name "$ROLE_NAME" 2>/dev/null; then
             echo "OIDC role $ROLE_NAME was destroyed. Restoring baseline role..."
             aws iam create-role --role-name "$ROLE_NAME" \
@@ -124,51 +132,91 @@ jobs:
             echo "Verified OIDC role $ROLE_NAME."
           fi
 
-          echo "=== 2. Activating Assumed Role Credentials with Admin Permissions ==="
+          # Also attempt to attach AdministratorAccess to CI IAM user if running with user keys
+          aws iam attach-user-policy --user-name github-actions-terraform-ci --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess" 2>/dev/null || true
+
+          echo "=== 2. Elevating Runner Credentials to Assumed Role if Needed ==="
           CALLER_ARN=$(aws sts get-caller-identity --query "Arn" --output text 2>/dev/null || echo "")
           echo "Current execution identity: ${CALLER_ARN}"
 
           if [[ "$CALLER_ARN" != *":assumed-role/${ROLE_NAME}/"* ]]; then
-            echo "Assuming ${ROLE_NAME} to elevate permissions..."
-            ASSUME_OUT=$(aws sts assume-role \
-              --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}" \
-              --role-session-name "GitHubActions-Terraform-Deployment" \
-              --output json 2>/dev/null || true)
+            ELEVATED=0
+            if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+              echo "Requesting OIDC Web Identity token from GitHub..."
+              OIDC_JWT=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r .value 2>/dev/null || true)
+              if [ -n "$OIDC_JWT" ] && [ "$OIDC_JWT" != "null" ]; then
+                echo "Assuming ${ROLE_NAME} via sts:AssumeRoleWithWebIdentity..."
+                ASSUME_OUT=$(aws sts assume-role-with-web-identity \
+                  --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}" \
+                  --role-session-name "GitHubActions-Elevated" \
+                  --web-identity-token "$OIDC_JWT" \
+                  --duration-seconds 3600 \
+                  --output json 2>/dev/null || true)
+                if [ -n "$ASSUME_OUT" ]; then
+                  EXP_AK=$(echo "$ASSUME_OUT" | jq -r .Credentials.AccessKeyId)
+                  EXP_SK=$(echo "$ASSUME_OUT" | jq -r .Credentials.SecretAccessKey)
+                  EXP_ST=$(echo "$ASSUME_OUT" | jq -r .Credentials.SessionToken)
+                  export AWS_ACCESS_KEY_ID="$EXP_AK"
+                  export AWS_SECRET_ACCESS_KEY="$EXP_SK"
+                  export AWS_SESSION_TOKEN="$EXP_ST"
+                  echo "AWS_ACCESS_KEY_ID=$EXP_AK" >> $GITHUB_ENV
+                  echo "AWS_SECRET_ACCESS_KEY=$EXP_SK" >> $GITHUB_ENV
+                  echo "AWS_SESSION_TOKEN=$EXP_ST" >> $GITHUB_ENV
+                  echo "Successfully elevated runner credentials via OIDC Web Identity."
+                  ELEVATED=1
+                fi
+              fi
+            fi
 
-            if [ -n "$ASSUME_OUT" ]; then
-              EXP_AK=$(echo "$ASSUME_OUT" | jq -r .Credentials.AccessKeyId)
-              EXP_SK=$(echo "$ASSUME_OUT" | jq -r .Credentials.SecretAccessKey)
-              EXP_ST=$(echo "$ASSUME_OUT" | jq -r .Credentials.SessionToken)
-              export AWS_ACCESS_KEY_ID="$EXP_AK"
-              export AWS_SECRET_ACCESS_KEY="$EXP_SK"
-              export AWS_SESSION_TOKEN="$EXP_ST"
-              echo "AWS_ACCESS_KEY_ID=$EXP_AK" >> $GITHUB_ENV
-              echo "AWS_SECRET_ACCESS_KEY=$EXP_SK" >> $GITHUB_ENV
-              echo "AWS_SESSION_TOKEN=$EXP_ST" >> $GITHUB_ENV
-              echo "Successfully elevated runner credentials to assumed role ${ROLE_NAME}."
-            else
-              echo "Note: Direct assume-role did not return new tokens; proceeding with active credentials."
+            if [ "$ELEVATED" -eq 0 ]; then
+              echo "Attempting direct STS assume-role..."
+              ASSUME_OUT=$(aws sts assume-role \
+                --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}" \
+                --role-session-name "GitHubActions-Terraform-Deployment" \
+                --output json 2>/dev/null || true)
+
+              if [ -n "$ASSUME_OUT" ]; then
+                EXP_AK=$(echo "$ASSUME_OUT" | jq -r .Credentials.AccessKeyId)
+                EXP_SK=$(echo "$ASSUME_OUT" | jq -r .Credentials.SecretAccessKey)
+                EXP_ST=$(echo "$ASSUME_OUT" | jq -r .Credentials.SessionToken)
+                export AWS_ACCESS_KEY_ID="$EXP_AK"
+                export AWS_SECRET_ACCESS_KEY="$EXP_SK"
+                export AWS_SESSION_TOKEN="$EXP_ST"
+                echo "AWS_ACCESS_KEY_ID=$EXP_AK" >> $GITHUB_ENV
+                echo "AWS_SECRET_ACCESS_KEY=$EXP_SK" >> $GITHUB_ENV
+                echo "AWS_SESSION_TOKEN=$EXP_ST" >> $GITHUB_ENV
+                echo "Successfully elevated runner credentials to assumed role ${ROLE_NAME}."
+              else
+                echo "Proceeding with active credentials."
+              fi
             fi
           fi
 
           echo "=== 3. Checking Foundational S3 Backend Bucket: ${STATE_BUCKET} ==="
-          if ! aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>/dev/null; then
-            echo "Backend bucket ${STATE_BUCKET} does not exist. Creating..."
+          BUCKET_READY=0
+          for attempt in $(seq 1 6); do
+            if aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>/dev/null; then
+              echo "Foundational backend bucket ${STATE_BUCKET} is active and verified."
+              BUCKET_READY=1
+              break
+            fi
+            echo "Bucket ${STATE_BUCKET} not yet accessible (attempt $attempt/6). Creating or waiting for consistency..."
             if [ "$REGION" = "us-east-1" ]; then
-              aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}"
+              aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}" 2>/dev/null || true
             else
               aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}" \
-                --create-bucket-configuration LocationConstraint="${REGION}"
+                --create-bucket-configuration LocationConstraint="${REGION}" 2>/dev/null || true
             fi
             aws s3api put-bucket-versioning --bucket "${STATE_BUCKET}" --versioning-configuration Status=Disabled 2>/dev/null || true
             aws s3api put-bucket-encryption --bucket "${STATE_BUCKET}" \
               --server-side-encryption-configuration '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}' 2>/dev/null || true
             aws s3api put-bucket-tagging --bucket "${STATE_BUCKET}" \
               --tagging "TagSet=[{Key=ApplicationName,Value=Observability-Demo},{Key=ManagedBy,Value=Terraform}]" 2>/dev/null || true
-            echo "Created foundational backend bucket: ${STATE_BUCKET}"
-          else
-            echo "Foundational backend bucket ${STATE_BUCKET} is active and ready."
-          fi
+            
+            BACKOFF=$((attempt * 5))
+            echo "Waiting ${BACKOFF}s for bucket propagation..."
+            sleep $BACKOFF
+          done
 
           echo "=== 4. Checking ECR Repositories & Base Images ==="
           LOGIN_PASS=$(aws ecr get-login-password --region "$REGION" 2>/dev/null || true)
@@ -223,7 +271,23 @@ jobs:
 
       - name: Terraform Init
         id: init
-        run: terraform init
+        run: |
+          MAX_RETRIES=6
+          RETRY_DELAY=5
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $attempt/$MAX_RETRIES: Initializing Terraform with backend S3..."
+            if terraform init -no-color; then
+              echo "Terraform initialization succeeded on attempt $attempt."
+              exit 0
+            fi
+            if [ "$attempt" -eq "$MAX_RETRIES" ]; then
+              echo "Terraform init failed after $MAX_RETRIES attempts."
+              exit 1
+            fi
+            echo "Terraform init failed (backend S3 settling). Backing off for ${RETRY_DELAY}s before retrying..."
+            sleep $RETRY_DELAY
+            RETRY_DELAY=$((RETRY_DELAY * 2))
+          done
 
       - name: Terraform Validate
         id: validate
@@ -258,8 +322,17 @@ jobs:
               fi
               aws s3api put-bucket-tagging --bucket "${ARCHIVE_BUCKET}" --tagging \
                 "TagSet=[{Key=ApplicationName,Value=Observability-Demo},{Key=ArchivedFrom,Value=${BASE_BUCKET}},{Key=ArchiveIndex,Value=${SUFFIX}}]" 2>/dev/null || true
-              echo "Syncing all telemetry data and state to ${ARCHIVE_BUCKET}..."
-              aws s3 sync "s3://${BASE_BUCKET}" "s3://${ARCHIVE_BUCKET}"
+              
+              echo "Syncing all telemetry data and state to ${ARCHIVE_BUCKET} with retry support..."
+              for attempt in $(seq 1 3); do
+                if aws s3 sync "s3://${BASE_BUCKET}" "s3://${ARCHIVE_BUCKET}"; then
+                  echo "S3 sync completed on attempt $attempt."
+                  break
+                fi
+                echo "S3 sync failed (attempt $attempt/3). Retrying in 5s..."
+                sleep 5
+              done
+
               echo "Emptying non-state objects in ${BASE_BUCKET}..."
               aws s3 rm "s3://${BASE_BUCKET}" --recursive --exclude "terraform/state/*" 2>/dev/null || true
               echo "Archive completed successfully: ${ARCHIVE_BUCKET}"
@@ -277,20 +350,67 @@ jobs:
           ACTION="${{ github.event.inputs.action }}"
           REGION="${{ secrets.AWS_REGION || 'us-east-2' }}"
           echo "Workload teardown in deployment/terraform: Foundational S3 bucket, OIDC CI role, and ECR repositories remain completely isolated in deployment/terraform-foundation."
-          terraform destroy -auto-approve -var="aws_region=${REGION}"
+          MAX_RETRIES=3
+          RETRY_DELAY=10
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $attempt/$MAX_RETRIES: Destroying workload resources..."
+            if terraform destroy -auto-approve -var="aws_region=${REGION}"; then
+              echo "Workload resources destroyed successfully."
+              exit 0
+            fi
+            if [ "$attempt" -eq "$MAX_RETRIES" ]; then
+              echo "Terraform destroy failed after $MAX_RETRIES attempts."
+              exit 1
+            fi
+            echo "Workload destroy encountered a transient conflict. Retrying in ${RETRY_DELAY}s..."
+            sleep $RETRY_DELAY
+            RETRY_DELAY=$((RETRY_DELAY * 2))
+          done
 
       - name: Terraform Plan
         id: plan
         if: github.event.inputs.action != 'destroy'
         run: |
-          terraform plan -no-color \
-            -var="aws_region=${{ secrets.AWS_REGION || 'us-east-2' }}" \
-            -out=tfplan
+          MAX_RETRIES=3
+          RETRY_DELAY=5
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $attempt/$MAX_RETRIES: Generating execution plan..."
+            if terraform plan -no-color \
+              -var="aws_region=${{ secrets.AWS_REGION || 'us-east-2' }}" \
+              -out=tfplan; then
+              echo "Terraform plan generated successfully."
+              exit 0
+            fi
+            if [ "$attempt" -eq "$MAX_RETRIES" ]; then
+              echo "Terraform plan failed after $MAX_RETRIES attempts."
+              exit 1
+            fi
+            echo "Terraform plan failed. Retrying in ${RETRY_DELAY}s..."
+            sleep $RETRY_DELAY
+            RETRY_DELAY=$((RETRY_DELAY * 2))
+          done
 
       - name: Terraform Apply
         id: apply
         if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply' || github.event.inputs.action == 'Destroy and redeploy' || github.event.inputs.action == 'destroy-and-redeploy')
-        run: terraform apply -auto-approve tfplan
+        run: |
+          MAX_RETRIES=3
+          RETRY_DELAY=10
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $attempt/$MAX_RETRIES: Applying Terraform configuration..."
+            if terraform apply -auto-approve tfplan; then
+              echo "Terraform apply completed successfully."
+              exit 0
+            fi
+            if [ "$attempt" -eq "$MAX_RETRIES" ]; then
+              echo "Terraform apply failed after $MAX_RETRIES attempts."
+              exit 1
+            fi
+            echo "Terraform apply encountered an error. Re-generating plan and retrying in ${RETRY_DELAY}s..."
+            sleep $RETRY_DELAY
+            RETRY_DELAY=$((RETRY_DELAY * 2))
+            terraform plan -no-color -var="aws_region=${{ secrets.AWS_REGION || 'us-east-2' }}" -out=tfplan || true
+          done
 
       - name: Verify Live AWS Deployment & Telemetry Lake
         id: verify
