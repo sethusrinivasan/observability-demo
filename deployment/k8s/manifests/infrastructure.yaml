@@ -377,15 +377,13 @@ spec:
     spec:
       containers:
       - name: exporter
-        image: bitnami/postgres-exporter@sha256:59b0b9ddee90a32fd24cc6345d65ac7308b211f932da8fc1e4270e421e34fd7e
+        image: prometheuscommunity/postgres-exporter:v0.16.0
         imagePullPolicy: IfNotPresent
         env:
         - name: DATA_SOURCE_NAME
           value: "postgresql://observability:observability@postgres:5432/observability?sslmode=disable"
         - name: PG_EXPORTER_DISABLE_SETTINGS_METRICS
           value: "false"
-        - name: GODEBUG
-          value: "fips140=off"
 ---
 apiVersion: v1
 kind: Service

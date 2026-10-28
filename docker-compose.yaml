@@ -156,7 +156,7 @@ services:
       - observability-network
 
   postgres-exporter:
-    image: bitnami/postgres-exporter@sha256:59b0b9ddee90a32fd24cc6345d65ac7308b211f932da8fc1e4270e421e34fd7e
+    image: prometheuscommunity/postgres-exporter:v0.16.0
     container_name: postgres-exporter
     restart: unless-stopped
     ports:
@@ -165,9 +165,6 @@ services:
       - DATA_SOURCE_NAME=postgresql://${POSTGRES_USER:-observability}:${POSTGRES_PASSWORD:-observability}@postgres:5432/${POSTGRES_DB:-observability}?sslmode=disable&application_name=postgres-exporter
       - PG_EXPORTER_DISABLE_SETTINGS_METRICS=false
       - PG_EXPORTER_DISABLE_DEFAULT_METRICS=false
-      # Bitnami's image runs Go in FIPS-only mode, which rejects this demo password
-      # and leaves pg_up at 0, so the Grafana version widget stays empty.
-      - GODEBUG=fips140=off
     depends_on:
       postgres:
         condition: service_healthy
