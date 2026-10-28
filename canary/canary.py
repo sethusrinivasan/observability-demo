@@ -98,6 +98,29 @@ except ImportError:
         trigger_fingerprint_analysis_now,
     )
 
+try:
+    from canary.aws_quotas import (
+        init_service_quotas_tables,
+        fetch_aws_service_quotas,
+        capture_service_quotas_snapshot,
+        get_latest_service_quotas,
+        get_recent_snapshots_log,
+        get_aws_quotas_scheduler_status,
+        start_aws_quotas_scheduler,
+        trigger_aws_quotas_snapshot_now,
+    )
+except ImportError:
+    from aws_quotas import (
+        init_service_quotas_tables,
+        fetch_aws_service_quotas,
+        capture_service_quotas_snapshot,
+        get_latest_service_quotas,
+        get_recent_snapshots_log,
+        get_aws_quotas_scheduler_status,
+        start_aws_quotas_scheduler,
+        trigger_aws_quotas_snapshot_now,
+    )
+
 # ---------------------------------------------------------------------------
 # Configuration from environment variables
 # ---------------------------------------------------------------------------
@@ -5800,6 +5823,7 @@ def render_dashboard_html() -> str:
           <button class="view-tab-btn" onclick="switchView('s3', this)">🪣 S3 Lake Browser</button>
           <button class="view-tab-btn" onclick="switchView('telemetry_query', this)">🔍 Telemetry view - Query editor</button>
           <button class="view-tab-btn" onclick="switchView('cost_breakdown', this)">💰 Database Cost Breakdown</button>
+          <button class="view-tab-btn" id="view-quotas-btn" onclick="switchView('aws_quotas', this)">☁️ AWS Service Quotas</button>
         </div>
         <button class="btn btn-ondemand" id="btn-ondemand-pulse" style="height:26px; padding:2px 10px; font-size:0.72rem;" onclick="triggerOnDemandPulse()" title="Forcefully run one complete iteration across all polyglot microservices">⚡ Run Once (On-Demand)</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="openQrModal()" title="Mobile App & QR Code">📱 Connect / QR</button>
@@ -6719,6 +6743,143 @@ def render_dashboard_html() -> str:
       </div>
     </div>
 
+    <!-- ☁️ AWS Service Quotas & Utilization Snapshot -->
+    <div id="aws-quotas-section" style="display: none;">
+      <div class="section-bar">
+        <div class="section-title">
+          <span>☁️ AWS Service Quotas &amp; Utilization Snapshot</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <span class="badge" style="background:#1e293b; color:#38bdf8; border:1px solid #0284c7;">⏱️ Twice Daily Snapshot (Every 12h)</span>
+          <span class="badge" style="background:#1e293b; color:#34d399; border:1px solid #059669;">🏛️ Aurora DB: aws_service_quotas_snapshots &amp; aws_service_quotas_latest</span>
+          <span class="badge" style="background:#1e293b; color:#a78bfa; border:1px solid #7c3aed;">📊 RDS &bull; EC2 &bull; VPC &bull; Lambda &bull; S3 &bull; CloudWatch &bull; DynamoDB</span>
+          <span class="badge badge-success" id="aws-quotas-last-snap-badge">Last Snapshot: --</span>
+        </div>
+      </div>
+
+      <!-- Quota Filter & Action Toolbar -->
+      <div style="background: #0f172a; border: 1px solid var(--card-border); border-radius: 6px; padding: 12px 16px; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <label style="font-size: 0.78rem; font-weight: 700; color: var(--accent);">AWS Service:</label>
+            <select id="aws-quotas-service-filter" class="ctrl-input" onchange="filterAwsQuotasTable()" style="font-weight: 600;">
+              <option value="all" selected>All Services (RDS, EC2, VPC, Lambda, S3, CloudWatch, DynamoDB)</option>
+              <option value="rds">Amazon RDS / Aurora (rds)</option>
+              <option value="ec2">Amazon EC2 (ec2)</option>
+              <option value="vpc">Amazon VPC (vpc)</option>
+              <option value="lambda">AWS Lambda (lambda)</option>
+              <option value="s3">Amazon S3 (s3)</option>
+              <option value="cloudwatch">Amazon CloudWatch (cloudwatch)</option>
+              <option value="dynamodb">Amazon DynamoDB (dynamodb)</option>
+            </select>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <label style="font-size: 0.78rem; font-weight: 700; color: var(--muted);">Risk / Status:</label>
+            <select id="aws-quotas-status-filter" class="ctrl-input" onchange="filterAwsQuotasTable()" style="font-weight: 600;">
+              <option value="all" selected>All Statuses</option>
+              <option value="NORMAL">Normal (&lt; 70%)</option>
+              <option value="WARNING">Warning (70% - 84%)</option>
+              <option value="CRITICAL">Critical (&ge; 85%)</option>
+            </select>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <input type="text" id="aws-quotas-search-input" class="ctrl-input" placeholder="🔍 Search quota name, code, service..." oninput="filterAwsQuotasTable()" style="width: 250px;">
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button id="btn-snapshot-now" class="btn btn-outline" style="height: 28px; padding: 2px 12px; font-size: 0.75rem; border-color: #38bdf8; color: #38bdf8;" onclick="captureAwsQuotaSnapshotNow()" title="Trigger an immediate on-demand quota snapshot and persist to Aurora PostgreSQL">📸 Capture Quota Snapshot Now</button>
+          <button class="btn btn-primary" style="height: 28px; padding: 2px 12px; font-size: 0.75rem;" onclick="fetchAwsServiceQuotas()">🔄 Refresh</button>
+        </div>
+      </div>
+
+      <!-- KPI Summary Cards -->
+      <div class="kpi-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 14px;">
+        <div class="kpi-card" style="border-top: 3px solid #38bdf8;">
+          <div class="kpi-title">TOTAL MONITORED QUOTAS</div>
+          <div class="kpi-val" id="kpi-quotas-total" style="color: #38bdf8;">--</div>
+          <div class="kpi-sub" id="kpi-quotas-services-sub">Across 7 AWS Services</div>
+        </div>
+        <div class="kpi-card" style="border-top: 3px solid #10b981;">
+          <div class="kpi-title">AVERAGE UTILIZATION %</div>
+          <div class="kpi-val" id="kpi-quotas-avg-util" style="color: #10b981;">-- %</div>
+          <div class="kpi-sub">Mean capacity utilization</div>
+        </div>
+        <div class="kpi-card" style="border-top: 3px solid #f59e0b;">
+          <div class="kpi-title">QUOTAS AT RISK</div>
+          <div class="kpi-val" id="kpi-quotas-risk" style="color: #f59e0b;">0 / 0</div>
+          <div class="kpi-sub">Warning (&ge;70%) / Critical (&ge;85%)</div>
+        </div>
+        <div class="kpi-card" style="border-top: 3px solid #a855f7;">
+          <div class="kpi-title">SNAPSHOT CADENCE</div>
+          <div class="kpi-val" id="kpi-quotas-cadence" style="color: #a855f7; font-size: 1.15rem;">Twice Daily</div>
+          <div class="kpi-sub" id="kpi-quotas-next-sub">Every 12h &bull; Auto-persisted in Aurora</div>
+        </div>
+      </div>
+
+      <!-- Main Breakdown Table Card -->
+      <div class="card" style="margin-bottom: 14px;">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <span class="card-title">☁️ AWS Service Quota Limits &amp; Current Utilization</span>
+            <span class="card-subtitle" style="display: block; margin-top: 2px;">Default quota, current configuration limit, current usage, and utilization percentage.</span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <span id="aws-quotas-count-badge" class="badge" style="background:#1e293b; color:#94a3b8; border:1px solid #334155;">-- quotas</span>
+          </div>
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="sql-grid-table" id="aws-quotas-table">
+            <thead>
+              <tr>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-table', 0, false)">AWS Service <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-table', 1, false)">Quota Name &amp; Code <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-table', 2, true)" style="text-align: right;">Default Quota <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-table', 3, true)" style="text-align: right;">Current Configuration <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-table', 4, true)" style="text-align: right;">Current Usage <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-table', 5, true)" style="min-width: 170px;">Utilization % <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-table', 6, false)" style="text-align: center;">Status <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-table', 7, false)">Last Snapshot <span class="sort-icon">↕</span></th>
+              </tr>
+            </thead>
+            <tbody id="aws-quotas-tbody">
+              <tr><td colspan="8" style="text-align:center; color:var(--muted); padding:16px;">Loading AWS Service Quotas from Aurora PostgreSQL...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Twice Daily Historical Snapshots Log Card -->
+      <div class="card" style="margin-bottom: 14px;">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <span class="card-title">🏛️ Twice Daily Snapshots History (Aurora Table: aws_service_quotas_snapshots)</span>
+            <span class="card-subtitle" style="display: block; margin-top: 2px;">Twice-daily snapshots captured every 12 hours and recorded into existing Aurora PostgreSQL.</span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <span id="aws-quotas-snapshots-count-badge" class="badge" style="background:#1e293b; color:#94a3b8; border:1px solid #334155;">-- snapshots</span>
+          </div>
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="sql-grid-table" id="aws-quotas-snapshots-table">
+            <thead>
+              <tr>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-snapshots-table', 0, false)">Snapshot ID <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-snapshots-table', 1, false)">Captured At (UTC) <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-snapshots-table', 2, true)" style="text-align: right;">Total Monitored <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-snapshots-table', 3, true)" style="text-align: right;">Warning Quotas <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-snapshots-table', 4, true)" style="text-align: right;">Critical Quotas <span class="sort-icon">↕</span></th>
+                <th class="sortable-th" onclick="sortGridTable('aws-quotas-snapshots-table', 5, true)" style="text-align: right;">Avg Utilization % <span class="sort-icon">↕</span></th>
+                <th>Monitored Services <span class="sort-icon">↕</span></th>
+              </tr>
+            </thead>
+            <tbody id="aws-quotas-snapshots-tbody">
+              <tr><td colspan="7" style="text-align:center; color:var(--muted); padding:16px;">Loading snapshot history...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- 📄 RDS Cost One-Pager Markdown Modal -->
     <div id="rds-markdown-modal" style="display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75); z-index: 9999; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
       <div style="background: #0f172a; border: 1px solid var(--card-border); border-radius: 8px; width: 90%; max-width: 900px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);">
@@ -6850,6 +7011,7 @@ def render_dashboard_html() -> str:
       const s3Section = document.getElementById('s3-browser-section');
       const duckdbSection = document.getElementById('telemetry-query-section');
       const costSection = document.getElementById('cost-breakdown-section');
+      const quotasSection = document.getElementById('aws-quotas-section');
 
       // Reset all display
       graphsSection.style.display = 'none';
@@ -6861,6 +7023,7 @@ def render_dashboard_html() -> str:
       if (s3Section) s3Section.style.display = 'none';
       if (duckdbSection) duckdbSection.style.display = 'none';
       if (costSection) costSection.style.display = 'none';
+      if (quotasSection) quotasSection.style.display = 'none';
 
       if (mode === 'graphs') {{
         graphsSection.style.display = 'block';
@@ -6885,6 +7048,9 @@ def render_dashboard_html() -> str:
       }} else if (mode === 'cost_breakdown') {{
         if (costSection) costSection.style.display = 'block';
         fetchRdsCostBreakdown();
+      }} else if (mode === 'aws_quotas') {{
+        if (quotasSection) quotasSection.style.display = 'block';
+        fetchAwsServiceQuotas();
       }} else {{
         // 'both'
         graphsSection.style.display = 'block';
@@ -7339,6 +7505,211 @@ def render_dashboard_html() -> str:
               <td style="font-family: monospace; color: #cbd5e1; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${{q.query_text}}">${{q.query_text}}</td>
             </tr>
           `).join('');
+        }}
+      }}
+    }}
+
+    // ---------------------------------------------------------------------------
+    // AWS Service Quotas & Utilization Snapshot Logic
+    // ---------------------------------------------------------------------------
+    let latestAwsQuotasData = null;
+
+    async function fetchAwsServiceQuotas() {{
+      const tbody = document.getElementById('aws-quotas-tbody');
+      if (tbody && !latestAwsQuotasData) {{
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:var(--muted); padding:16px;">Fetching AWS service quotas from Aurora PostgreSQL...</td></tr>';
+      }}
+      try {{
+        const res = await fetch('/api/aws/quotas');
+        const data = await res.json();
+        latestAwsQuotasData = data;
+        renderAwsServiceQuotas(data);
+      }} catch (err) {{
+        console.error('Failed fetching AWS service quotas:', err);
+        if (tbody) {{
+          tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:#f87171; padding:16px;">Error fetching AWS service quotas: ${{err.message}}</td></tr>`;
+        }}
+      }}
+    }}
+
+    function renderAwsServiceQuotas(data) {{
+      if (!data) return;
+      const quotas = data.quotas || [];
+      const summary = data.summary || {{}};
+      const scheduler = data.scheduler || {{}};
+      const snapshots = data.recent_snapshots || [];
+
+      // KPIs
+      const totalEl = document.getElementById('kpi-quotas-total');
+      if (totalEl) totalEl.innerText = summary.total_monitored || quotas.length;
+
+      const avgEl = document.getElementById('kpi-quotas-avg-util');
+      if (avgEl) avgEl.innerText = `${{Number(summary.average_utilization_pct || 0).toFixed(1)}}%`;
+
+      const riskEl = document.getElementById('kpi-quotas-risk');
+      if (riskEl) {{
+        const w = summary.warning_quotas || 0;
+        const c = summary.critical_quotas || 0;
+        riskEl.innerText = `${{w}} / ${{c}}`;
+        riskEl.style.color = (c > 0) ? '#ef4444' : ((w > 0) ? '#f59e0b' : '#10b981');
+      }}
+
+      const cadenceEl = document.getElementById('kpi-quotas-cadence');
+      if (cadenceEl) cadenceEl.innerText = scheduler.frequency || 'Twice Daily (12h)';
+
+      const nextSubEl = document.getElementById('kpi-quotas-next-sub');
+      if (nextSubEl && scheduler.next_run_at) {{
+        nextSubEl.innerText = `Next: ${{scheduler.next_run_at.replace('T', ' ').slice(0, 19)}} UTC`;
+      }}
+
+      const lastSnapBadge = document.getElementById('aws-quotas-last-snap-badge');
+      if (lastSnapBadge && scheduler.last_run_at) {{
+        lastSnapBadge.innerText = `Last Snapshot: ${{scheduler.last_run_at.replace('T', ' ').slice(0, 19)}} UTC`;
+      }}
+
+      // Snapshot history table
+      const snapTbody = document.getElementById('aws-quotas-snapshots-tbody');
+      const snapBadge = document.getElementById('aws-quotas-snapshots-count-badge');
+      if (snapBadge) snapBadge.innerText = `${{snapshots.length}} snapshots`;
+      if (snapTbody) {{
+        if (snapshots.length === 0) {{
+          snapTbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:var(--muted); padding:16px;">No historical snapshots captured yet.</td></tr>';
+        }} else {{
+          snapTbody.innerHTML = snapshots.map(s => {{
+            const sc = s.service_counts || {{}};
+            const scStr = Object.entries(sc).map(([k, v]) => `${{k.toUpperCase()}}:${{v}}`).join(', ') || 'All';
+            return `
+              <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.76rem;">
+                <td style="font-family: monospace; color: #38bdf8; font-weight: 600;">${{s.snapshot_id}}</td>
+                <td style="font-family: monospace; color: #cbd5e1;">${{(s.captured_at || '').replace('T', ' ').slice(0, 19)}}</td>
+                <td style="text-align: right; font-weight: 600;">${{s.total_quotas}}</td>
+                <td style="text-align: right; color: ${{s.warning_quotas > 0 ? '#f59e0b' : 'var(--muted)'}};">${{s.warning_quotas}}</td>
+                <td style="text-align: right; color: ${{s.critical_quotas > 0 ? '#ef4444' : 'var(--muted)'}};">${{s.critical_quotas}}</td>
+                <td style="text-align: right; font-weight: 700; color: #34d399;">${{Number(s.avg_utilization_pct || 0).toFixed(1)}}%</td>
+                <td style="font-size: 0.72rem; color: #a5b4fc;">${{scStr}}</td>
+              </tr>
+            `;
+          }}).join('');
+        }}
+      }}
+
+      filterAwsQuotasTable();
+    }}
+
+    function filterAwsQuotasTable() {{
+      if (!latestAwsQuotasData || !latestAwsQuotasData.quotas) return;
+      const serviceFilter = (document.getElementById('aws-quotas-service-filter')?.value || 'all').toLowerCase();
+      const statusFilter = (document.getElementById('aws-quotas-status-filter')?.value || 'all').toUpperCase();
+      const searchVal = (document.getElementById('aws-quotas-search-input')?.value || '').trim().toLowerCase();
+
+      const filtered = latestAwsQuotasData.quotas.filter(q => {{
+        if (serviceFilter !== 'all' && q.service_code.toLowerCase() !== serviceFilter) return false;
+        if (statusFilter !== 'ALL' && q.status.toUpperCase() !== statusFilter) return false;
+        if (searchVal) {{
+          const term = `${{q.service_name}} ${{q.service_code}} ${{q.quota_name}} ${{q.quota_code}}`.toLowerCase();
+          if (!term.includes(searchVal)) return false;
+        }}
+        return true;
+      }});
+
+      const countBadge = document.getElementById('aws-quotas-count-badge');
+      if (countBadge) countBadge.innerText = `${{filtered.length}} / ${{latestAwsQuotasData.quotas.length}} quotas`;
+
+      const tbody = document.getElementById('aws-quotas-tbody');
+      if (!tbody) return;
+
+      if (filtered.length === 0) {{
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:var(--muted); padding:16px;">No quotas match the selected filters.</td></tr>';
+        return;
+      }}
+
+      const serviceIcons = {{
+        'rds': '🗄️',
+        'ec2': '💻',
+        'vpc': '🌐',
+        'lambda': '⚡',
+        's3': '🪣',
+        'cloudwatch': '📊',
+        'dynamodb': '⚡',
+      }};
+
+      tbody.innerHTML = filtered.map(q => {{
+        const icon = serviceIcons[q.service_code] || '☁️';
+        const util = Number(q.utilization_pct || 0);
+        let barColor = '#10b981';
+        let badgeStyle = 'background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid #10b981;';
+        if (q.status === 'CRITICAL') {{
+          barColor = '#ef4444';
+          badgeStyle = 'background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid #ef4444;';
+        }} else if (q.status === 'WARNING') {{
+          barColor = '#f59e0b';
+          badgeStyle = 'background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid #f59e0b;';
+        }}
+
+        const snapTime = (q.last_snapshot_at || q.captured_at || '').replace('T', ' ').slice(0, 19);
+
+        return `
+          <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.77rem;">
+            <td style="white-space: nowrap;">
+              <span style="margin-right: 4px;">${{icon}}</span>
+              <strong style="color: #f8fafc;">${{q.service_name}}</strong>
+              <span class="badge" style="background:#1e293b; color:#94a3b8; margin-left: 6px; font-size: 0.68rem;">${{q.service_code.toUpperCase()}}</span>
+            </td>
+            <td>
+              <div style="font-weight: 600; color: #38bdf8;">${{q.quota_name}}</div>
+              <div style="font-family: monospace; font-size: 0.70rem; color: var(--muted); margin-top: 2px;">${{q.quota_code}}</div>
+            </td>
+            <td style="text-align: right; font-family: monospace; color: #94a3b8;">
+              ${{Number(q.default_quota).toLocaleString()}} <span style="font-size: 0.7rem;">${{q.unit}}</span>
+            </td>
+            <td style="text-align: right; font-family: monospace; font-weight: 700; color: #f8fafc;">
+              ${{Number(q.current_configuration).toLocaleString()}} <span style="font-size: 0.7rem; color: var(--muted);">${{q.unit}}</span>
+              ${{q.is_adjustable ? '<span title="Quota is adjustable via AWS Service Quotas" style="color:#38bdf8; font-size:0.68rem; margin-left:3px;">⚙️</span>' : ''}}
+            </td>
+            <td style="text-align: right; font-family: monospace; font-weight: 700; color: #fde047;">
+              ${{Number(q.current_usage).toLocaleString()}} <span style="font-size: 0.7rem; color: var(--muted);">${{q.unit}}</span>
+            </td>
+            <td style="vertical-align: middle;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <div style="flex: 1; background: #1e293b; height: 7px; border-radius: 4px; overflow: hidden; position: relative;">
+                  <div style="width: ${{Math.min(100, util)}}%; background: ${{barColor}}; height: 100%; border-radius: 4px; transition: width 0.3s ease;"></div>
+                </div>
+                <span style="font-family: monospace; font-weight: 700; font-size: 0.74rem; color: ${{barColor}}; width: 44px; text-align: right;">${{util.toFixed(1)}}%</span>
+              </div>
+            </td>
+            <td style="text-align: center;">
+              <span class="badge" style="${{badgeStyle}} font-size: 0.68rem; padding: 2px 8px;">${{q.status}}</span>
+            </td>
+            <td style="font-family: monospace; font-size: 0.72rem; color: #94a3b8; white-space: nowrap;">
+              ${{snapTime}}
+            </td>
+          </tr>
+        `;
+      }}).join('');
+    }}
+
+    async function captureAwsQuotaSnapshotNow() {{
+      const btn = document.getElementById('btn-snapshot-now');
+      if (btn) {{
+        btn.disabled = true;
+        btn.innerHTML = '📸 Capturing snapshot...';
+      }}
+      try {{
+        const res = await fetch('/api/aws/quotas/snapshot', {{ method: 'POST' }});
+        const data = await res.json();
+        if (data.status === 'success') {{
+          showToast('📸 AWS Service Quotas Snapshot captured & persisted in Aurora DB!');
+          await fetchAwsServiceQuotas();
+        }} else {{
+          showToast(`Snapshot error: ${{data.error || 'Failed'}}`);
+        }}
+      }} catch (err) {{
+        console.error('Snapshot capture failed:', err);
+        showToast(`Snapshot failed: ${{err.message}}`);
+      }} finally {{
+        if (btn) {{
+          btn.disabled = false;
+          btn.innerHTML = '📸 Capture Quota Snapshot Now';
         }}
       }}
     }}
@@ -11123,6 +11494,48 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 self.end_headers()
                 self.wfile.write(data)
 
+            elif path in ("/api/aws/quotas", "/api/aws/quotas/list"):
+                quotas = get_latest_service_quotas(_pg_connect)
+                sched = get_aws_quotas_scheduler_status()
+                snapshots_log = get_recent_snapshots_log(_pg_connect, limit=10)
+                total_q = len(quotas)
+                warn_q = sum(1 for q in quotas if q.get("status") == "WARNING")
+                crit_q = sum(1 for q in quotas if q.get("status") == "CRITICAL")
+                avg_util = round(sum(q.get("utilization_pct", 0.0) for q in quotas) / max(1, total_q), 1) if total_q > 0 else 0.0
+                data = json.dumps({
+                    "status": "success",
+                    "scheduler": sched,
+                    "summary": {
+                        "total_monitored": total_q,
+                        "warning_quotas": warn_q,
+                        "critical_quotas": crit_q,
+                        "average_utilization_pct": avg_util,
+                        "cadence": "Twice Daily (Every 12h)",
+                    },
+                    "quotas": quotas,
+                    "recent_snapshots": snapshots_log,
+                }, indent=2, default=str).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            elif path in ("/api/aws/quotas/snapshots", "/api/aws/quotas/snapshots/list"):
+                snapshots_log = get_recent_snapshots_log(_pg_connect, limit=50)
+                data = json.dumps({
+                    "status": "success",
+                    "total_snapshots": len(snapshots_log),
+                    "snapshots": snapshots_log,
+                }, indent=2, default=str).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
             elif path == "/api/errors/recent":
                 data = json.dumps({"status": "success", "errors": list(DASHBOARD_ERROR_RING)}, indent=2).encode("utf-8")
                 self.send_response(200)
@@ -11563,6 +11976,21 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                     self._send_bytes(500, err_payload, "application/json")
                 return
 
+            elif path in ("/api/aws/quotas/snapshot", "/api/aws/quotas/snapshot/run"):
+                try:
+                    snap_res = trigger_aws_quotas_snapshot_now(_pg_connect)
+                    sched = get_aws_quotas_scheduler_status()
+                    payload = json.dumps({
+                        "status": "success",
+                        "snapshot": snap_res,
+                        "scheduler": sched,
+                    }, indent=2, default=str).encode("utf-8")
+                    self._send_bytes(200, payload, "application/json")
+                except Exception as snap_exc:
+                    err_payload = json.dumps({"status": "error", "error": str(snap_exc)}).encode("utf-8")
+                    self._send_bytes(500, err_payload, "application/json")
+                return
+
             else:
                 self.send_response(404)
                 self._send_cors_headers()
@@ -11588,6 +12016,10 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
         start_fingerprint_scheduler(_pg_connect, interval_seconds=1800)
     except Exception as sched_err:
         logger.debug("Failed starting AST fingerprint background scheduler: %s", sched_err)
+    try:
+        start_aws_quotas_scheduler(_pg_connect, interval_seconds=43200)
+    except Exception as q_sched_err:
+        logger.debug("Failed starting AWS quotas twice-daily scheduler: %s", q_sched_err)
     return server
 
 # ---------------------------------------------------------------------------

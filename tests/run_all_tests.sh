@@ -114,7 +114,7 @@ run_smoke() {
 case "$MODE" in
     unit)
         echo "=== Running Python Unit Tests ==="
-        run_pytest tests/test_evaluator.py tests/test_sql_guard.py tests/test_canary_features.py -v
+        run_pytest tests/test_evaluator.py tests/test_sql_guard.py tests/test_canary_features.py tests/test_query_fingerprints_and_plan.py tests/test_rds_cost_breakdown.py tests/test_aws_service_quotas.py -v
         ;;
     infra)
         echo "=== Running Infrastructure Tests ==="
@@ -134,13 +134,13 @@ case "$MODE" in
         ;;
     all)
         echo "=== Running All Test Suites ==="
-        run_pytest tests/test_evaluator.py tests/test_sql_guard.py tests/test_canary_features.py -v
+        run_pytest tests/test_evaluator.py tests/test_sql_guard.py tests/test_canary_features.py tests/test_query_fingerprints_and_plan.py tests/test_rds_cost_breakdown.py tests/test_aws_service_quotas.py -v
         run_smoke
         run_pytest tests/test_live_showcase.py tests/test_aws_canary_audit.py -v
         ;;
     auto)
         echo "=== Running Python Unit Tests ==="
-        run_pytest tests/test_evaluator.py tests/test_sql_guard.py tests/test_canary_features.py -v
+        run_pytest tests/test_evaluator.py tests/test_sql_guard.py tests/test_canary_features.py tests/test_query_fingerprints_and_plan.py tests/test_rds_cost_breakdown.py tests/test_aws_service_quotas.py -v
 
         if kubectl get nodes &> /dev/null || (command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "observability-"); then
             echo -e "\n=== Running Multi-Language Smoke Tests (Active Stack Detected) ==="
