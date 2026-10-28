@@ -41,14 +41,116 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials (OIDC or Assumed Role via Secrets)
+      - name: Configure AWS Credentials (CI Credentials)
+        id: aws_creds
         uses: aws-actions/configure-aws-credentials@v4
+        continue-on-error: true
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME || 'arn:aws:iam::596090776030:role/observability-demo-github-oidc-role' }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-2' }}
           role-session-name: GitHubActions-Terraform-Deployment
+
+      - name: Fallback to Direct AWS Credentials if Role Assumption Failed
+        if: steps.aws_creds.outcome != 'success'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-2' }}
+
+      - name: Pre-flight Bootstrap & Self-Healing Infrastructure
+        id: bootstrap
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text 2>/dev/null || echo "596090776030")
+          REGION="${{ secrets.AWS_REGION || 'us-east-2' }}"
+          STATE_BUCKET="${{ secrets.AWS_S3_BUCKET || '' }}"
+          if [ -z "$STATE_BUCKET" ]; then
+            STATE_BUCKET="observability-demo-telemetry-lake-${ACCOUNT_ID}"
+          fi
+
+          echo "=== 1. Checking Foundational S3 Backend Bucket: ${STATE_BUCKET} ==="
+          if ! aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>/dev/null; then
+            echo "Backend bucket ${STATE_BUCKET} does not exist. Creating..."
+            if [ "$REGION" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}"
+            else
+              aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}" \
+                --create-bucket-configuration LocationConstraint="${REGION}"
+            fi
+            aws s3api put-bucket-versioning --bucket "${STATE_BUCKET}" --versioning-configuration Status=Disabled 2>/dev/null || true
+            aws s3api put-bucket-encryption --bucket "${STATE_BUCKET}" \
+              --server-side-encryption-configuration '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}' 2>/dev/null || true
+            aws s3api put-bucket-tagging --bucket "${STATE_BUCKET}" \
+              --tagging "TagSet=[{Key=ApplicationName,Value=Observability-Demo},{Key=ManagedBy,Value=Terraform}]" 2>/dev/null || true
+            echo "Created foundational backend bucket: ${STATE_BUCKET}"
+          else
+            echo "Foundational backend bucket ${STATE_BUCKET} is active and ready."
+          fi
+
+          echo "=== 2. Checking ECR Repositories & Base Images ==="
+          LOGIN_PASS=$(aws ecr get-login-password --region "$REGION" 2>/dev/null || true)
+          if [ -n "$LOGIN_PASS" ]; then
+            echo "$LOGIN_PASS" | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com" 2>/dev/null || true
+          fi
+
+          SERVICES=(
+            "observability-python-app"
+            "observability-java-app"
+            "observability-rust-app"
+            "observability-node-app"
+            "observability-go-app"
+            "observability-dotnet-app"
+            "observability-c-app"
+            "observability-php-app"
+            "observability-swift-app"
+            "observability-canary"
+            "custom-telemetry-receiver"
+          )
+
+          DOCKER_BASE_PULLED=0
+          for svc in "${SERVICES[@]}"; do
+            if ! aws ecr describe-repositories --repository-names "$svc" --region "$REGION" 2>/dev/null; then
+              echo "Creating missing ECR repository: $svc"
+              aws ecr create-repository --repository-name "$svc" --region "$REGION" \
+                --image-tag-mutability MUTABLE \
+                --tags Key=ApplicationName,Value=Observability-Demo 2>/dev/null || true
+            fi
+
+            if ! aws ecr describe-images --repository-name "$svc" --image-ids imageTag=latest --region "$REGION" 2>/dev/null; then
+              echo "Repository $svc missing ':latest' image. Seeding baseline container..."
+              if [ "$DOCKER_BASE_PULLED" -eq 0 ]; then
+                docker pull public.ecr.aws/lambda/provided:al2023 2>/dev/null || docker pull alpine:latest 2>/dev/null || true
+                DOCKER_BASE_PULLED=1
+              fi
+              docker tag public.ecr.aws/lambda/provided:al2023 "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${svc}:latest" 2>/dev/null || \
+                docker tag alpine:latest "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${svc}:latest" 2>/dev/null || true
+              docker push "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${svc}:latest" 2>/dev/null || true
+            fi
+          done
+
+          echo "=== 3. Checking OIDC / CI IAM Role ==="
+          ROLE_NAME="observability-demo-github-oidc-role"
+          if ! aws iam get-role --role-name "$ROLE_NAME" 2>/dev/null; then
+            echo "OIDC role $ROLE_NAME was destroyed. Restoring baseline role..."
+            aws iam create-role --role-name "$ROLE_NAME" \
+              --assume-role-policy-document '{
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Principal": { "AWS": "arn:aws:iam::'"$ACCOUNT_ID"':root" },
+                    "Action": ["sts:AssumeRole", "sts:TagSession"]
+                  }
+                ]
+              }' \
+              --tags Key=ApplicationName,Value=Observability-Demo 2>/dev/null || true
+
+            aws iam attach-role-policy --role-name "$ROLE_NAME" \
+              --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess" 2>/dev/null || true
+            echo "Restored baseline $ROLE_NAME role."
+          fi
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -113,8 +215,22 @@ jobs:
         id: destroy
         if: github.ref == 'refs/heads/main' && (github.event.inputs.action == 'Destroy and redeploy' || github.event.inputs.action == 'destroy-and-redeploy' || github.event.inputs.action == 'destroy')
         run: |
-          terraform destroy -auto-approve \
-            -var="aws_region=${{ secrets.AWS_REGION || 'us-east-2' }}"
+          ACTION="${{ github.event.inputs.action }}"
+          REGION="${{ secrets.AWS_REGION || 'us-east-2' }}"
+
+          if [ "$ACTION" = "destroy" ]; then
+            echo "Decommissioning all AWS infrastructure..."
+            terraform destroy -auto-approve -var="aws_region=${REGION}" || true
+          else
+            echo "Gameday teardown: targeting application workload resources while preserving state store and ECR images..."
+            TARGETS=$(terraform state list 2>/dev/null | grep -v -E '^aws_s3_bucket|^aws_ecr_|^aws_iam_openid_connect_provider|^aws_iam_role\.github_actions|^aws_iam_policy\.github_actions|^aws_iam_role_policy_attachment\.github_actions' | sed 's/^/-target=/' | tr '\n' ' ' || true)
+            if [ -n "$TARGETS" ]; then
+              echo "Workload resources to destroy: $TARGETS"
+              terraform destroy -auto-approve $TARGETS -var="aws_region=${REGION}"
+            else
+              echo "No workload resources found in state to destroy."
+            fi
+          fi
 
       - name: Terraform Plan
         id: plan

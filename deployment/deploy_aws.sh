@@ -291,12 +291,19 @@ archive_active_s3_bucket() {
 
 cmd_redeploy() {
   check_prereqs
-  echo -e "${RED}${BOLD}WARNING: This will archive S3 data with a numbered suffix, destroy all AWS resources created for ${APP_TAG}, and redeploy fully!${NC}"
+  echo -e "${RED}${BOLD}WARNING: This will archive S3 data with a numbered suffix, tear down workload resources for ${APP_TAG}, and redeploy fully!${NC}"
   read -r -p "Type 'DESTROY' to confirm: " confirm
   if [ "${confirm}" = "DESTROY" ]; then
     archive_active_s3_bucket
-    terraform -chdir="${TF_DIR}" destroy -auto-approve -var="aws_region=${AWS_REGION}"
-    log_success "All resources destroyed. Redeploying infrastructure..."
+    local targets
+    targets=$(terraform -chdir="${TF_DIR}" state list 2>/dev/null | grep -v -E '^aws_s3_bucket|^aws_ecr_|^aws_iam_openid_connect_provider|^aws_iam_role\.github_actions|^aws_iam_policy\.github_actions|^aws_iam_role_policy_attachment\.github_actions' | sed 's/^/-target=/' | tr '\n' ' ' || true)
+    if [ -n "${targets}" ]; then
+      log_info "Destroying workload application resources..."
+      terraform -chdir="${TF_DIR}" destroy -auto-approve ${targets} -var="aws_region=${AWS_REGION}"
+    else
+      log_info "No workload resources found in state to destroy."
+    fi
+    log_success "Workload resources torn down. Redeploying infrastructure..."
     terraform -chdir="${TF_DIR}" plan -var="aws_region=${AWS_REGION}"
     terraform -chdir="${TF_DIR}" apply -auto-approve -var="aws_region=${AWS_REGION}"
     log_success "Redeployment completed."
