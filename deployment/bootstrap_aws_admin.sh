@@ -227,7 +227,35 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 5. Summary & Verification
+# 5. RDS Database Termination Protection (reality-check-cost-tracker)
+# ------------------------------------------------------------------------------
+RDS_DB_NAME="${RDS_CLUSTER_ID:-reality-check-cost-tracker}"
+log_info "Step 5: Checking and enforcing termination protection on RDS database '${RDS_DB_NAME}'..."
+
+if aws rds describe-db-clusters --db-cluster-identifier "${RDS_DB_NAME}" --region "${AWS_REGION}" 2>/dev/null; then
+  DEL_PROT=$(aws rds describe-db-clusters --db-cluster-identifier "${RDS_DB_NAME}" --region "${AWS_REGION}" --query "DBClusters[0].DeletionProtection" --output text 2>/dev/null || echo "false")
+  if [ "${DEL_PROT}" != "true" ]; then
+    log_info "Enabling termination protection on Aurora cluster '${RDS_DB_NAME}'..."
+    aws rds modify-db-cluster --db-cluster-identifier "${RDS_DB_NAME}" --deletion-protection --apply-immediately --region "${AWS_REGION}" >/dev/null
+    log_success "Termination protection enabled on Aurora cluster '${RDS_DB_NAME}'."
+  else
+    log_success "Termination protection is already ENABLED on Aurora cluster '${RDS_DB_NAME}'."
+  fi
+elif aws rds describe-db-instances --db-instance-identifier "${RDS_DB_NAME}" --region "${AWS_REGION}" 2>/dev/null; then
+  DEL_PROT=$(aws rds describe-db-instances --db-instance-identifier "${RDS_DB_NAME}" --region "${AWS_REGION}" --query "DBInstances[0].DeletionProtection" --output text 2>/dev/null || echo "false")
+  if [ "${DEL_PROT}" != "true" ]; then
+    log_info "Enabling termination protection on RDS instance '${RDS_DB_NAME}'..."
+    aws rds modify-db-instance --db-instance-identifier "${RDS_DB_NAME}" --deletion-protection --apply-immediately --region "${AWS_REGION}" >/dev/null
+    log_success "Termination protection enabled on RDS instance '${RDS_DB_NAME}'."
+  else
+    log_success "Termination protection is already ENABLED on RDS instance '${RDS_DB_NAME}'."
+  fi
+else
+  log_warn "RDS database '${RDS_DB_NAME}' not found in region '${AWS_REGION}'. Skipping deletion protection check."
+fi
+
+# ------------------------------------------------------------------------------
+# 6. Summary & Verification
 # ------------------------------------------------------------------------------
 echo ""
 echo -e "${BOLD}================================================================${NC}"
@@ -237,6 +265,7 @@ echo -e "  Backend S3 Bucket:  s3://${STATE_BUCKET}"
 echo -e "  OIDC Identity:      ${OIDC_PROVIDER_ARN}"
 echo -e "  CI/CD Role:         arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 echo -e "  Trust Subject:      repo:${GITHUB_REPO}:*"
+echo -e "  RDS Database:       ${RDS_DB_NAME} (Termination Protection Enforced)"
 echo -e "${BOLD}================================================================${NC}"
 echo ""
 log_success "All prerequisites for GitHub Actions AWS deployment are satisfied."

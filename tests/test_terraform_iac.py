@@ -205,4 +205,11 @@ def test_aws_bootstrap_script_and_fast_fail_prechecks():
     assert "NoSuchBucket" in workflow_content
     assert "BUCKET_READY" in workflow_content
 
+    # RDS database termination protection & skip during destroy
+    assert "reality-check-cost-tracker" in script_content
+    assert "deletion-protection" in script_content
+    assert "reality-check-cost-tracker" in workflow_content
+    assert "Termination protection is enforced" in workflow_content
+    assert "SKIPPED and preserved" in workflow_content
+
 

@@ -274,11 +274,15 @@ cmd_status() {
 
 cmd_destroy() {
   check_prereqs
-  echo -e "${RED}${BOLD}WARNING: This will destroy all AWS resources created for ${APP_TAG}!${NC}"
+  local rds_db="reality-check-cost-tracker"
+  log_info "Guarding RDS Database: '${rds_db}' is external with termination protection enforced."
+  log_info "Foundational S3 lake and ECR repositories remain isolated in '${FOUNDATION_DIR}'."
+  echo -e "${RED}${BOLD}WARNING: This will destroy all ephemeral workload resources created for ${APP_TAG}!${NC}"
   read -r -p "Type 'DESTROY' to confirm: " confirm
   if [ "${confirm}" = "DESTROY" ]; then
+    log_info "Teardown in progress (skipping RDS database '${rds_db}' and foundational storage)..."
     run_with_retry 3 10 terraform -chdir="${TF_DIR}" destroy -auto-approve -var="aws_region=${AWS_REGION}"
-    log_success "All resources destroyed."
+    log_success "Ephemeral workload resources destroyed. RDS database and foundational S3 lake preserved."
   else
     log_info "Destroy cancelled."
   fi

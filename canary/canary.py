@@ -5252,6 +5252,57 @@ def render_dashboard_html() -> str:
     </div>
   </div>
 
+  <!-- Account & Auth Management Modal -->
+  <div id="auth-modal" class="modal-overlay" onclick="if(event.target===this) closeAuthModal()">
+    <div class="modal-box" style="max-width: 480px; width: 90%;">
+      <button class="modal-close-btn" onclick="closeAuthModal()">&times;</button>
+      <h3 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 4px;">👤 Account & User Management</h3>
+      <p style="font-size: 0.75rem; color: var(--muted); margin-bottom: 12px;">
+        Manage distinct users, update credentials, and control the demo account lifecycle.
+      </p>
+
+      <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--card-border); border-radius: 6px; padding: 10px; margin-bottom: 12px; font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <div>Active User: <strong id="modal-active-user" style="color: var(--accent);">demouser</strong></div>
+          <div style="font-size: 0.72rem; color: var(--muted); margin-top: 2px;">Demo Account: <span id="modal-demo-status" class="badge badge-success">Enabled</span></div>
+        </div>
+        <button class="btn btn-outline" style="padding: 3px 8px; font-size: 0.72rem;" onclick="logoutCanary()">🔒 Sign out</button>
+      </div>
+
+      <!-- Section 1: Change Password -->
+      <details style="border: 1px solid var(--card-border); border-radius: 6px; padding: 8px; margin-bottom: 8px;">
+        <summary style="cursor: pointer; font-size: 0.82rem; font-weight: 600; color: #f1f5f9;">🔑 Change Password</summary>
+        <div style="margin-top: 8px; display: grid; gap: 6px;">
+          <input id="auth-cur-pw" type="password" placeholder="Current password" style="background: #0b1220; color: #f1f5f9; border: 1px solid #334155; border-radius: 4px; padding: 6px; font-size: 0.78rem;" />
+          <input id="auth-new-pw" type="password" placeholder="New password" style="background: #0b1220; color: #f1f5f9; border: 1px solid #334155; border-radius: 4px; padding: 6px; font-size: 0.78rem;" />
+          <button class="btn btn-primary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="submitPasswordChange()">Update Password</button>
+        </div>
+      </details>
+
+      <!-- Section 2: Create User -->
+      <details style="border: 1px solid var(--card-border); border-radius: 6px; padding: 8px; margin-bottom: 8px;">
+        <summary style="cursor: pointer; font-size: 0.82rem; font-weight: 600; color: #f1f5f9;">➕ Create Distinct User Account</summary>
+        <div style="margin-top: 8px; display: grid; gap: 6px;">
+          <input id="auth-new-username" type="text" placeholder="Username (e.g. alice, auditor)" style="background: #0b1220; color: #f1f5f9; border: 1px solid #334155; border-radius: 4px; padding: 6px; font-size: 0.78rem;" />
+          <input id="auth-new-user-pw" type="password" placeholder="Password" style="background: #0b1220; color: #f1f5f9; border: 1px solid #334155; border-radius: 4px; padding: 6px; font-size: 0.78rem;" />
+          <button class="btn btn-primary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="submitCreateUser()">Create User</button>
+        </div>
+      </details>
+
+      <!-- Section 3: Demo Account Lifecycle -->
+      <details style="border: 1px solid var(--card-border); border-radius: 6px; padding: 8px;">
+        <summary style="cursor: pointer; font-size: 0.82rem; font-weight: 600; color: #f1f5f9;">⚙️ Demo Account Lifecycle</summary>
+        <div style="margin-top: 8px; font-size: 0.78rem; display: grid; gap: 6px;">
+          <p style="margin: 0; color: var(--muted); font-size: 0.72rem;">Rotate credentials or disable the default demo account to enforce real authentication.</p>
+          <div style="display: flex; gap: 6px; margin-top: 4px;">
+            <button class="btn btn-outline" style="padding: 4px 8px; font-size: 0.72rem;" onclick="submitRotateDemo()">🎲 Rotate Demo Password</button>
+            <button class="btn btn-outline" id="btn-toggle-demo" style="padding: 4px 8px; font-size: 0.72rem;" onclick="submitToggleDemo()">🚫 Disable Demo User</button>
+          </div>
+        </div>
+      </details>
+    </div>
+  </div>
+
   <!-- Cell Value Inspector Modal (Full-screen readable popup for cell text/JSON) -->
   <div id="cell-modal" class="modal-overlay" onclick="if(event.target===this) closeCellModal()">
     <div class="modal-box cell-modal-box">
@@ -5408,6 +5459,7 @@ def render_dashboard_html() -> str:
         <button class="btn btn-ondemand" id="btn-ondemand-pulse" style="height:26px; padding:2px 10px; font-size:0.72rem;" onclick="triggerOnDemandPulse()" title="Forcefully run one complete iteration across all polyglot microservices">⚡ Run Once (On-Demand)</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="openQrModal()" title="Mobile App & QR Code">📱 Connect / QR</button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="fetchTrendsAndRefresh()" title="Refresh now">🔄</button>
+        <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="openAuthModal()" title="Account & User Management">👤 <span id="header-username">demouser</span></button>
         <button class="btn btn-outline" style="height:26px; padding:2px 8px; font-size:0.72rem;" onclick="logoutCanary()" title="Sign out">🔒 Sign out</button>
       </div>
     </header>
@@ -8475,7 +8527,7 @@ def render_dashboard_html() -> str:
 
     async function logoutCanary() {{
       await fetch('/api/logout', {{ method: 'POST' }});
-      window.location.href = '/login';
+      window.location.href = '/login?logged_out=true';
     }}
 
     async function saveSqlQuery() {{
@@ -8816,6 +8868,105 @@ def render_dashboard_html() -> str:
       document.getElementById('qr-modal').classList.remove('open');
     }}
 
+    function openAuthModal() {{
+      document.getElementById('auth-modal').classList.add('open');
+      loadAuthStatus();
+    }}
+
+    function closeAuthModal() {{
+      document.getElementById('auth-modal').classList.remove('open');
+    }}
+
+    async function loadAuthStatus() {{
+      try {{
+        const res = await fetch('/api/auth/status');
+        if (res.ok) {{
+          const data = await res.json();
+          const user = data.username || 'demouser';
+          const userSpan = document.getElementById('header-username');
+          if (userSpan) userSpan.textContent = user;
+          const modalUser = document.getElementById('modal-active-user');
+          if (modalUser) modalUser.textContent = user;
+          const demoStatus = document.getElementById('modal-demo-status');
+          if (demoStatus) {{
+            demoStatus.textContent = data.demo_enabled ? 'Enabled' : 'Disabled';
+            demoStatus.className = data.demo_enabled ? 'badge badge-success' : 'badge badge-danger';
+          }}
+          const toggleBtn = document.getElementById('btn-toggle-demo');
+          if (toggleBtn) {{
+            toggleBtn.textContent = data.demo_enabled ? '🚫 Disable Demo User' : '✅ Enable Demo User';
+          }}
+        }}
+      }} catch (e) {{}}
+    }}
+
+    async function submitPasswordChange() {{
+      const cur = document.getElementById('auth-cur-pw').value;
+      const nw = document.getElementById('auth-new-pw').value;
+      if (!cur || !nw) {{ showToast('Please enter current and new password', true); return; }}
+      const res = await fetch('/api/auth/change-password', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ current_password: cur, new_password: nw }})
+      }});
+      const data = await res.json();
+      if (res.ok) {{
+        showToast('Password updated successfully');
+        document.getElementById('auth-cur-pw').value = '';
+        document.getElementById('auth-new-pw').value = '';
+      }} else {{
+        showToast(data.error || 'Failed to update password', true);
+      }}
+    }}
+
+    async function submitCreateUser() {{
+      const u = document.getElementById('auth-new-username').value.trim();
+      const p = document.getElementById('auth-new-user-pw').value;
+      if (!u || !p) {{ showToast('Username and password are required', true); return; }}
+      const res = await fetch('/api/auth/users', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ username: u, password: p, is_active: true }})
+      }});
+      const data = await res.json();
+      if (res.ok) {{
+        showToast(`User '${{u}}' created successfully`);
+        document.getElementById('auth-new-username').value = '';
+        document.getElementById('auth-new-user-pw').value = '';
+      }} else {{
+        showToast(data.error || 'Failed to create user', true);
+      }}
+    }}
+
+    async function submitRotateDemo() {{
+      const res = await fetch('/api/auth/rotate-demo', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ enabled: true }})
+      }});
+      if (res.ok) {{
+        showToast('Demo password rotated to new random token');
+        loadAuthStatus();
+      }} else {{
+        showToast('Failed to rotate demo user', true);
+      }}
+    }}
+
+    async function submitToggleDemo() {{
+      const curStatus = document.getElementById('modal-demo-status').textContent === 'Enabled';
+      const res = await fetch('/api/auth/rotate-demo', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ enabled: !curStatus }})
+      }});
+      if (res.ok) {{
+        showToast(!curStatus ? 'Demo user enabled' : 'Demo user disabled');
+        loadAuthStatus();
+      }} else {{
+        showToast('Failed to toggle demo user', true);
+      }}
+    }}
+
     function updateQrUrl() {{
       let val = document.getElementById('qr-host-input').value.trim();
       let proto = window.location.protocol || 'http:';
@@ -8958,6 +9109,7 @@ def render_dashboard_html() -> str:
       if (e.key === 'Escape') {{
         closeCellModal();
         closeQrModal();
+        closeAuthModal();
         closeOnDemandModal();
       }}
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
@@ -9625,6 +9777,7 @@ def render_dashboard_html() -> str:
     }}
 
     function init() {{
+      loadAuthStatus();
       initSqlEditor();
       fetchStats();
       fetchTrendsAndRefresh();
@@ -10070,12 +10223,17 @@ def render_login_html() -> str:
   <form id="login-form">
     <h1>Canary dashboard</h1>
     <p>Sign in with your Canary credentials or demo account if enabled.</p>
+    <div id="logout-notice" style="display:none; color:#38bdf8; font-size:0.8rem; background:rgba(56,189,248,0.1); border:1px solid #0284c7; padding:6px 10px; border-radius:4px;">Signed out successfully.</div>
     <input id="username" name="username" autocomplete="username" placeholder="Username" required>
     <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Password" required>
     <button type="submit">Sign in</button>
+    <div style="font-size:0.75rem; color:#64748b; text-align:center;">Default demo credentials: <code>demouser</code> / <code>demo</code></div>
     <div class="err" id="login-error"></div>
   </form>
   <script>
+    if (new URLSearchParams(window.location.search).get('logged_out')) {
+      document.getElementById('logout-notice').style.display = 'block';
+    }
     document.getElementById('login-form').addEventListener('submit', async (ev) => {
       ev.preventDefault();
       const res = await fetch('/api/login', {
@@ -10172,10 +10330,11 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
 
             if path in ("/login",):
                 token = self._cookie_token()
-                if session_user(token):
+                logged_out = query.get("logged_out", ["false"])[0].lower() in ("true", "1", "yes")
+                if not logged_out and session_user(token):
                     self._send_bytes(302, b"", "text/html", [("Location", "/")])
                     return
-                if CANARY_AUTO_LOGIN and CANARY_DEMO_ENABLED:
+                if CANARY_AUTO_LOGIN and CANARY_DEMO_ENABLED and not logged_out:
                     token = issue_session(CANARY_DEMO_USER)
                     extra_headers = [("Location", "/"), ("Set-Cookie", self._session_cookie(token))]
                     self._send_bytes(302, b"", "text/html", extra_headers)

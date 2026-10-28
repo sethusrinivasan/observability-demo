@@ -264,6 +264,47 @@ def test_http_auth_lifecycle():
         # Verify session is dropped
         assert session_user(token) is None
 
+        # 8. Post-logout /login?logged_out=true must NOT auto-redirect; it must show the login form (HTTP 200)
+        req_logged_out = urllib.request.Request(f"{base_url}/login?logged_out=true")
+        with urllib.request.urlopen(req_logged_out) as resp_lo:
+            assert resp_lo.status == 200
+            lo_html = resp_lo.read().decode("utf-8")
+            assert 'id="login-form"' in lo_html
+            assert "logout-notice" in lo_html
+            assert "Sign in" in lo_html
+
+        # 9. Rotate and disable demo account via API
+        rotate_req = urllib.request.Request(
+            f"{base_url}/api/auth/rotate-demo",
+            data=json.dumps({"enabled": False}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Cookie": f"canary_session={issue_session('http_tester')}"}
+        )
+        with urllib.request.urlopen(rotate_req) as resp_rot:
+            assert resp_rot.status == 200
+            assert json.loads(resp_rot.read().decode("utf-8")).get("demo_enabled") is False
+
+        # Demo login must now fail with 401
+        bad_demo_req = urllib.request.Request(
+            f"{base_url}/api/login",
+            data=json.dumps({"username": CANARY_DEMO_USER, "password": CANARY_DEMO_PASSWORD}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_demo:
+            urllib.request.urlopen(bad_demo_req)
+        assert exc_demo.value.code == 401
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_dashboard_ui_auth_modal_and_user_badge():
+    """Verify Canary dashboard HTML renders the authenticated user badge and auth management modal."""
+    from canary.canary import render_dashboard_html
+    html = render_dashboard_html()
+    assert 'id="auth-modal"' in html, "Account & Auth Management modal missing in dashboard HTML"
+    assert 'id="header-username"' in html, "Header username badge missing in dashboard HTML"
+    assert "openAuthModal" in html, "openAuthModal function trigger missing in dashboard HTML"
+    assert "submitPasswordChange" in html, "Password change handler missing in dashboard HTML"
+    assert "submitCreateUser" in html, "Create user handler missing in dashboard HTML"
+    assert "submitRotateDemo" in html, "Rotate demo handler missing in dashboard HTML"
+    assert "submitToggleDemo" in html, "Toggle demo handler missing in dashboard HTML"

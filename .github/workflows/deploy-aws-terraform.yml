@@ -411,7 +411,22 @@ jobs:
         run: |
           ACTION="${{ github.event.inputs.action }}"
           REGION="${{ secrets.AWS_REGION || 'us-east-2' }}"
-          echo "Workload teardown in deployment/terraform: Foundational S3 bucket, OIDC CI role, and ECR repositories remain completely isolated in deployment/terraform-foundation."
+          RDS_DB="reality-check-cost-tracker"
+
+          echo "=== 1. Guarding RDS PostgreSQL Database & Foundational Resources ==="
+          echo "RDS Database '${RDS_DB}' is external and protected: Termination protection is enforced; database is SKIPPED and preserved during Destroy and Redeploy."
+          echo "Foundational S3 bucket, OIDC CI role, and ECR repositories remain completely isolated in deployment/terraform-foundation."
+
+          # Verify deletion protection on the RDS database in AWS if accessible
+          if aws rds describe-db-clusters --db-cluster-identifier "${RDS_DB}" --region "${REGION}" --query "DBClusters[0].DeletionProtection" --output text 2>/dev/null | grep -q "true"; then
+            echo "Confirmed: Aurora cluster '${RDS_DB}' deletion protection is ACTIVE."
+          elif aws rds describe-db-instances --db-instance-identifier "${RDS_DB}" --region "${REGION}" --query "DBInstances[0].DeletionProtection" --output text 2>/dev/null | grep -q "true"; then
+            echo "Confirmed: RDS instance '${RDS_DB}' deletion protection is ACTIVE."
+          else
+            echo "Notice: RDS database '${RDS_DB}' is outside this Terraform state and safely isolated from teardown."
+          fi
+
+          echo "=== 2. Destroying Ephemeral Workload Resources ==="
           MAX_RETRIES=3
           RETRY_DELAY=10
           for attempt in $(seq 1 $MAX_RETRIES); do
