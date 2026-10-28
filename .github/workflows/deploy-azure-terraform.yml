@@ -79,19 +79,33 @@ jobs:
       - name: Terraform Init
         id: init
         run: |
-          MAX_RETRIES=6
+          MAX_RETRIES=3
           RETRY_DELAY=5
           for attempt in $(seq 1 $MAX_RETRIES); do
             echo "Attempt $attempt/$MAX_RETRIES: Initializing Terraform with Azure Blob backend..."
-            if terraform init -no-color; then
+            set +e
+            INIT_OUT=$(terraform init -no-color 2>&1)
+            INIT_RC=$?
+            set -e
+            echo "$INIT_OUT"
+
+            if [ $INIT_RC -eq 0 ]; then
               echo "Terraform initialization succeeded on attempt $attempt."
               exit 0
             fi
+
+            # Fast-fail immediately on permanent unrecoverable backend errors
+            if echo "$INIT_OUT" | grep -qiE "BlobNotFound|ContainerNotFound|AuthenticationFailed|AuthorizationPermissionMismatch|ResourceNotFound|InvalidAuthenticationInfo"; then
+              echo "::error::Permanent unrecoverable backend error detected during 'terraform init'. Retrying will not resolve this."
+              echo "::error::Fast-failing to preserve CI runner minutes. Ensure the Azure Storage backend exists and credentials are valid."
+              exit 1
+            fi
+
             if [ "$attempt" -eq "$MAX_RETRIES" ]; then
               echo "Terraform init failed after $MAX_RETRIES attempts."
               exit 1
             fi
-            echo "Terraform init failed (backend storage settling). Backing off for ${RETRY_DELAY}s before retrying..."
+            echo "Terraform init failed (transient condition). Backing off for ${RETRY_DELAY}s before retrying..."
             sleep $RETRY_DELAY
             RETRY_DELAY=$((RETRY_DELAY * 2))
           done

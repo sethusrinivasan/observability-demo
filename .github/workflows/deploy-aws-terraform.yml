@@ -73,16 +73,24 @@ jobs:
 
           echo "=== 1. Checking & Ensuring OIDC Provider & CI IAM Role: ${ROLE_NAME} ==="
           if ! aws iam get-open-id-connect-provider --open-id-connect-provider-arn "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com" 2>/dev/null; then
-            echo "Creating missing GitHub OIDC Provider..."
-            aws iam create-open-id-connect-provider \
+            echo "GitHub OIDC Provider not found. Attempting to create..."
+            OIDC_PROV_OUT=$(aws iam create-open-id-connect-provider \
               --url "https://token.actions.githubusercontent.com" \
               --client-id-list "sts.amazonaws.com" \
-              --thumbprint-list "6938fd4d98bab03faadb97b34396831e3780aea1" "1c5860a5f6e3b5e754665b039f49ecf73f3a4aa02" 2>/dev/null || true
+              --thumbprint-list "6938fd4d98bab03faadb97b34396831e3780aea1" "1c58a3a8518e8759bf075b76b750d4f8d264fcd9" "1c5860a5f6e3b5e754665b039f49ecf73f3a4aa02" 2>&1 || true)
+            if echo "$OIDC_PROV_OUT" | grep -qiE "AccessDenied|Unauthorized"; then
+              echo "::warning::Cannot create OIDC Provider automatically (current identity lacks iam:CreateOpenIDConnectProvider)."
+              echo "::warning::Details: ${OIDC_PROV_OUT}"
+            else
+              echo "Created GitHub OIDC Provider."
+            fi
+          else
+            echo "GitHub OIDC Provider exists."
           fi
 
           if ! aws iam get-role --role-name "$ROLE_NAME" 2>/dev/null; then
-            echo "OIDC role $ROLE_NAME was destroyed. Restoring baseline role..."
-            aws iam create-role --role-name "$ROLE_NAME" \
+            echo "OIDC role $ROLE_NAME not found. Attempting to restore baseline role..."
+            ROLE_CREATE_OUT=$(aws iam create-role --role-name "$ROLE_NAME" \
               --assume-role-policy-document '{
                 "Version": "2012-10-17",
                 "Statement": [
@@ -102,14 +110,19 @@ jobs:
                   }
                 ]
               }' \
-              --tags Key=ApplicationName,Value=Observability-Demo 2>/dev/null || true
+              --tags Key=ApplicationName,Value=Observability-Demo 2>&1 || true)
 
-            aws iam attach-role-policy --role-name "$ROLE_NAME" \
-              --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess" 2>/dev/null || true
-            echo "Restored baseline $ROLE_NAME role."
+            if echo "$ROLE_CREATE_OUT" | grep -qiE "AccessDenied|Unauthorized"; then
+              echo "::warning::Cannot create OIDC role automatically (current identity lacks iam:CreateRole)."
+              echo "::warning::Details: ${ROLE_CREATE_OUT}"
+            else
+              aws iam attach-role-policy --role-name "$ROLE_NAME" \
+                --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess" 2>/dev/null || true
+              echo "Restored baseline $ROLE_NAME role."
+            fi
           else
             echo "Updating trust policy on $ROLE_NAME to ensure root and GitHub OIDC access..."
-            aws iam update-assume-role-policy --role-name "$ROLE_NAME" \
+            UPDATE_ROLE_OUT=$(aws iam update-assume-role-policy --role-name "$ROLE_NAME" \
               --policy-document '{
                 "Version": "2012-10-17",
                 "Statement": [
@@ -128,11 +141,16 @@ jobs:
                     }
                   }
                 ]
-              }' 2>/dev/null || true
-            echo "Verified OIDC role $ROLE_NAME."
+              }' 2>&1 || true)
+            if echo "$UPDATE_ROLE_OUT" | grep -qiE "AccessDenied|Unauthorized"; then
+              echo "::warning::Cannot update trust policy on $ROLE_NAME (current identity lacks iam:UpdateAssumeRolePolicy)."
+              echo "::warning::Details: ${UPDATE_ROLE_OUT}"
+            else
+              echo "Verified OIDC role $ROLE_NAME."
+            fi
           fi
 
-          # Also attempt to attach AdministratorAccess to CI IAM user if running with user keys
+          # Attempt to attach AdministratorAccess to CI IAM user if running with direct keys
           aws iam attach-user-policy --user-name github-actions-terraform-ci --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess" 2>/dev/null || true
 
           echo "=== 2. Elevating Runner Credentials to Assumed Role if Needed ==="
@@ -145,14 +163,16 @@ jobs:
               echo "Requesting OIDC Web Identity token from GitHub..."
               OIDC_JWT=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r .value 2>/dev/null || true)
               if [ -n "$OIDC_JWT" ] && [ "$OIDC_JWT" != "null" ]; then
-                echo "Assuming ${ROLE_NAME} via sts:AssumeRoleWithWebIdentity..."
+                echo "Decoded GitHub OIDC claims for diagnostics:"
+                echo "$OIDC_JWT" | cut -d'.' -f2 | tr '_-' '/+' | base64 -d 2>/dev/null | jq -c '{iss, aud, sub, repository, repository_owner, ref}' 2>/dev/null || true
+                echo "Attempting to assume ${ROLE_NAME} via sts:AssumeRoleWithWebIdentity..."
                 ASSUME_OUT=$(aws sts assume-role-with-web-identity \
                   --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}" \
                   --role-session-name "GitHubActions-Elevated" \
                   --web-identity-token "$OIDC_JWT" \
                   --duration-seconds 3600 \
-                  --output json 2>/dev/null || true)
-                if [ -n "$ASSUME_OUT" ]; then
+                  --output json 2>&1 || true)
+                if echo "$ASSUME_OUT" | jq -e .Credentials.AccessKeyId >/dev/null 2>&1; then
                   EXP_AK=$(echo "$ASSUME_OUT" | jq -r .Credentials.AccessKeyId)
                   EXP_SK=$(echo "$ASSUME_OUT" | jq -r .Credentials.SecretAccessKey)
                   EXP_ST=$(echo "$ASSUME_OUT" | jq -r .Credentials.SessionToken)
@@ -164,6 +184,8 @@ jobs:
                   echo "AWS_SESSION_TOKEN=$EXP_ST" >> $GITHUB_ENV
                   echo "Successfully elevated runner credentials via OIDC Web Identity."
                   ELEVATED=1
+                else
+                  echo "AssumeRoleWithWebIdentity did not succeed: ${ASSUME_OUT}"
                 fi
               fi
             fi
@@ -173,9 +195,9 @@ jobs:
               ASSUME_OUT=$(aws sts assume-role \
                 --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}" \
                 --role-session-name "GitHubActions-Terraform-Deployment" \
-                --output json 2>/dev/null || true)
+                --output json 2>&1 || true)
 
-              if [ -n "$ASSUME_OUT" ]; then
+              if echo "$ASSUME_OUT" | jq -e .Credentials.AccessKeyId >/dev/null 2>&1; then
                 EXP_AK=$(echo "$ASSUME_OUT" | jq -r .Credentials.AccessKeyId)
                 EXP_SK=$(echo "$ASSUME_OUT" | jq -r .Credentials.SecretAccessKey)
                 EXP_ST=$(echo "$ASSUME_OUT" | jq -r .Credentials.SessionToken)
@@ -187,36 +209,62 @@ jobs:
                 echo "AWS_SESSION_TOKEN=$EXP_ST" >> $GITHUB_ENV
                 echo "Successfully elevated runner credentials to assumed role ${ROLE_NAME}."
               else
-                echo "Proceeding with active credentials."
+                echo "STS assume-role did not succeed (${ASSUME_OUT}). Proceeding with active credentials: ${CALLER_ARN}."
               fi
             fi
           fi
 
           echo "=== 3. Checking Foundational S3 Backend Bucket: ${STATE_BUCKET} ==="
           BUCKET_READY=0
-          for attempt in $(seq 1 6); do
-            if aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>/dev/null; then
-              echo "Foundational backend bucket ${STATE_BUCKET} is active and verified."
-              BUCKET_READY=1
-              break
-            fi
-            echo "Bucket ${STATE_BUCKET} not yet accessible (attempt $attempt/6). Creating or waiting for consistency..."
+          if aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>/dev/null; then
+            echo "Foundational backend bucket '${STATE_BUCKET}' is active and verified."
+            BUCKET_READY=1
+          else
+            echo "Bucket '${STATE_BUCKET}' does not exist or is not accessible. Attempting creation..."
             if [ "$REGION" = "us-east-1" ]; then
-              aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}" 2>/dev/null || true
+              CREATE_ERR=$(aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)
             else
-              aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}" \
-                --create-bucket-configuration LocationConstraint="${REGION}" 2>/dev/null || true
+              CREATE_ERR=$(aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}" \
+                --create-bucket-configuration LocationConstraint="${REGION}" 2>&1 || true)
             fi
-            aws s3api put-bucket-versioning --bucket "${STATE_BUCKET}" --versioning-configuration Status=Disabled 2>/dev/null || true
-            aws s3api put-bucket-encryption --bucket "${STATE_BUCKET}" \
-              --server-side-encryption-configuration '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}' 2>/dev/null || true
-            aws s3api put-bucket-tagging --bucket "${STATE_BUCKET}" \
-              --tagging "TagSet=[{Key=ApplicationName,Value=Observability-Demo},{Key=ManagedBy,Value=Terraform}]" 2>/dev/null || true
-            
-            BACKOFF=$((attempt * 5))
-            echo "Waiting ${BACKOFF}s for bucket propagation..."
-            sleep $BACKOFF
-          done
+
+            # Check for permanent unrecoverable failure during bucket creation
+            if echo "$CREATE_ERR" | grep -qiE "AccessDenied|Forbidden|Unauthorized|NotAuthorized|BucketAlreadyExists|InvalidBucketName"; then
+              echo "::error::Permanent failure: Foundational S3 backend bucket '${STATE_BUCKET}' cannot be accessed or created."
+              echo "::error::AWS CLI Error: ${CREATE_ERR}"
+              echo "::error::=========================================================================="
+              echo "::error::MANUAL MITIGATION REQUIRED IN AWS:"
+              echo "::error::The runner IAM identity '${CALLER_ARN}' lacks permission to create S3 buckets."
+              echo "::error::To resolve permanently, run 'deployment/bootstrap_aws_admin.sh' with AWS administrator credentials, or run:"
+              echo "::error::  aws s3 mb s3://${STATE_BUCKET} --region ${REGION}"
+              echo "::error::  aws s3api put-bucket-versioning --bucket ${STATE_BUCKET} --versioning-configuration Status=Disabled"
+              echo "::error::  aws s3api put-bucket-encryption --bucket ${STATE_BUCKET} --server-side-encryption-configuration '{\"Rules\": [{\"ApplyServerSideEncryptionByDefault\": {\"SSEAlgorithm\": \"AES256\"}}]}'"
+              echo "::error::  aws s3api put-bucket-tagging --bucket ${STATE_BUCKET} --tagging \"TagSet=[{Key=ApplicationName,Value=Observability-Demo},{Key=ManagedBy,Value=Terraform}]\""
+              echo "::error::=========================================================================="
+              exit 1
+            fi
+
+            # Brief wait for eventual consistency following bucket creation
+            sleep 3
+            if aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>/dev/null; then
+              echo "Foundational backend bucket '${STATE_BUCKET}' created and verified."
+              aws s3api put-bucket-versioning --bucket "${STATE_BUCKET}" --versioning-configuration Status=Disabled 2>/dev/null || true
+              aws s3api put-bucket-encryption --bucket "${STATE_BUCKET}" \
+                --server-side-encryption-configuration '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}' 2>/dev/null || true
+              aws s3api put-bucket-tagging --bucket "${STATE_BUCKET}" \
+                --tagging "TagSet=[{Key=ApplicationName,Value=Observability-Demo},{Key=ManagedBy,Value=Terraform}]" 2>/dev/null || true
+              BUCKET_READY=1
+            else
+              echo "::error::Foundational backend bucket '${STATE_BUCKET}' still inaccessible after creation attempt."
+              echo "::error::Creation Output: ${CREATE_ERR}"
+              exit 1
+            fi
+          fi
+
+          if [ "$BUCKET_READY" -ne 1 ]; then
+            echo "::error::Backend bucket '${STATE_BUCKET}' is not ready. Aborting early to prevent retrying unrecoverable errors."
+            exit 1
+          fi
 
           echo "=== 4. Checking ECR Repositories & Base Images ==="
           LOGIN_PASS=$(aws ecr get-login-password --region "$REGION" 2>/dev/null || true)
@@ -272,19 +320,33 @@ jobs:
       - name: Terraform Init
         id: init
         run: |
-          MAX_RETRIES=6
+          MAX_RETRIES=3
           RETRY_DELAY=5
           for attempt in $(seq 1 $MAX_RETRIES); do
             echo "Attempt $attempt/$MAX_RETRIES: Initializing Terraform with backend S3..."
-            if terraform init -no-color; then
+            set +e
+            INIT_OUT=$(terraform init -no-color 2>&1)
+            INIT_RC=$?
+            set -e
+            echo "$INIT_OUT"
+
+            if [ $INIT_RC -eq 0 ]; then
               echo "Terraform initialization succeeded on attempt $attempt."
               exit 0
             fi
+
+            # Fast-fail immediately on permanent unrecoverable backend errors
+            if echo "$INIT_OUT" | grep -qiE "NoSuchBucket|AccessDenied|InvalidAccessKeyId|SignatureDoesNotMatch|Unauthorized|InvalidClientTokenId|BucketRegionError"; then
+              echo "::error::Permanent unrecoverable backend error detected during 'terraform init'. Retrying will not resolve this."
+              echo "::error::Fast-failing to preserve CI runner minutes. Ensure the backend S3 bucket exists and credentials are valid."
+              exit 1
+            fi
+
             if [ "$attempt" -eq "$MAX_RETRIES" ]; then
               echo "Terraform init failed after $MAX_RETRIES attempts."
               exit 1
             fi
-            echo "Terraform init failed (backend S3 settling). Backing off for ${RETRY_DELAY}s before retrying..."
+            echo "Terraform init failed due to transient condition. Backing off for ${RETRY_DELAY}s before retrying..."
             sleep $RETRY_DELAY
             RETRY_DELAY=$((RETRY_DELAY * 2))
           done

@@ -182,3 +182,27 @@ def test_foundational_resources_prevent_destroy_guards():
         "github_oidc.tf must not exist in workload terraform/ directory"
     )
 
+
+def test_aws_bootstrap_script_and_fast_fail_prechecks():
+    """Verify admin bootstrap script exists and deploy workflow has fast-fail prechecks."""
+    bootstrap_script = REPO_ROOT / "deployment" / "bootstrap_aws_admin.sh"
+    assert bootstrap_script.exists(), "deployment/bootstrap_aws_admin.sh must exist"
+    mode = os.stat(bootstrap_script).st_mode
+    assert bool(mode & stat.S_IXUSR), "deployment/bootstrap_aws_admin.sh must be executable"
+
+    script_content = bootstrap_script.read_text()
+    assert "observability-demo-telemetry-lake" in script_content
+    assert "token.actions.githubusercontent.com" in script_content
+    assert "observability-demo-github-oidc-role" in script_content
+
+    workflow_file = REPO_ROOT / ".github" / "workflows" / "deploy-aws-terraform.yml"
+    assert workflow_file.exists(), ".github/workflows/deploy-aws-terraform.yml must exist"
+    workflow_content = workflow_file.read_text()
+
+    # Fast-fail checks in bootstrap step
+    assert "AccessDenied" in workflow_content
+    assert "Permanent failure" in workflow_content or "permanent unrecoverable" in workflow_content
+    assert "NoSuchBucket" in workflow_content
+    assert "BUCKET_READY" in workflow_content
+
+
