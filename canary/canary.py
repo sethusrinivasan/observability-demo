@@ -73,6 +73,31 @@ try:
 except ImportError:
     from sql_guard import SqlGuardError, guard_readonly_sql
 
+try:
+    from canary.sql_ast import (
+        strip_sql_parameters,
+        parse_sql_to_ast,
+        normalize_sql_to_ast,
+        compute_query_fingerprint,
+        correlate_pg_stat_statements,
+        get_master_fingerprints,
+        get_fingerprint_scheduler_status,
+        start_fingerprint_scheduler,
+        trigger_fingerprint_analysis_now,
+    )
+except ImportError:
+    from sql_ast import (
+        strip_sql_parameters,
+        parse_sql_to_ast,
+        normalize_sql_to_ast,
+        compute_query_fingerprint,
+        correlate_pg_stat_statements,
+        get_master_fingerprints,
+        get_fingerprint_scheduler_status,
+        start_fingerprint_scheduler,
+        trigger_fingerprint_analysis_now,
+    )
+
 # ---------------------------------------------------------------------------
 # Configuration from environment variables
 # ---------------------------------------------------------------------------
@@ -1184,21 +1209,139 @@ def _sql_cell(val):
     return str(val)
 
 
+def _get_node_visual_meta(node_type: str) -> dict:
+    nt = (node_type or "").strip()
+    if nt == "Seq Scan":
+        return {"icon": "⚠️", "icon_label": "Seq Scan", "category": "scan-seq", "accent": "Table Scan Warning"}
+    elif nt == "Index Scan":
+        return {"icon": "⚡", "icon_label": "Index Scan", "category": "scan-index", "accent": "Index Lookup"}
+    elif nt == "Index Only Scan":
+        return {"icon": "💎", "icon_label": "Index Only", "category": "scan-index-only", "accent": "Zero Heap Access"}
+    elif "Bitmap Index Scan" in nt:
+        return {"icon": "🗺️", "icon_label": "Bitmap Index", "category": "scan-bitmap-idx", "accent": "Bitmap Index Scan"}
+    elif "Bitmap Heap Scan" in nt:
+        return {"icon": "📑", "icon_label": "Bitmap Heap", "category": "scan-bitmap-heap", "accent": "Bitmap Heap Scan"}
+    elif nt == "Hash Join":
+        return {"icon": "🔀", "icon_label": "Hash Join", "category": "join-hash", "accent": "Hash Join"}
+    elif nt == "Nested Loop":
+        return {"icon": "🔄", "icon_label": "Nested Loop", "category": "join-nested", "accent": "Nested Loop Join"}
+    elif nt == "Merge Join":
+        return {"icon": "⛓️", "icon_label": "Merge Join", "category": "join-merge", "accent": "Merge Join"}
+    elif "Aggregate" in nt:
+        return {"icon": "📊", "icon_label": nt, "category": "aggregate", "accent": "Aggregation"}
+    elif "Sort" in nt:
+        return {"icon": "📶", "icon_label": nt, "category": "sort", "accent": "Sort Operation"}
+    elif nt == "Limit":
+        return {"icon": "⏹️", "icon_label": "Limit", "category": "limit", "accent": "Row Limit"}
+    elif nt == "Materialize":
+        return {"icon": "💾", "icon_label": "Materialize", "category": "materialize", "accent": "Materialized Result"}
+    elif nt == "Memoize":
+        return {"icon": "💡", "icon_label": "Memoize", "category": "memoize", "accent": "Cached Lookups"}
+    elif "Gather" in nt:
+        return {"icon": "🌐", "icon_label": nt, "category": "gather", "accent": "Parallel Collector"}
+    elif nt == "Hash":
+        return {"icon": "⚙️", "icon_label": "Hash", "category": "hash", "accent": "Hash Table Build"}
+    elif nt == "Unique":
+        return {"icon": "✨", "icon_label": "Unique", "category": "unique", "accent": "Deduplication"}
+    elif nt == "ModifyTable":
+        return {"icon": "📝", "icon_label": "ModifyTable", "category": "modify", "accent": "DML Write"}
+    return {"icon": "🔹", "icon_label": nt or "Plan Node", "category": "generic", "accent": "Plan Step"}
+
+
 def _flatten_explain(payload) -> dict:
     if isinstance(payload, str):
         payload = json.loads(payload)
     if isinstance(payload, list):
         payload = payload[0] if payload else {}
     rows = []
-
     explanations = []
+    raw_nodes = []
 
-    def walk(node, depth, parent_type=None):
-        if parent_type:
-            node["_parent_type"] = parent_type
+    def collect_nodes(node, parent_idx=None, depth=0):
+        idx = len(raw_nodes)
+        entry = {
+            "index": idx,
+            "depth": depth,
+            "node": node,
+            "parent_idx": parent_idx,
+            "children_indices": [],
+        }
+        raw_nodes.append(entry)
+        for child in node.get("Plans") or []:
+            c_idx = collect_nodes(child, idx, depth + 1)
+            entry["children_indices"].append(c_idx)
+        return idx
+
+    plan_root = payload.get("Plan") or {}
+    if plan_root:
+        collect_nodes(plan_root)
+
+    root_cost = float(plan_root.get("Total Cost") or 1.0)
+
+    # 1. Calculate exclusive costs and exclusive times
+    for entry in raw_nodes:
+        node = entry["node"]
+        tot_cost = float(node.get("Total Cost") or 0.0)
+        ch_cost = sum(float(raw_nodes[c]["node"].get("Total Cost") or 0.0) for c in entry["children_indices"])
+        entry["exclusive_cost"] = max(0.0, tot_cost - ch_cost)
+        entry["cost_share_pct"] = round(100.0 * entry["exclusive_cost"] / max(0.0001, root_cost), 1)
+
+        act_time = float(node.get("Actual Total Time") or 0.0)
+        ch_time = sum(float(raw_nodes[c]["node"].get("Actual Total Time") or 0.0) for c in entry["children_indices"])
+        entry["exclusive_time_ms"] = max(0.0, act_time - ch_time)
+
+    # 2. Rank top 3 costliest operations
+    cost_sorted = sorted(raw_nodes, key=lambda e: e["exclusive_cost"], reverse=True)
+    top_3 = cost_sorted[:3] if cost_sorted else []
+    top_indices = {e["index"]: rank + 1 for rank, e in enumerate(top_3)}
+
+    for entry in raw_nodes:
+        entry["top_cost_rank"] = top_indices.get(entry["index"])
+        is_related = False
+        rel_rank = None
+        if not entry["top_cost_rank"]:
+            connected_ranks = []
+            if entry["parent_idx"] in top_indices:
+                connected_ranks.append(top_indices[entry["parent_idx"]])
+            for c in entry["children_indices"]:
+                if c in top_indices:
+                    connected_ranks.append(top_indices[c])
+            if connected_ranks:
+                is_related = True
+                rel_rank = min(connected_ranks)
+        entry["is_related_to_top_cost"] = is_related
+        entry["related_to_rank"] = rel_rank
+
+    # 3. Build rows, explanations, and structured plan nodes
+    plan_nodes = []
+    for entry in raw_nodes:
+        node = entry["node"]
+        depth = entry["depth"]
+        node_type = str(node.get("Node Type") or "Plan Node")
+        visual = _get_node_visual_meta(node_type)
+
+        # Attach metadata to node for _explain_plan_node
+        node["_top_cost_rank"] = entry["top_cost_rank"]
+        node["_exclusive_cost"] = entry["exclusive_cost"]
+        node["_cost_share_pct"] = entry["cost_share_pct"]
+        node["_is_related_to_top_cost"] = entry["is_related_to_top_cost"]
+        node["_related_to_rank"] = entry["related_to_rank"]
+
+        p_rows = node.get("Plan Rows")
+        a_rows = node.get("Actual Rows")
+        drift_ratio = None
+        if p_rows is not None and a_rows is not None:
+            try:
+                pr = float(p_rows)
+                ar = float(a_rows)
+                if pr > 0 and ar > 0:
+                    drift_ratio = round(max(pr, ar) / min(pr, ar), 1)
+            except (TypeError, ValueError):
+                pass
+
         detail_parts = _plan_detail_parts(node)
         rows.append([
-            ("  " * depth) + str(node.get("Node Type") or ""),
+            ("  " * depth) + node_type,
             node.get("Relation Name"),
             node.get("Startup Cost"),
             node.get("Total Cost"),
@@ -1211,14 +1354,45 @@ def _flatten_explain(payload) -> dict:
             "; ".join(detail_parts) or None,
         ])
         explanations.append(_explain_plan_node(node))
-        for child in node.get("Plans") or []:
-            walk(child, depth + 1, node.get("Node Type"))
 
-    walk(payload.get("Plan") or {}, 0)
+        plan_nodes.append({
+            "index": entry["index"],
+            "depth": depth,
+            "node_type": node_type,
+            "relation": node.get("Relation Name"),
+            "index_name": node.get("Index Name"),
+            "startup_cost": node.get("Startup Cost"),
+            "total_cost": node.get("Total Cost"),
+            "exclusive_cost": round(entry["exclusive_cost"], 2),
+            "cost_share_pct": entry["cost_share_pct"],
+            "top_cost_rank": entry["top_cost_rank"],
+            "is_related_to_top_cost": entry["is_related_to_top_cost"],
+            "related_to_rank": entry["related_to_rank"],
+            "plan_rows": p_rows,
+            "actual_rows": a_rows,
+            "drift_ratio": drift_ratio,
+            "actual_time_ms": node.get("Actual Total Time"),
+            "exclusive_time_ms": round(entry["exclusive_time_ms"], 3),
+            "shared_hit_blocks": node.get("Shared Hit Blocks"),
+            "shared_read_blocks": node.get("Shared Read Blocks"),
+            "icon": visual["icon"],
+            "icon_label": visual["icon_label"],
+            "category": visual["category"],
+            "accent": visual["accent"],
+            "parent_index": entry["parent_idx"],
+            "children_indices": entry["children_indices"],
+        })
+
+    top_costliest = [n for n in plan_nodes if n.get("top_cost_rank")]
+    top_costliest.sort(key=lambda x: x["top_cost_rank"])
+
     return {
         "columns": list(_PLAN_COLUMNS),
         "rows": [[_sql_cell(cell) for cell in row] for row in rows],
         "explanations": explanations,
+        "nodes": plan_nodes,
+        "top_costliest": top_costliest,
+        "root_cost": round(root_cost, 2),
         "planning_time_ms": payload.get("Planning Time"),
         "execution_time_ms": payload.get("Execution Time"),
     }
@@ -1452,6 +1626,24 @@ def _explain_plan_node(node: dict) -> str:
         )
     if notes:
         paragraphs.append(" ".join(notes))
+
+    # Cost ranking and pipeline contextual explanation
+    if node.get("_top_cost_rank"):
+        rank = node["_top_cost_rank"]
+        share = node.get("_cost_share_pct", 0.0)
+        excl = node.get("_exclusive_cost", 0.0)
+        icon = "🔥" if rank == 1 else ("⚡" if rank == 2 else "⚠️")
+        paragraphs.append(
+            f"{icon} TOP COST DRIVER: This operation ranks #{rank} costliest in the overall execution plan, "
+            f"accounting for {_fmt_plan_num(excl)} exclusive cost units ({share}% of plan cost). "
+            f"Optimizing this specific node yields the highest ROI for query throughput."
+        )
+    elif node.get("_is_related_to_top_cost"):
+        rel_rank = node.get("_related_to_rank")
+        paragraphs.append(
+            f"🔗 PIPELINE CONTEXT: Directly connected to Rank #{rel_rank} costliest operation in the query tree."
+        )
+
     return "\n\n".join(paragraphs)
 
 
@@ -2327,8 +2519,14 @@ def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str
                     else:
                         bottleneck = "Optimized (Cache)"
 
+                    ast = parse_sql_to_ast(qrow[0])
                     result["top_queries"].append({
                         "query_preview": qrow[0],
+                        "fingerprint_id": ast.get("fingerprint_id"),
+                        "skeleton_sql": ast.get("canonical_skeleton") or qrow[0],
+                        "statement_type": ast.get("statement_type", "SELECT"),
+                        "primary_table": ast.get("primary_table"),
+                        "ast_tree": ast,
                         "db_user": qrow[1],
                         "calls": calls,
                         "total_time_ms": tot_ms,
@@ -2498,8 +2696,14 @@ def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str
                             io_cost = (calls * 4 / 1000000.0) * 0.20
                             total_query_cost = compute_cost + io_cost
                             bottleneck = "CPU Execution" if tot_ms > 1000.0 else ("High Volume" if calls > 1000 else "Optimized (Cache)")
+                            ast = parse_sql_to_ast(qrow[0])
                             result["top_queries"].append({
                                 "query_preview": qrow[0],
+                                "fingerprint_id": ast.get("fingerprint_id"),
+                                "skeleton_sql": ast.get("canonical_skeleton") or qrow[0],
+                                "statement_type": ast.get("statement_type", "SELECT"),
+                                "primary_table": ast.get("primary_table"),
+                                "ast_tree": ast,
                                 "db_user": qrow[1],
                                 "calls": calls,
                                 "total_time_ms": tot_ms,
@@ -2619,6 +2823,17 @@ def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str
                     })
 
         result["summary"]["attributed_apps_count"] = len(result["app_breakdown"])
+
+        # Correlate AST fingerprints if master list is empty
+        if not get_master_fingerprints() and result.get("pg_stat_statements_active"):
+            try:
+                correlate_pg_stat_statements(conn)
+            except Exception as corr_exc:
+                logger.debug("Automatic initial fingerprint correlation skipped: %s", corr_exc)
+
+        result["master_fingerprints"] = get_master_fingerprints()
+        result["fingerprint_scheduler"] = get_fingerprint_scheduler_status()
+
         conn.close()
     except Exception as exc:
         result["status"] = "error"
@@ -4868,37 +5083,167 @@ def render_dashboard_html() -> str:
       background: #152238;
     }}
     .plan-graph {{
-      padding: 12px 14px 16px;
+      padding: 14px 16px 20px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 12px;
+      overflow-x: auto;
     }}
-    .plan-branch {{ display: flex; flex-direction: column; gap: 8px; }}
+    .plan-branch {{ display: flex; flex-direction: column; gap: 8px; position: relative; }}
     .plan-card {{
       border: 1px solid #334e77;
       background: #121c2e;
-      border-radius: 6px;
-      padding: 8px 10px;
-      max-width: 460px;
+      border-radius: 8px;
+      padding: 10px 14px;
+      max-width: 520px;
+      text-align: left;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
     }}
-    .plan-card-type {{ font-weight: 700; color: #e2e8f0; }}
-    .plan-card-rel {{ color: #93c5fd; margin-left: 6px; }}
-    .plan-card-meta {{ color: #94a3b8; font-size: 0.72rem; margin-top: 3px; }}
+    .plan-card:hover {{
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    }}
+    .plan-card.plan-selected {{
+      outline: 2px solid #60a5fa !important;
+      box-shadow: 0 0 16px rgba(96, 165, 250, 0.5) !important;
+    }}
+    .plan-card-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }}
+    .plan-card-type {{
+      font-weight: 700;
+      color: #f1f5f9;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85rem;
+    }}
+    .plan-card-icon {{
+      font-size: 1.05rem;
+      line-height: 1;
+    }}
+    .plan-card-rel {{
+      color: #93c5fd;
+      font-family: monospace;
+      font-size: 0.76rem;
+      background: rgba(147, 197, 253, 0.1);
+      padding: 1px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(147, 197, 253, 0.2);
+    }}
+    .plan-card-meta {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      color: #94a3b8;
+      font-size: 0.72rem;
+      margin-top: 5px;
+    }}
+    .plan-meta-pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(15, 23, 42, 0.65);
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      font-family: monospace;
+      font-size: 0.70rem;
+    }}
     .plan-card-detail {{
       color: #cbd5e1;
       font-size: 0.72rem;
-      margin-top: 4px;
+      margin-top: 6px;
       white-space: pre-wrap;
       word-break: break-word;
+      border-top: 1px dashed rgba(255, 255, 255, 0.1);
+      padding-top: 4px;
     }}
     .plan-children {{
-      margin-left: 18px;
-      padding-left: 12px;
-      border-left: 1px solid #334e77;
+      margin-left: 20px;
+      padding-left: 14px;
+      border-left: 2px solid #334e77;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 10px;
+      position: relative;
     }}
+    /* Top 3 Costliest Operations Glowing Highlights */
+    .plan-card.plan-cost-rank-1 {{
+      border: 2px solid #ef4444 !important;
+      background: linear-gradient(135deg, #2c1015 0%, #171122 100%) !important;
+      box-shadow: 0 0 18px rgba(239, 68, 68, 0.65), inset 0 0 8px rgba(239, 68, 68, 0.25) !important;
+    }}
+    .plan-card.plan-cost-rank-2 {{
+      border: 2px solid #f59e0b !important;
+      background: linear-gradient(135deg, #2b1b08 0%, #181524 100%) !important;
+      box-shadow: 0 0 14px rgba(245, 158, 11, 0.55), inset 0 0 6px rgba(245, 158, 11, 0.2) !important;
+    }}
+    .plan-card.plan-cost-rank-3 {{
+      border: 2px solid #eab308 !important;
+      background: linear-gradient(135deg, #262208 0%, #161626 100%) !important;
+      box-shadow: 0 0 12px rgba(234, 179, 8, 0.45), inset 0 0 5px rgba(234, 179, 8, 0.15) !important;
+    }}
+    .plan-card.plan-cost-related {{
+      border-left: 4px solid #38bdf8 !important;
+      background: linear-gradient(135deg, #0e1e38 0%, #121c2e 100%) !important;
+    }}
+    .plan-cost-badge {{
+      font-size: 0.66rem;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      padding: 2px 7px;
+      border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border: 1px solid transparent;
+    }}
+    .plan-cost-badge.rank-1 {{ background: #7f1d1d; color: #fca5a5; border-color: #ef4444; }}
+    .plan-cost-badge.rank-2 {{ background: #78350f; color: #fde68a; border-color: #f59e0b; }}
+    .plan-cost-badge.rank-3 {{ background: #713f12; color: #fef08a; border-color: #eab308; }}
+    .plan-related-badge {{
+      font-size: 0.65rem;
+      font-weight: 600;
+      color: #7dd3fc;
+      background: rgba(14, 165, 233, 0.15);
+      border: 1px solid #0284c7;
+      padding: 1px 6px;
+      border-radius: 4px;
+    }}
+    .plan-drift-warning {{
+      color: #fcd34d;
+      background: rgba(245, 158, 11, 0.15);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.68rem;
+      margin-top: 5px;
+      font-family: monospace;
+    }}
+    /* Node Category Theming */
+    .node-theme-scan-seq {{ border-color: #ef4444; background: #1c0e12; }}
+    .node-theme-scan-index {{ border-color: #059669; background: #06241b; }}
+    .node-theme-scan-index-only {{ border-color: #0891b2; background: #072635; }}
+    .node-theme-scan-bitmap-idx {{ border-color: #0284c7; background: #09253d; }}
+    .node-theme-scan-bitmap-heap {{ border-color: #2563eb; background: #0d1e3d; }}
+    .node-theme-join-hash {{ border-color: #7c3aed; background: #1f103d; }}
+    .node-theme-join-nested {{ border-color: #d97706; background: #281705; }}
+    .node-theme-join-merge {{ border-color: #0d9488; background: #062725; }}
+    .node-theme-aggregate {{ border-color: #4f46e5; background: #151336; }}
+    .node-theme-sort {{ border-color: #c026d3; background: #2a0b2f; }}
+    .node-theme-limit {{ border-color: #ca8a04; background: #261c06; }}
+    .node-theme-materialize {{ border-color: #475569; background: #182232; }}
+    .node-theme-memoize {{ border-color: #e11d48; background: #2d0a15; }}
+    .node-theme-gather {{ border-color: #9333ea; background: #260d3d; }}
+    .node-theme-hash {{ border-color: #6b21a8; background: #1c0d33; }}
     #sql-plan-table tbody tr {{ cursor: pointer; }}
     #sql-plan-table tr.plan-selected td {{ background: #1e3a5f !important; }}
     .plan-card.plan-selected {{ border-color: #60a5fa; }}
@@ -5994,6 +6339,8 @@ def render_dashboard_html() -> str:
               </span>
             </span>
           </div>
+          <!-- Top 3 Cost Drivers Quick Jump Bar -->
+          <div id="sql-plan-cost-drivers" style="display: none; background: #0b1120; border: 1px solid #1e293b; border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; align-items: center; gap: 8px; flex-wrap: wrap;"></div>
           <div class="sql-grid-wrapper" id="sql-plan-wrapper">
             <table class="sql-grid-table sql-resizable" id="sql-plan-table">
               <colgroup id="sql-plan-cols"></colgroup>
@@ -6208,6 +6555,7 @@ def render_dashboard_html() -> str:
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
           <span id="rds-query-elapsed-pill" class="badge" style="background:#1e293b; color:#cbd5e1; border:1px solid #334155;">Query Latency: -- ms</span>
+          <button id="run-ast-fingerprint-btn" class="btn btn-outline" style="height: 28px; padding: 2px 10px; font-size: 0.75rem; border-color: #8b5cf6; color: #c084fc;" onclick="runAstQueryFingerprinting()" title="Recompute AST query skeletons and fingerprint IDs">🧠 Query Fingerprinting</button>
           <button class="btn btn-outline" style="height: 28px; padding: 2px 10px; font-size: 0.75rem; border-color: #10b981; color: #34d399;" onclick="openRdsMarkdownModal()" title="Generate a one-pager Markdown report for the engineering team">📄 Generate One-Pager (.md)</button>
           <button class="btn btn-primary" style="height: 28px; padding: 2px 10px; font-size: 0.75rem;" onclick="fetchRdsCostBreakdown()">🔄 Refresh JIT Stats</button>
         </div>
@@ -6305,7 +6653,11 @@ def render_dashboard_html() -> str:
       <div class="table-card" style="margin-bottom: 16px;">
         <div class="table-card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
           <div>
-            <div class="table-card-title">🔍 Top Query Fingerprints &amp; Compute Drivers (pg_stat_statements)</div>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <div class="table-card-title">🔍 Top Query Fingerprints &amp; Compute Drivers (pg_stat_statements)</div>
+              <button id="run-ast-fingerprint-btn-2" class="btn btn-primary" style="height: 22px; padding: 1px 8px; font-size: 0.68rem; background:#7c3aed; border-color:#6d28d9;" onclick="runAstQueryFingerprinting()" title="Convert queries to AST skeletons and assign unique fingerprint IDs">🧠 Run Query Fingerprinting</button>
+              <span id="rds-fingerprint-sched-badge" class="badge" style="background:#1e293b; color:#34d399; border:1px solid #059669; font-size:0.68rem;" title="Queries are automatically parsed into ASTs and correlated every 30 minutes">⏱️ Auto-Analysis: Every 30m</span>
+            </div>
             <span style="font-size:0.72rem; color:var(--muted);">Granular analysis of compute, disk I/O, temp spills, WAL, network egress, and wait bottlenecks</span>
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
@@ -6389,6 +6741,46 @@ def render_dashboard_html() -> str:
         </div>
         <div style="padding: 10px 20px; border-top: 1px solid var(--card-border); display: flex; justify-content: flex-end;">
           <button class="btn btn-secondary" onclick="closeRdsMarkdownModal()" style="height: 28px; padding: 2px 14px; font-size: 0.75rem;">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 🧠 AST Query Fingerprint Inspector Modal -->
+    <div id="ast-inspect-modal" style="display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.8); z-index: 9999; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+      <div style="background: #0f172a; border: 1px solid #7c3aed; border-radius: 8px; width: 90%; max-width: 820px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.6);">
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1px solid var(--card-border);">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 1.1rem; font-weight: 700; color: #f8fafc;">🧠 Abstract Syntax Tree (AST) Query Fingerprint</span>
+            <span id="ast-modal-fp-badge" class="badge" style="background:#1e293b; color:#38bdf8; font-family:monospace; border:1px solid #0284c7;">--</span>
+          </div>
+          <button onclick="closeAstModal()" style="background: transparent; border: none; color: var(--muted); font-size: 1.3rem; cursor: pointer; padding: 0 4px;">&times;</button>
+        </div>
+        <div style="padding: 10px 20px; background: #020617; border-bottom: 1px solid var(--card-border); font-size: 0.74rem; color: var(--muted);">
+          Normalized query skeleton stripped of all parameter values, numbers, strings, and parameter lists. Correlated with pg_stat_statements.
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding: 16px 20px; background: #090d16; font-size: 0.78rem;">
+          <div style="margin-bottom: 12px;">
+            <label style="font-weight: 700; color: #93c5fd; display: block; margin-bottom: 4px;">Canonical Query Skeleton Pattern:</label>
+            <pre id="ast-modal-skeleton" style="background: #020617; border: 1px solid #1e293b; border-radius: 4px; padding: 10px; color: #38bdf8; font-family: monospace; white-space: pre-wrap; word-break: break-all; margin: 0;"></pre>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+            <div style="background: #1e293b; padding: 8px 12px; border-radius: 4px;">
+              <span style="color: var(--muted); font-size: 0.7rem; display: block;">STATEMENT &amp; PRIMARY TABLE</span>
+              <span id="ast-modal-type-table" style="font-weight: 700; color: #fde047; font-family: monospace;">--</span>
+            </div>
+            <div style="background: #1e293b; padding: 8px 12px; border-radius: 4px;">
+              <span style="color: var(--muted); font-size: 0.7rem; display: block;">CORRELATED pg_stat_statements TELEMETRY</span>
+              <span id="ast-modal-telemetry" style="font-weight: 700; color: #34d399; font-family: monospace;">--</span>
+            </div>
+          </div>
+          <div>
+            <label style="font-weight: 700; color: #c084fc; display: block; margin-bottom: 4px;">Abstract Syntax Tree Structure (AST JSON):</label>
+            <pre id="ast-modal-json" style="background: #020617; border: 1px solid #1e293b; border-radius: 4px; padding: 10px; color: #cbd5e1; font-family: monospace; max-height: 250px; overflow-y: auto; margin: 0; font-size: 0.73rem;"></pre>
+          </div>
+        </div>
+        <div style="padding: 10px 20px; border-top: 1px solid var(--card-border); display: flex; justify-content: flex-end; gap: 8px;">
+          <button class="btn btn-outline" onclick="copyAstJson()" style="height: 28px; padding: 2px 12px; font-size: 0.75rem; border-color: #a78bfa; color: #c084fc;">📋 Copy AST JSON</button>
+          <button class="btn btn-secondary" onclick="closeAstModal()" style="height: 28px; padding: 2px 14px; font-size: 0.75rem;">Close</button>
         </div>
       </div>
     </div>
@@ -6708,6 +7100,80 @@ def render_dashboard_html() -> str:
       URL.revokeObjectURL(url);
     }}
 
+    async function runAstQueryFingerprinting() {{
+      const btns = [
+        document.getElementById('run-ast-fingerprint-btn'),
+        document.getElementById('run-ast-fingerprint-btn-2')
+      ].filter(Boolean);
+      btns.forEach(b => {{
+        b.disabled = true;
+        b.dataset.origText = b.innerText;
+        b.innerText = '🧠 Analyzing AST...';
+      }});
+      try {{
+        const res = await fetch('/api/rds/fingerprint', {{ method: 'POST' }});
+        const data = await res.json();
+        const count = data.total_fingerprints || (data.fingerprints && data.fingerprints.length) || 0;
+        showToast(`🧠 AST Query Fingerprinting completed: correlated ${{count}} unique query patterns with pg_stat_statements`);
+        await fetchRdsCostBreakdown();
+      }} catch (err) {{
+        console.error('Failed running AST fingerprinting:', err);
+        showToast('Fingerprinting error: ' + err.message, true);
+      }} finally {{
+        btns.forEach(b => {{
+          b.disabled = false;
+          b.innerText = b.dataset.origText || '🧠 Run Query Fingerprinting';
+        }});
+      }}
+    }}
+
+    let currentAstJsonText = '';
+    function openAstModal(fpId) {{
+      const queries = (latestRdsBreakdownData && latestRdsBreakdownData.top_queries) || [];
+      const masters = (latestRdsBreakdownData && latestRdsBreakdownData.master_fingerprints) || [];
+      const item = queries.find(q => q.fingerprint_id === fpId) || masters.find(m => m.fingerprint_id === fpId);
+      if (!item) return;
+
+      const modal = document.getElementById('ast-inspect-modal');
+      const badge = document.getElementById('ast-modal-fp-badge');
+      const skel = document.getElementById('ast-modal-skeleton');
+      const typeTbl = document.getElementById('ast-modal-type-table');
+      const telem = document.getElementById('ast-modal-telemetry');
+      const jsonPre = document.getElementById('ast-modal-json');
+
+      if (badge) badge.innerText = item.fingerprint_id || fpId;
+      if (skel) skel.innerText = item.skeleton_pattern || item.skeleton_sql || item.query_preview || '';
+      if (typeTbl) typeTbl.innerText = `${{item.statement_type || 'SELECT'}} on ${{item.primary_table || 'unknown'}}`;
+      if (telem) {{
+        telem.innerText = `${{Number(item.calls || 0).toLocaleString()}} calls · ${{Number(item.total_time_ms || 0).toFixed(1)}} ms total · ${{item.bottleneck || 'Optimized'}} · $${{Number(item.total_cost || 0).toFixed(6)}}`;
+      }}
+
+      const astTree = item.ast_tree || {{
+        statement_type: item.statement_type || 'SELECT',
+        fingerprint_id: item.fingerprint_id || fpId,
+        canonical_skeleton: item.skeleton_pattern || item.skeleton_sql,
+        primary_table: item.primary_table
+      }};
+      currentAstJsonText = JSON.stringify(astTree, null, 2);
+      if (jsonPre) jsonPre.innerText = currentAstJsonText;
+
+      if (modal) modal.style.display = 'flex';
+    }}
+
+    function closeAstModal() {{
+      const modal = document.getElementById('ast-inspect-modal');
+      if (modal) modal.style.display = 'none';
+    }}
+
+    function copyAstJson() {{
+      if (!currentAstJsonText) return;
+      navigator.clipboard.writeText(currentAstJsonText).then(() => {{
+        showToast('📋 AST JSON copied to clipboard!');
+      }}).catch(() => {{
+        showToast('AST JSON copied');
+      }});
+    }}
+
     function renderRdsCostBreakdown(data) {{
       if (!data) return;
       const basis = data.attribution_basis || 'compute';
@@ -6747,6 +7213,12 @@ def render_dashboard_html() -> str:
 
       const q3hBadge = document.getElementById('rds-3h-count-badge');
       if (q3hBadge) q3hBadge.innerText = `${{(data.past_3h_queries || data.activity_queries || []).length}} rows`;
+
+      const schedBadge = document.getElementById('rds-fingerprint-sched-badge');
+      if (schedBadge && data.fingerprint_scheduler) {{
+        const sched = data.fingerprint_scheduler;
+        schedBadge.innerText = `⏱️ Auto-Analysis: Every ${{sched.interval_minutes || 30}}m (${{sched.total_fingerprints || data.master_fingerprints?.length || 0}} patterns)`;
+      }}
 
       // Render App Breakdown Table
       const tbody = document.getElementById('rds-app-breakdown-tbody');
@@ -6810,10 +7282,14 @@ def render_dashboard_html() -> str:
         }} else {{
           qTbody.innerHTML = queries.map(q => `
             <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.76rem;">
-              <td style="font-family: monospace; color: #cbd5e1; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${{q.query_preview}}">
-                ${{q.query_preview}}
+              <td style="font-family: monospace; color: #cbd5e1; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${{sqlEscape(q.skeleton_sql || q.query_preview)}}">
+                <div style="display:flex; align-items:center; gap:6px;">
+                  ${{q.fingerprint_id ? `<span class="badge" style="background:#1e293b; color:#38bdf8; font-family:monospace; font-size:0.68rem; padding:1px 5px; border:1px solid #0284c7;" title="Unique AST Fingerprint ID">${{q.fingerprint_id}}</span>` : ''}}
+                  ${{q.fingerprint_id ? `<button type="button" class="btn btn-outline" style="height:18px; line-height:16px; padding:0 5px; font-size:0.65rem; color:#a78bfa; border-color:#7c3aed; cursor:pointer;" onclick="openAstModal('${{q.fingerprint_id}}')" title="Inspect Abstract Syntax Tree JSON">AST</button>` : ''}}
+                  <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${{sqlEscape(q.skeleton_sql || q.query_preview)}}</span>
+                </div>
               </td>
-              <td style="font-family: monospace; color: #a5b4fc;">${{q.db_user}}</td>
+              <td style="font-family: monospace; color: #a5b4fc;">${{sqlEscape(q.db_user)}}</td>
               <td style="text-align: right; font-family: monospace;">
                 <span style="color: #38bdf8; font-weight: 600;">${{Number(q.calls || 0).toLocaleString()}}</span>
                 <span style="color: var(--muted); font-size: 0.70rem; display:block;">(${{Number(q.rows || 0).toLocaleString()}} r)</span>
@@ -8668,7 +9144,11 @@ def render_dashboard_html() -> str:
         tr.classList.toggle('plan-selected', i === index);
       }});
       document.querySelectorAll('#sql-plan-graph .plan-card').forEach(card => {{
-        card.classList.toggle('plan-selected', Number(card.dataset.index) === index);
+        const isSel = Number(card.dataset.index) === index;
+        card.classList.toggle('plan-selected', isSel);
+        if (isSel && planViewMode === 'graph') {{
+          try {{ card.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }}); }} catch (_) {{}}
+        }}
       }});
       const explain = document.getElementById('sql-plan-explain');
       if (!explain) return;
@@ -8679,24 +9159,118 @@ def render_dashboard_html() -> str:
 
     function renderPlanGraph(plan) {{
       const host = document.getElementById('sql-plan-graph');
+      const driversBar = document.getElementById('sql-plan-cost-drivers');
       if (!host) return;
+
+      // Render Top 3 Cost Drivers Quick Jump Bar
+      if (driversBar) {{
+        const top3 = (plan.top_costliest || []).slice(0, 3);
+        if (top3.length > 0) {{
+          driversBar.style.display = 'flex';
+          driversBar.innerHTML = `
+            <div style="font-size:0.74rem; font-weight:700; color:#f8fafc; margin-right:4px;">🔥 Top Costliest Operations:</div>
+            ${{top3.map(t => {{
+              const badgeClass = t.top_cost_rank === 1 ? 'rank-1' : (t.top_cost_rank === 2 ? 'rank-2' : 'rank-3');
+              const icon = t.top_cost_rank === 1 ? '🔥' : (t.top_cost_rank === 2 ? '⚡' : '⚠️');
+              const relText = t.relation ? ` on <b>${{sqlEscape(t.relation)}}</b>` : '';
+              return `
+                <button type="button" class="plan-cost-badge ${{badgeClass}}" style="cursor:pointer;" onclick="showPlanStep(${{t.index}})" title="Click to inspect this cost driver">
+                  ${{icon}} #${{t.top_cost_rank}}: ${{sqlEscape(t.node_type)}}${{relText}} (${{t.cost_share_pct}}% cost)
+                </button>
+              `;
+            }}).join('')}}
+            <span style="font-size:0.70rem; color:var(--muted); margin-left:auto;">Click node or chip to highlight</span>
+          `;
+        }} else {{
+          driversBar.style.display = 'none';
+        }}
+      }}
+
+      // Build tree
       const roots = [];
       const stack = [];
+      const nodesData = plan.nodes || [];
+
       (plan.rows || []).forEach((row, index) => {{
         const label = String(row[0] || '');
         const depth = Math.floor((label.match(/^ */) || [''])[0].length / 2);
-        const node = {{ index: index, label: label.trim(), relation: row[1], ms: row[6], rows: row[5], children: [] }};
+        const metaNode = nodesData[index] || {{}};
+        const node = {{
+          index: index,
+          label: label.trim(),
+          relation: row[1] || metaNode.relation,
+          ms: row[6] || metaNode.actual_time_ms,
+          rows: row[5] || metaNode.actual_rows,
+          meta: metaNode,
+          children: []
+        }};
         while (stack.length > depth) stack.pop();
         if (!stack.length) roots.push(node);
         else stack[stack.length - 1].children.push(node);
         stack[depth] = node;
       }});
+
       function draw(node) {{
+        const meta = node.meta || {{}};
+        const rank = meta.top_cost_rank;
+        const isRelated = meta.is_related_to_top_cost;
+        const rankClass = rank === 1 ? 'plan-cost-rank-1' : (rank === 2 ? 'plan-cost-rank-2' : (rank === 3 ? 'plan-cost-rank-3' : (isRelated ? 'plan-cost-related' : '')));
+        const themeClass = meta.category ? `node-theme-${{meta.category}}` : '';
+
+        // Badge
+        let badgeHtml = '';
+        if (rank === 1) {{
+          badgeHtml = `<span class="plan-cost-badge rank-1">🔥 #1 Costliest (${{meta.cost_share_pct}}%)</span>`;
+        }} else if (rank === 2) {{
+          badgeHtml = `<span class="plan-cost-badge rank-2">⚡ #2 Costliest (${{meta.cost_share_pct}}%)</span>`;
+        }} else if (rank === 3) {{
+          badgeHtml = `<span class="plan-cost-badge rank-3">⚠️ #3 Costliest (${{meta.cost_share_pct}}%)</span>`;
+        }} else if (isRelated) {{
+          badgeHtml = `<span class="plan-related-badge">🔗 Pipeline link to #${{meta.related_to_rank}} Costliest</span>`;
+        }}
+
+        const icon = meta.icon || '🔹';
         const rel = node.relation ? `<span class="plan-card-rel">${{sqlEscape(node.relation)}}</span>` : '';
-        const meta = `${{sqlEscape(node.rows == null ? '' : node.rows + ' rows')}} · ${{sqlEscape(node.ms == null ? '' : node.ms + ' ms')}}`;
+        const indexRel = meta.index_name ? `<span class="plan-card-rel" style="color:#a78bfa; border-color:rgba(167,139,250,0.2);">${{sqlEscape(meta.index_name)}}</span>` : '';
+
+        let costText = '';
+        if (meta.exclusive_cost != null && meta.cost_share_pct != null) {{
+          costText = `<span class="plan-meta-pill" style="color:#fde047;">💰 ${{meta.exclusive_cost}} excl (${{meta.cost_share_pct}}%)</span>`;
+        }}
+        const rowsText = node.rows != null ? `<span class="plan-meta-pill">📋 ${{sqlEscape(node.rows)}} rows</span>` : '';
+        const timeText = node.ms != null ? `<span class="plan-meta-pill" style="color:#38bdf8;">⏱️ ${{sqlEscape(node.ms)}} ms</span>` : '';
+
+        let driftHtml = '';
+        if (meta.drift_ratio && meta.drift_ratio >= 3.0) {{
+          driftHtml = `<div class="plan-drift-warning">⚠️ ${{meta.drift_ratio}}x row estimate drift (est. ${{meta.plan_rows}} vs act. ${{meta.actual_rows}})</div>`;
+        }}
+
         const kids = node.children.map(draw).join('');
-        return `<div class="plan-branch"><button type="button" class="plan-card" data-index="${{node.index}}" onclick="showPlanStep(${{node.index}})"><div class="plan-card-type">${{sqlEscape(node.label)}}${{rel}}</div><div class="plan-card-meta">${{meta}}</div></button>${{kids ? `<div class="plan-children">${{kids}}</div>` : ''}}</div>`;
+
+        return `
+          <div class="plan-branch">
+            <button type="button" class="plan-card ${{themeClass}} ${{rankClass}}" data-index="${{node.index}}" onclick="showPlanStep(${{node.index}})">
+              <div class="plan-card-header">
+                <div class="plan-card-type">
+                  <span class="plan-card-icon">${{icon}}</span>
+                  <span>${{sqlEscape(node.label)}}</span>
+                  ${{rel}}
+                  ${{indexRel}}
+                </div>
+                ${{badgeHtml}}
+              </div>
+              <div class="plan-card-meta">
+                ${{costText}}
+                ${{rowsText}}
+                ${{timeText}}
+              </div>
+              ${{driftHtml}}
+            </button>
+            ${{kids ? `<div class="plan-children">${{kids}}</div>` : ''}}
+          </div>
+        `;
       }}
+
       host.innerHTML = `<div class="plan-graph">${{roots.map(draw).join('')}}</div>`;
     }}
 
@@ -10533,6 +11107,22 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 self.end_headers()
                 self.wfile.write(data)
 
+            elif path in ("/api/rds/fingerprints", "/api/rds/fingerprints/list"):
+                master = get_master_fingerprints()
+                sched = get_fingerprint_scheduler_status()
+                data = json.dumps({
+                    "status": "success",
+                    "scheduler": sched,
+                    "total_fingerprints": len(master),
+                    "fingerprints": master
+                }, indent=2).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
             elif path == "/api/errors/recent":
                 data = json.dumps({"status": "success", "errors": list(DASHBOARD_ERROR_RING)}, indent=2).encode("utf-8")
                 self.send_response(200)
@@ -10957,6 +11547,22 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 self._send_bytes(200, json.dumps(res).encode("utf-8"), "application/json")
                 return
 
+            elif path in ("/api/rds/fingerprint", "/api/rds/fingerprints/run"):
+                try:
+                    fingerprints = trigger_fingerprint_analysis_now(_pg_connect)
+                    sched = get_fingerprint_scheduler_status()
+                    payload = json.dumps({
+                        "status": "success",
+                        "total_fingerprints": len(fingerprints),
+                        "scheduler": sched,
+                        "fingerprints": fingerprints[:50]
+                    }, indent=2).encode("utf-8")
+                    self._send_bytes(200, payload, "application/json")
+                except Exception as fp_exc:
+                    err_payload = json.dumps({"status": "error", "error": str(fp_exc)}).encode("utf-8")
+                    self._send_bytes(500, err_payload, "application/json")
+                return
+
             else:
                 self.send_response(404)
                 self._send_cors_headers()
@@ -10978,6 +11584,10 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     logger.info("Canary dashboard listening at http://0.0.0.0:%d/", port)
+    try:
+        start_fingerprint_scheduler(_pg_connect, interval_seconds=1800)
+    except Exception as sched_err:
+        logger.debug("Failed starting AST fingerprint background scheduler: %s", sched_err)
     return server
 
 # ---------------------------------------------------------------------------
