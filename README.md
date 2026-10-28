@@ -360,14 +360,14 @@ observability-demo/
 | Grafana Image Renderer | `8081` | Headless Chromium sidecar for automated PNG panel rendering | pinned digest |
 | Prometheus | `9090` | Exporter scraper and metrics buffer | `3.15.0` |
 | Grafana Mimir | `9009` | Distributed long-term metrics storage | `3.2.1` |
-| Grafana Tempo | `3200` | Distributed tracing backend (backed by Redpanda) | `3.0.0` |
+| Grafana Tempo | `3200` | High-scale distributed tracing backend with OTLP ingestion | `3.0.0` |
 | Grafana Loki | `3100` | Log aggregation backend | `3.7.8` |
 | OTel Collector | `4317` (gRPC) / `4318` (HTTP) | Telemetry ingestion and routing pipeline | `0.161.0` |
 | PostgreSQL | `5432` | Audit log database with persistence | `18.6` |
-| Postgres Exporter | `9187` | Database runtime metrics (connections, locks, buffers) | `0.20.1` |
+| Postgres Exporter | `9187` | Database runtime metrics (connections, locks, buffers) | `0.16.0` |
 | Valkey | `6379` | High-performance Redis fork for canary counters and event logs | `9.1.2` |
 | Redis Exporter | `9121` | Prometheus scraper for Valkey cache telemetry | `1.92.1` |
-| Redpanda | `9092` | Kafka-compatible distributed event log for Tempo traces | `26.2.3` |
+| Redpanda | `9092` | Kafka-compatible distributed event streaming platform | `26.2.3` |
 
 ---
 

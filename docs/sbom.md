@@ -2,7 +2,7 @@
 
 This document provides a comprehensive Software Bill of Materials (SBOM) and detailed architectural acknowledgments for the **Observability Demo** ecosystem, covering all 7 polyglot microservice applications, synthetic canary operations platform, mobile clients, and dependent stack infrastructure.
 
-The machine-readable CycloneDX 1.5 standard SBOM is maintained at [`sbom/sbom-cyclonedx.json`](file:///home/home/github/observability-demo/sbom/sbom-cyclonedx.json).
+The machine-readable CycloneDX 1.5 standard SBOM is maintained at [`sbom/sbom-cyclonedx.json`](../sbom/sbom-cyclonedx.json).
 
 ---
 
@@ -22,14 +22,15 @@ The machine-readable CycloneDX 1.5 standard SBOM is maintained at [`sbom/sbom-cy
 | **`observability-canary`** | Application | 1.0.1 | Python 3.11 / Canvas / Docker API | MIT | `pkg:docker/observability-canary@1.0.1` | Synthetic load generator, Chaos Fault Injection, Docker power manager, SQL data grid |
 | **`canary-observability-mobile`** | Application | 1.0.0 | React Native 0.74 / Expo 51 | MIT | `pkg:npm/canary-observability-mobile@1.0.0` | Cross-platform mobile/desktop client for Android, iOS, Windows, and Web |
 | **`postgres`** | Container | 18.6 | PostgreSQL Relational DB | PostgreSQL | `pkg:docker/postgres@18.6` | Relational audit log persistence, transactional integrity, JSONB metadata |
-| **`valkey`** | Container | 7.2.5 | C / RESP In-Memory Store | BSD-3-Clause | `pkg:docker/valkey/valkey@7.2.5` | High-throughput in-memory cache for canary counters and latency sums |
-| **`otel-collector`** | Container | 0.88.0 | Go / OpenTelemetry Pipeline | Apache-2.0 | `pkg:docker/otel/opentelemetry-collector-contrib@0.88.0` | Telemetry router receiving OTLP gRPC/HTTP and dispatching to Tempo, Mimir, Loki |
-| **`tempo`** | Container | 2.3.1 | Go / Grafana Tracing | AGPL-3.0 | `pkg:docker/grafana/tempo@2.3.1` | Distributed trace storage with correlation to logs and metrics |
-| **`loki`** | Container | 2.9.2 | Go / Grafana Logs | AGPL-3.0 | `pkg:docker/grafana/loki@2.9.2` | Horizontally scalable log aggregator indexing stream labels via LogQL |
-| **`mimir`** | Container | 2.11.0 | Go / Grafana Metrics | AGPL-3.0 | `pkg:docker/grafana/mimir@2.11.0` | Long-term high-availability Prometheus metric store with PromQL query engine |
-| **`prometheus`** | Container | 2.48.0 | Go / CNCF Monitoring | Apache-2.0 | `pkg:docker/prom/prometheus@v2.48.0` | Pull-based telemetry scraper collecting host, container, and app metrics |
-| **`grafana`** | Container | 10.2.2 | Go + TypeScript / Grafana | AGPL-3.0 | `pkg:docker/grafana/grafana@10.2.2` | Unified observability dashboards visualizing metrics, traces, logs, and database tables |
-| **`redpanda`** | Container | 23.3.3 | C++20 / Seastar Engine | BSL-1.1 | `pkg:docker/redpandadata/redpanda@v23.3.3` | Kafka-compatible distributed event stream bus using Raft consensus |
+| **`postgres-exporter`** | Container | 0.16.0 | Go / Prometheus Exporter | Apache-2.0 | `pkg:docker/prometheuscommunity/postgres-exporter@v0.16.0` | PostgreSQL server and query performance metric exporter |
+| **`valkey`** | Container | 9.1.2 | C / RESP In-Memory Store | BSD-3-Clause | `pkg:docker/valkey/valkey@9.1.2` | High-throughput in-memory cache for canary counters and latency sums |
+| **`otel-collector`** | Container | 0.161.0 | Go / OpenTelemetry Pipeline | Apache-2.0 | `pkg:docker/otel/opentelemetry-collector-contrib@0.161.0` | Telemetry router receiving OTLP gRPC/HTTP and dispatching to Tempo, Mimir, Loki |
+| **`tempo`** | Container | 3.0.0 | Go / Grafana Tracing | AGPL-3.0 | `pkg:docker/grafana/tempo@3.0.0` | Distributed trace storage with correlation to logs and metrics |
+| **`loki`** | Container | 3.7.8 | Go / Grafana Logs | AGPL-3.0 | `pkg:docker/grafana/loki@3.7.8` | Horizontally scalable log aggregator indexing stream labels via LogQL |
+| **`mimir`** | Container | 3.2.1 | Go / Grafana Metrics | AGPL-3.0 | `pkg:docker/grafana/mimir@3.2.1` | Long-term high-availability Prometheus metric store with PromQL query engine |
+| **`prometheus`** | Container | 3.15.0 | Go / CNCF Monitoring | Apache-2.0 | `pkg:docker/prom/prometheus@v3.15.0` | Pull-based telemetry scraper collecting host, container, and app metrics |
+| **`grafana`** | Container | 13.2.2 | Go + TypeScript / Grafana | AGPL-3.0 | `pkg:docker/grafana/grafana@13.2.2` | Unified observability dashboards visualizing metrics, traces, logs, and database tables |
+| **`redpanda`** | Container | 26.2.3 | C++20 / Seastar Engine | BSL-1.1 | `pkg:docker/redpandadata/redpanda@v26.2.3` | Kafka-compatible distributed event stream bus using Raft consensus |
 
 ---
 

@@ -17,6 +17,7 @@ import secrets
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import concurrent.futures
 import logging
 import math
 import os
@@ -2215,6 +2216,7 @@ def get_rds_cost_breakdown(monthly_budget: float = 100.0, attribution_basis: str
         "top_queries": [],
         "active_sessions": [],
         "past_3h_queries": [],
+        "activity_queries": [],
         "elapsed_ms": 0.0,
         "timestamp": datetime.now().isoformat(),
     }
@@ -10542,6 +10544,106 @@ def run_synthetic_cycle(count: int = None, session: requests.Session = None, on_
         "rate_info": state.get_rate_info()
     }
 
+def dispatch_single_canary_request(app_lang: str, base_url: str, target: dict, session: requests.Session, vk) -> None:
+    path         = target["path"]
+    method       = target["method"]
+    expected_4xx = target.get("expected_4xx", False)
+    url          = f"{base_url}{path}"
+
+    t_start = time.time()
+    status  = "error"
+    fault_tag = None
+
+    # Check Fault Injection
+    inject_fault, active_fault = fault_manager.should_inject(app_lang)
+
+    if inject_fault and active_fault:
+        fault_tag = active_fault["tag"]
+        f_type = active_fault["fault_type"]
+
+        if f_type == "error_spike":
+            try:
+                resp = session.get(f"{base_url}/fault-injected-error-drill", timeout=3)
+            except Exception:
+                pass
+            status = "error"
+            fault_manager.record_affected(is_error=True)
+
+        elif f_type == "service_outage":
+            time.sleep(0.04)
+            status = "error"
+            fault_manager.record_affected(is_error=True)
+
+        elif f_type == "high_latency":
+            delay_s = active_fault.get("delay_ms", 1000) / 1000.0
+            time.sleep(delay_s)
+            try:
+                resp = session.get(url, timeout=5)
+                status = "success" if (expected_4xx and 400 <= resp.status_code < 500) or (not expected_4xx and resp.status_code < 400) else "error"
+            except Exception:
+                status = "error"
+            fault_manager.record_affected(is_error=(status == "error"))
+
+        elif f_type == "intermittent_errors":
+            if random.random() < 0.5:
+                status = "error"
+                fault_manager.record_affected(is_error=True)
+            else:
+                try:
+                    resp = session.get(url, timeout=5)
+                    status = "success" if resp.status_code < 400 else "error"
+                except Exception:
+                    status = "error"
+                fault_manager.record_affected(is_error=(status == "error"))
+
+        elif f_type in ("process_crash", "thread_crash"):
+            status = "error"
+            fault_manager.record_affected(is_error=True)
+    else:
+        try:
+            if method == "POST":
+                if "json" in target:
+                    resp = session.post(url, json=target["json"], timeout=5)
+                else:
+                    resp = session.post(url, data=target.get("data", {}), timeout=5)
+            else:
+                resp = session.get(url, timeout=5)
+
+            if expected_4xx:
+                status = "success" if 400 <= resp.status_code < 500 else "error"
+            else:
+                status = "success" if resp.status_code < 400 else "error"
+
+        except Exception as exc:
+            logger.debug("Request failed %s %s: %s", method, path, exc)
+            status = "error"
+
+    response_time = time.time() - t_start
+    base_path = path.split("?")[0]
+    labels = {
+        "path": base_path,
+        "method": method,
+        "status": status,
+        "client": "canary",
+        "language": app_lang
+    }
+
+    request_counter.add(1, labels)
+    request_duration.record(response_time, labels)
+
+    state.record_request(app_lang, method, path, status, response_time, fault_tag=fault_tag)
+
+    if vk:
+        try:
+            field = f"{app_lang}:{base_path}:{status}"
+            vk.hincrby("canary:total_requests", field, 1)
+
+            duration_field = f"{app_lang}:{base_path}"
+            vk.hincrbyfloat("canary:duration_sum", duration_field, response_time)
+            vk.hincrby("canary:duration_count", duration_field, 1)
+        except Exception as vk_exc:
+            logger.debug("Failed to report to Valkey: %s", vk_exc)
+
 def run() -> None:
     try:
         ensure_sql_editor_schema()
@@ -10550,6 +10652,9 @@ def run() -> None:
     start_dashboard_server(CANARY_PORT)
 
     session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=32)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
     try:
         vk = redis.Redis(host=VALKEY_HOST, port=6379, socket_connect_timeout=2.0, socket_timeout=2.0, decode_responses=True)
     except Exception as e:
@@ -10562,7 +10667,12 @@ def run() -> None:
     wait_for_apps(session)
     state.set_running()
     start_docker_sync_thread()
-    logger.info("Starting canary loop with dynamic TPS, power management, and color-coded fault injection")
+    worker_count = int(os.getenv("CANARY_WORKERS", "32"))
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="canary-worker"
+    )
+    logger.info("Starting concurrent canary loop (Workers: %d) with dynamic TPS, power management, and fault injection", worker_count)
 
     next_tick = time.time()
     last_warmup_check = 0.0
@@ -10616,104 +10726,8 @@ def run() -> None:
         target = TARGETS[target_idx % len(TARGETS)]
         target_idx += 1
 
-        path         = target["path"]
-        method       = target["method"]
-        expected_4xx = target.get("expected_4xx", False)
-        url          = f"{base_url}{path}"
-
-        t_start = time.time()
-        status  = "error"
-        fault_tag = None
-
-        # Check Fault Injection
-        inject_fault, active_fault = fault_manager.should_inject(app_lang)
-
-        if inject_fault and active_fault:
-            fault_tag = active_fault["tag"]
-            f_type = active_fault["fault_type"]
-
-            if f_type == "error_spike":
-                try:
-                    resp = session.get(f"{base_url}/fault-injected-error-drill", timeout=3)
-                except Exception:
-                    pass
-                status = "error"
-                fault_manager.record_affected(is_error=True)
-
-            elif f_type == "service_outage":
-                time.sleep(0.04)
-                status = "error"
-                fault_manager.record_affected(is_error=True)
-
-            elif f_type == "high_latency":
-                delay_s = active_fault.get("delay_ms", 1000) / 1000.0
-                time.sleep(delay_s)
-                try:
-                    resp = session.get(url, timeout=5)
-                    status = "success" if (expected_4xx and 400 <= resp.status_code < 500) or (not expected_4xx and resp.status_code < 400) else "error"
-                except Exception:
-                    status = "error"
-                fault_manager.record_affected(is_error=(status == "error"))
-
-            elif f_type == "intermittent_errors":
-                if random.random() < 0.5:
-                    status = "error"
-                    fault_manager.record_affected(is_error=True)
-                else:
-                    try:
-                        resp = session.get(url, timeout=5)
-                        status = "success" if resp.status_code < 400 else "error"
-                    except Exception:
-                        status = "error"
-                    fault_manager.record_affected(is_error=(status == "error"))
-
-            elif f_type in ("process_crash", "thread_crash"):
-                status = "error"
-                fault_manager.record_affected(is_error=True)
-        else:
-            try:
-                if method == "POST":
-                    if "json" in target:
-                        resp = session.post(url, json=target["json"], timeout=5)
-                    else:
-                        resp = session.post(url, data=target.get("data", {}), timeout=5)
-                else:
-                    resp = session.get(url, timeout=5)
-
-                if expected_4xx:
-                    status = "success" if 400 <= resp.status_code < 500 else "error"
-                else:
-                    status = "success" if resp.status_code < 400 else "error"
-
-            except Exception as exc:
-                logger.debug("Request failed %s %s: %s", method, path, exc)
-                status = "error"
-
-        response_time = time.time() - t_start
-        base_path = path.split("?")[0]
-        labels = {
-            "path": base_path,
-            "method": method,
-            "status": status,
-            "client": "canary",
-            "language": app_lang
-        }
-
-        request_counter.add(1, labels)
-        request_duration.record(response_time, labels)
-
-        state.record_request(app_lang, method, path, status, response_time, fault_tag=fault_tag)
-
-        if vk:
-            try:
-                field = f"{app_lang}:{base_path}:{status}"
-                vk.hincrby("canary:total_requests", field, 1)
-
-                duration_field = f"{app_lang}:{base_path}"
-                vk.hincrbyfloat("canary:duration_sum", duration_field, response_time)
-                vk.hincrby("canary:duration_count", duration_field, 1)
-            except Exception as vk_exc:
-                logger.debug("Failed to report to Valkey: %s", vk_exc)
+        # 4. Dispatch request asynchronously to worker thread pool
+        executor.submit(dispatch_single_canary_request, app_lang, base_url, target, session, vk)
 
         # Dynamic TPS/TPM inter-arrival
         current_tps = state.get_effective_tps()

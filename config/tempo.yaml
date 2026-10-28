@@ -15,8 +15,3 @@ storage:
       path: /var/tempo/blocks
     wal:
       path: /var/tempo/wal
-
-ingest:
-  kafka:
-    address: redpanda:9092
-    topic: tempo-ingest

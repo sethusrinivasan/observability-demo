@@ -25,6 +25,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TF_DIR="${SCRIPT_DIR}/terraform"
+FOUNDATION_DIR="${SCRIPT_DIR}/terraform-foundation"
 
 APP_TAG="Observability-Demo"
 AWS_REGION="${AWS_REGION:-us-east-2}"
@@ -135,6 +136,26 @@ build_and_push_service() {
     --push
 
   log_success "Built & pushed: ${repo_url}:latest"
+}
+
+cmd_foundation_init() {
+  check_prereqs
+  log_info "Initializing Foundational Terraform in ${FOUNDATION_DIR}..."
+  terraform -chdir="${FOUNDATION_DIR}" init -backend=false
+  log_success "Foundational Terraform initialized."
+}
+
+cmd_foundation_plan() {
+  check_prereqs
+  log_info "Running Plan for Foundational Infrastructure (S3 Lake, CI OIDC Role, ECR)..."
+  terraform -chdir="${FOUNDATION_DIR}" plan -var="aws_region=${AWS_REGION}"
+}
+
+cmd_foundation_apply() {
+  check_prereqs
+  log_info "Applying Foundational Infrastructure for ${BOLD}${APP_TAG}${NC} in ${AWS_REGION}..."
+  terraform -chdir="${FOUNDATION_DIR}" apply -auto-approve -var="aws_region=${AWS_REGION}"
+  log_success "Foundational infrastructure applied and active."
 }
 
 cmd_init() {
@@ -292,18 +313,13 @@ archive_active_s3_bucket() {
 cmd_redeploy() {
   check_prereqs
   echo -e "${RED}${BOLD}WARNING: This will archive S3 data with a numbered suffix, tear down workload resources for ${APP_TAG}, and redeploy fully!${NC}"
+  echo -e "${CYAN}Note: Foundational resources (S3 state bucket, CI OIDC role, ECR registries) are isolated in terraform-foundation and will not be touched.${NC}"
   read -r -p "Type 'DESTROY' to confirm: " confirm
   if [ "${confirm}" = "DESTROY" ]; then
     archive_active_s3_bucket
-    local targets
-    targets=$(terraform -chdir="${TF_DIR}" state list 2>/dev/null | grep -v -E '^aws_s3_bucket|^aws_ecr_|^aws_iam_openid_connect_provider|^aws_iam_role\.github_actions|^aws_iam_policy\.github_actions|^aws_iam_role_policy_attachment\.github_actions' | sed 's/^/-target=/' | tr '\n' ' ' || true)
-    if [ -n "${targets}" ]; then
-      log_info "Destroying workload application resources..."
-      terraform -chdir="${TF_DIR}" destroy -auto-approve ${targets} -var="aws_region=${AWS_REGION}"
-    else
-      log_info "No workload resources found in state to destroy."
-    fi
-    log_success "Workload resources torn down. Redeploying infrastructure..."
+    log_info "Destroying application workload resources in ${TF_DIR}..."
+    terraform -chdir="${TF_DIR}" destroy -auto-approve -var="aws_region=${AWS_REGION}"
+    log_success "Workload resources torn down cleanly. Redeploying infrastructure..."
     terraform -chdir="${TF_DIR}" plan -var="aws_region=${AWS_REGION}"
     terraform -chdir="${TF_DIR}" apply -auto-approve -var="aws_region=${AWS_REGION}"
     log_success "Redeployment completed."
@@ -318,18 +334,21 @@ cmd_help() {
 Usage: ./deploy_aws.sh [COMMAND] [ARGS]
 
 Commands:
-  init                     Initialize Terraform providers and modules
-  plan                     Show proposed changes to AWS infrastructure
-  apply                    Provision or update infrastructure via Terraform
+  foundation-init          Initialize foundational Terraform (S3 Lake, OIDC Role, ECR)
+  foundation-plan          Show proposed changes to foundational infrastructure
+  foundation-apply         Provision or update foundational infrastructure
+  init                     Initialize workload Terraform providers and modules
+  plan                     Show proposed changes to workload AWS infrastructure
+  apply                    Provision or update workload infrastructure via Terraform
   build-push [SERVICE]     Build arm64 Graviton container and push to ECR (default: all)
   deploy [SERVICE]         Build, push to ECR, and update Lambda function code
   status                   Display live HTTPS Function URLs & outputs
-  destroy                  Tear down AWS resources safely
-  destroy-and-redeploy     Destroy and redeploy AWS infrastructure fully
+  destroy                  Tear down AWS workload resources safely
+  destroy-and-redeploy     Destroy and redeploy AWS workload infrastructure fully
   help                     Show this help message
 
 Options / Environment Variables:
-  AWS_REGION               AWS Region to target (default: us-east-1)
+  AWS_REGION               AWS Region to target (default: us-east-2)
   ApplicationName Tag      Mandatory project tag: "Observability-Demo" (applied automatically)
 
 Available Services:
@@ -350,6 +369,9 @@ EOF
 
 # Main Dispatcher
 case "${1:-help}" in
+  foundation-init)  cmd_foundation_init ;;
+  foundation-plan)  cmd_foundation_plan ;;
+  foundation-apply) cmd_foundation_apply ;;
   init)       cmd_init ;;
   plan)       cmd_plan ;;
   apply)      cmd_apply ;;

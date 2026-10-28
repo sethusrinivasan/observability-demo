@@ -91,23 +91,6 @@ logging.getLogger("opentelemetry.exporter.otlp").setLevel(logging.CRITICAL)
 logging.getLogger("opentelemetry.sdk").setLevel(logging.CRITICAL)
 
 # ---------------------------------------------------------------------------
-# Stub pkg_resources (removed in Python 3.13, still used by older OTel pkgs)
-# ---------------------------------------------------------------------------
-if "pkg_resources" not in sys.modules:
-    pkg = types.ModuleType("pkg_resources")
-    pkg.require = lambda *a, **kw: None
-
-    class _Dist:
-        def __init__(self, project_name="", version="0.0.0"):
-            self.project_name = project_name
-            self.version = version
-
-    pkg.get_distribution = lambda name: _Dist(name)
-    pkg.DistributionNotFound = Exception
-    pkg.VersionConflict = Exception
-    sys.modules["pkg_resources"] = pkg
-
-# ---------------------------------------------------------------------------
 # Stub FlaskInstrumentor so it's a no-op during tests
 # ---------------------------------------------------------------------------
 flask_instr_mod = types.ModuleType("opentelemetry.instrumentation.flask")

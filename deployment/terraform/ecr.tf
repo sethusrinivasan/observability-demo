@@ -1,3 +1,10 @@
+# ---------------------------------------------------------------------------
+# ECR Container Repository References (Workload Layer)
+# ---------------------------------------------------------------------------
+# The foundational ECR repositories are provisioned in deployment/terraform-foundation.
+# In the workload layer, we reference deterministic ECR image URIs so that
+# workload tear-down drills never delete the container images or registries.
+
 locals {
   services = [
     "observability-python-app",
@@ -12,52 +19,10 @@ locals {
     "observability-canary",
     "custom-telemetry-receiver"
   ]
-}
 
-resource "aws_ecr_repository" "services" {
-  for_each             = toset(local.services)
-  name                 = each.value
-  image_tag_mutability = "MUTABLE"
-  force_delete         = true
+  ecr_registry_url = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com"
 
-  image_scanning_configuration {
-    scan_on_push = true
+  service_image_urls = {
+    for svc in local.services : svc => "${local.ecr_registry_url}/${svc}"
   }
-}
-
-# Frugality Lifecycle: Only keep last 3 tagged images and purge untagged images after 1 day
-resource "aws_ecr_lifecycle_policy" "services" {
-  for_each   = aws_ecr_repository.services
-  repository = each.value.name
-
-  policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1
-        description  = "Expire untagged images older than 1 day"
-        selection = {
-          tagStatus   = "untagged"
-          countType   = "sinceImagePushed"
-          countUnit   = "days"
-          countNumber = 1
-        }
-        action = {
-          type = "expire"
-        }
-      },
-      {
-        rulePriority = 2
-        description  = "Keep only the last 3 tagged images to minimize ECR storage cost"
-        selection = {
-          tagStatus     = "tagged"
-          tagPrefixList = ["v", "latest", "sha-"]
-          countType     = "imageCountMoreThan"
-          countNumber   = 3
-        }
-        action = {
-          type = "expire"
-        }
-      }
-    ]
-  })
 }

@@ -69,6 +69,10 @@ resource "aws_iam_role" "github_actions_terraform" {
     Name            = "observability-demo-github-oidc-role"
     ApplicationName = var.app_name
   }
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # 3. Policy Permissions for Terraform Provisioning

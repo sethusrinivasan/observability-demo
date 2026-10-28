@@ -5,7 +5,7 @@ output "application_name_tag" {
 
 output "s3_telemetry_lake_bucket" {
   description = "Name of the S3 Telemetry Lake bucket"
-  value       = aws_s3_bucket.telemetry_lake.id
+  value       = local.bucket_name
 }
 
 output "canary_dashboard_url" {
@@ -27,7 +27,5 @@ output "microservice_urls" {
 
 output "ecr_repository_urls" {
   description = "Map of ECR repository URLs for pushing arm64 images"
-  value = {
-    for k, v in aws_ecr_repository.services : k => v.repository_url
-  }
+  value       = local.service_image_urls
 }

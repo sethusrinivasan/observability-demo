@@ -16,6 +16,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TF_DIR = (REPO_ROOT / "deployment" / "terraform") if (REPO_ROOT / "deployment" / "terraform").exists() else (REPO_ROOT / "terraform")
+FOUNDATION_DIR = (REPO_ROOT / "deployment" / "terraform-foundation")
 ROOT_DEPLOY_SCRIPT = REPO_ROOT / "deploy_aws.sh"
 DEPLOY_SCRIPT = (REPO_ROOT / "deployment" / "deploy_aws.sh") if (REPO_ROOT / "deployment" / "deploy_aws.sh").exists() else ROOT_DEPLOY_SCRIPT
 
@@ -88,16 +89,17 @@ def test_lambda_frugal_microvm_configurations():
 
 
 def test_terraform_fmt_and_validate():
-    """Verify Terraform configuration passes fmt check and validation."""
-    fmt_proc = subprocess.run(["terraform", "fmt", "-check", str(TF_DIR)], capture_output=True, text=True)
-    assert fmt_proc.returncode == 0, f"Terraform formatting errors:\n{fmt_proc.stdout}\n{fmt_proc.stderr}"
+    """Verify both workload and foundational Terraform configurations pass fmt and validation."""
+    for tf_path in (TF_DIR, FOUNDATION_DIR):
+        fmt_proc = subprocess.run(["terraform", "fmt", "-check", str(tf_path)], capture_output=True, text=True)
+        assert fmt_proc.returncode == 0, f"Terraform formatting errors in {tf_path}:\n{fmt_proc.stdout}\n{fmt_proc.stderr}"
 
-    val_proc = subprocess.run(
-        ["terraform", f"-chdir={TF_DIR}", "validate"],
-        capture_output=True,
-        text=True
-    )
-    assert val_proc.returncode == 0, f"Terraform validation failed:\n{val_proc.stderr}"
+        val_proc = subprocess.run(
+            ["terraform", f"-chdir={tf_path}", "validate"],
+            capture_output=True,
+            text=True
+        )
+        assert val_proc.returncode == 0, f"Terraform validation failed in {tf_path}:\n{val_proc.stderr}"
 
 
 def test_deploy_workflow_actions_configuration():
@@ -152,3 +154,31 @@ def test_deploy_workflow_actions_configuration():
     assert apply_step is not None, "Apply step missing"
     assert "github.event_name == 'push'" in apply_step["if"]
     assert "Destroy and redeploy" in apply_step["if"]
+
+
+def test_foundational_resources_prevent_destroy_guards():
+    """Verify foundational S3 backend bucket and CI IAM role enforce prevent_destroy = true."""
+    assert FOUNDATION_DIR.exists(), "deployment/terraform-foundation directory must exist"
+
+    s3_tf = (FOUNDATION_DIR / "s3.tf").read_text()
+    assert "prevent_destroy = true" in s3_tf, (
+        "aws_s3_bucket.telemetry_lake in terraform-foundation must enforce lifecycle { prevent_destroy = true }"
+    )
+
+    oidc_tf = (FOUNDATION_DIR / "github_oidc.tf").read_text()
+    assert "prevent_destroy = true" in oidc_tf, (
+        "aws_iam_role.github_actions_terraform in terraform-foundation must enforce lifecycle { prevent_destroy = true }"
+    )
+
+    ecr_tf = (FOUNDATION_DIR / "ecr.tf").read_text()
+    assert "aws_ecr_repository" in ecr_tf, "Foundational ECR repositories must be defined in terraform-foundation"
+
+    # Workload directory must not manage the S3 bucket or CI IAM role directly
+    workload_s3_tf = (TF_DIR / "s3.tf").read_text()
+    assert 'resource "aws_s3_bucket"' not in workload_s3_tf, (
+        "Workload terraform/s3.tf must reference S3 via data/locals, not manage the resource"
+    )
+    assert not (TF_DIR / "github_oidc.tf").exists(), (
+        "github_oidc.tf must not exist in workload terraform/ directory"
+    )
+

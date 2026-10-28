@@ -48,8 +48,8 @@ resource "aws_iam_policy" "collector_s3" {
           "s3:ListBucket"
         ]
         Resource = [
-          aws_s3_bucket.telemetry_lake.arn,
-          "${aws_s3_bucket.telemetry_lake.arn}/*"
+          local.telemetry_lake_arn,
+          "${local.telemetry_lake_arn}/*"
         ]
       }
     ]
@@ -96,8 +96,8 @@ resource "aws_iam_policy" "canary_s3_duckdb" {
           "s3:GetBucketLocation"
         ]
         Resource = [
-          aws_s3_bucket.telemetry_lake.arn,
-          "${aws_s3_bucket.telemetry_lake.arn}/*"
+          local.telemetry_lake_arn,
+          "${local.telemetry_lake_arn}/*"
         ]
       }
     ]

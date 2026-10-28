@@ -57,7 +57,7 @@ resource "aws_lambda_function" "apps" {
   function_name = "observability-${each.key}-app"
   role          = aws_iam_role.microservice_role.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.services[each.value.image_name].repository_url}:latest"
+  image_uri     = "${local.service_image_urls[each.value.image_name]}:latest"
   architectures = [lookup(each.value, "architecture", "arm64")]
   memory_size   = each.value.memory_size
   timeout       = each.key == "java" ? 30 : 15
@@ -110,7 +110,7 @@ resource "aws_lambda_function" "collector" {
   function_name                  = "observability-telemetry-collector"
   role                           = aws_iam_role.collector_role.arn
   package_type                   = "Image"
-  image_uri                      = "${aws_ecr_repository.services["custom-telemetry-receiver"].repository_url}:latest"
+  image_uri                      = "${local.service_image_urls["custom-telemetry-receiver"]}:latest"
   architectures                  = ["arm64"]
   memory_size                    = 256
   timeout                        = 30
@@ -122,7 +122,7 @@ resource "aws_lambda_function" "collector" {
       AWS_LWA_READINESS_CHECK_PATH      = "/health"
       AWS_LWA_INVOKE_MODE               = "buffered"
       AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS = "0"
-      S3_BUCKET_NAME                    = aws_s3_bucket.telemetry_lake.id
+      S3_BUCKET_NAME                    = local.bucket_name
       S3_ENDPOINT_URL                   = "https://s3.${var.aws_region}.amazonaws.com"
       BUFFER_DIR                        = "/tmp/telemetry_buffer"
       MAX_PARQUET_FILE_SIZE_BYTES       = "10485760" # 10 MB Compaction limit
@@ -155,7 +155,7 @@ resource "aws_lambda_function" "canary" {
   function_name = "observability-canary-dashboard"
   role          = aws_iam_role.canary_role.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.services["observability-canary"].repository_url}:latest"
+  image_uri     = "${local.service_image_urls["observability-canary"]}:latest"
   architectures = ["arm64"]
   memory_size   = 512 # 512 MB accommodates DuckDB in-process OLAP execution
   timeout       = 60
@@ -168,7 +168,7 @@ resource "aws_lambda_function" "canary" {
       AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS = "0"
       CANARY_TPM                        = "6"
       CANARY_RATE_UNIT                  = "TPM"
-      S3_BUCKET_NAME                    = aws_s3_bucket.telemetry_lake.id
+      S3_BUCKET_NAME                    = local.bucket_name
       S3_ENDPOINT_URL                   = "https://s3.${var.aws_region}.amazonaws.com"
       TELEMETRY_RECEIVER_URL            = trimsuffix(aws_lambda_function_url.collector_url.function_url, "/")
       OTEL_EXPORTER_OTLP_ENDPOINT       = trimsuffix(aws_lambda_function_url.collector_url.function_url, "/")

@@ -22,9 +22,6 @@ services:
     image: grafana/tempo:3.0.0
     container_name: tempo
     restart: unless-stopped
-    depends_on:
-      redpanda:
-        condition: service_healthy
     volumes:
       - ./config/tempo.yaml:/etc/tempo/config.yaml
       - tempo-data:/var/tempo

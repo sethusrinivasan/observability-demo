@@ -72,19 +72,18 @@ jobs:
 
           echo "=== 1. Checking Foundational S3 Backend Bucket: ${STATE_BUCKET} ==="
           if ! aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>/dev/null; then
-            echo "Backend bucket ${STATE_BUCKET} does not exist. Creating..."
+            echo "Backend bucket ${STATE_BUCKET} does not exist or requires creation. Attempting..."
             if [ "$REGION" = "us-east-1" ]; then
-              aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}"
+              aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}" 2>/dev/null || echo "Note: s3:CreateBucket skipped or delegated."
             else
               aws s3api create-bucket --bucket "${STATE_BUCKET}" --region "${REGION}" \
-                --create-bucket-configuration LocationConstraint="${REGION}"
+                --create-bucket-configuration LocationConstraint="${REGION}" 2>/dev/null || echo "Note: s3:CreateBucket skipped or delegated."
             fi
             aws s3api put-bucket-versioning --bucket "${STATE_BUCKET}" --versioning-configuration Status=Disabled 2>/dev/null || true
             aws s3api put-bucket-encryption --bucket "${STATE_BUCKET}" \
               --server-side-encryption-configuration '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}' 2>/dev/null || true
             aws s3api put-bucket-tagging --bucket "${STATE_BUCKET}" \
               --tagging "TagSet=[{Key=ApplicationName,Value=Observability-Demo},{Key=ManagedBy,Value=Terraform}]" 2>/dev/null || true
-            echo "Created foundational backend bucket: ${STATE_BUCKET}"
           else
             echo "Foundational backend bucket ${STATE_BUCKET} is active and ready."
           fi
@@ -211,26 +210,14 @@ jobs:
             echo "Bucket ${BASE_BUCKET} does not exist. Skipping archive."
           fi
 
-      - name: Terraform Destroy (Clean Slate)
+      - name: Terraform Destroy Workload (Clean Slate for Redeploy)
         id: destroy
         if: github.ref == 'refs/heads/main' && (github.event.inputs.action == 'Destroy and redeploy' || github.event.inputs.action == 'destroy-and-redeploy' || github.event.inputs.action == 'destroy')
         run: |
           ACTION="${{ github.event.inputs.action }}"
           REGION="${{ secrets.AWS_REGION || 'us-east-2' }}"
-
-          if [ "$ACTION" = "destroy" ]; then
-            echo "Decommissioning all AWS infrastructure..."
-            terraform destroy -auto-approve -var="aws_region=${REGION}" || true
-          else
-            echo "Gameday teardown: targeting application workload resources while preserving state store and ECR images..."
-            TARGETS=$(terraform state list 2>/dev/null | grep -v -E '^aws_s3_bucket|^aws_ecr_|^aws_iam_openid_connect_provider|^aws_iam_role\.github_actions|^aws_iam_policy\.github_actions|^aws_iam_role_policy_attachment\.github_actions' | sed 's/^/-target=/' | tr '\n' ' ' || true)
-            if [ -n "$TARGETS" ]; then
-              echo "Workload resources to destroy: $TARGETS"
-              terraform destroy -auto-approve $TARGETS -var="aws_region=${REGION}"
-            else
-              echo "No workload resources found in state to destroy."
-            fi
-          fi
+          echo "Workload teardown in deployment/terraform: Foundational S3 bucket, OIDC CI role, and ECR repositories remain completely isolated in deployment/terraform-foundation."
+          terraform destroy -auto-approve -var="aws_region=${REGION}"
 
       - name: Terraform Plan
         id: plan
