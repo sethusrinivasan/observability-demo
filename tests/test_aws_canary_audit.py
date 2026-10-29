@@ -21,11 +21,11 @@ import pytest
 
 AWS_CANARY_URL = os.getenv(
     "AWS_CANARY_URL",
-    "https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws"
+    "https://236mcyozjcjlmhngkx75qcae7q0kabru.lambda-url.us-east-2.on.aws"
 )
 AWS_COLLECTOR_URL = os.getenv(
     "AWS_COLLECTOR_URL",
-    "https://67lv2o2bb26q6thqvfcep2re3i0sjrom.lambda-url.us-east-2.on.aws"
+    "https://26ey7wseq2ufs3zetr7ip5ljvi0reoht.lambda-url.us-east-2.on.aws"
 )
 EXPECTED_BUCKET = os.getenv(
     "AWS_S3_BUCKET",
