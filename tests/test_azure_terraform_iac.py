@@ -73,6 +73,8 @@ def test_azure_terraform_files_exist():
         "container_apps_env.tf",
         "container_apps.tf",
         "event_grid.tf",
+        "postgres.tf",
+        "identity.tf",
         "outputs.tf",
         "versions.tf",
     ]
@@ -188,6 +190,31 @@ def test_deploy_azure_workflow_actions_configuration():
     apply_step = step_map.get("apply")
     assert apply_step is not None
     assert "github.event_name == 'push'" in apply_step["if"]
+
+
+def test_azure_frugal_postgres_flexible_server():
+    """Verify Azure PostgreSQL Flexible Server is frugal, protected, and supports query fingerprinting."""
+    pg_tf = (AZURE_TF_DIR / "postgres.tf").read_text()
+    assert 'sku_name   = "B_Standard_B1ms"' in pg_tf, "PostgreSQL must use frugal Burstable B1ms SKU"
+    assert "storage_mb = 32768" in pg_tf, "PostgreSQL must use 32GB minimum storage"
+    assert "auto_grow_enabled     = false" in pg_tf, "auto_grow_enabled must be false to prevent cost surprises"
+    assert "prevent_destroy = true" in pg_tf, "PostgreSQL must enforce prevent_destroy = true"
+    assert 'name      = "shared_preload_libraries"' in pg_tf
+    assert 'value     = "pg_stat_statements"' in pg_tf, "pg_stat_statements must be enabled for query fingerprinting"
+    assert 'name      = "observability"' in pg_tf, "observability database must be provisioned"
+
+
+def test_azure_passwordless_workload_identity():
+    """Verify passwordless workload authentication via Managed Identity for ACR, Storage, and Container Apps."""
+    identity_tf = (AZURE_TF_DIR / "identity.tf").read_text()
+    assert "azurerm_user_assigned_identity" in identity_tf
+    assert "uami-" in identity_tf
+    assert '"AcrPull"' in identity_tf, "Workload identity must be granted AcrPull role"
+    assert '"Storage Blob Data Contributor"' in identity_tf, "Workload identity must be granted Storage Blob Data Contributor"
+
+    apps_tf = (AZURE_TF_DIR / "container_apps.tf").read_text()
+    assert "azurerm_user_assigned_identity.workload.id" in apps_tf, "Container apps must attach workload managed identity"
+    assert "identity = azurerm_user_assigned_identity.workload.id" in apps_tf, "ACR registry pull must use managed identity"
 
 
 def test_azure_terraform_fmt_and_validate():

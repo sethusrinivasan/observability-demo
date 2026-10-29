@@ -44,6 +44,13 @@ resource "azurerm_role_assignment" "github_rg_contributor" {
   principal_id         = azurerm_user_assigned_identity.github_actions.principal_id
 }
 
+# Role Assignment: User Access Administrator on Resource Group (allows assigning AcrPull / Blob roles to workload Managed Identity)
+resource "azurerm_role_assignment" "github_rg_user_access_admin" {
+  scope                = azurerm_resource_group.foundation.id
+  role_definition_name = "User Access Administrator"
+  principal_id         = azurerm_user_assigned_identity.github_actions.principal_id
+}
+
 # Role Assignment: Storage Blob Data Contributor on Foundational Telemetry Lake
 resource "azurerm_role_assignment" "github_storage_blob_contributor" {
   scope                = azurerm_storage_account.lake.id

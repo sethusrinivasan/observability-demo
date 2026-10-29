@@ -28,8 +28,32 @@ variable "storage_account_name" {
   default     = ""
 }
 
+variable "acr_name" {
+  description = "Name of the Azure Container Registry for image pulls"
+  type        = string
+  default     = ""
+}
+
 variable "acr_login_server" {
   description = "ACR login server endpoint (or custom container registry)"
+  type        = string
+  default     = ""
+}
+
+variable "azure_tenant_id" {
+  description = "Microsoft Entra ID (Azure AD) tenant ID for passwordless authentication"
+  type        = string
+  default     = ""
+}
+
+variable "aad_admin_object_id" {
+  description = "Microsoft Entra ID Object ID for PostgreSQL passwordless admin"
+  type        = string
+  default     = ""
+}
+
+variable "aad_admin_principal_name" {
+  description = "Microsoft Entra ID principal name (user or group email) for PostgreSQL admin"
   type        = string
   default     = ""
 }

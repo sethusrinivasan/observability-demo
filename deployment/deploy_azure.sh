@@ -132,15 +132,74 @@ cmd_init() {
 cmd_plan() {
   check_prereqs
   log_info "Running Terraform Plan for Azure Workload (ApplicationName=${APP_TAG})..."
-  run_with_retry 3 5 terraform -chdir="${TF_DIR}" plan -var="azure_location=${AZURE_LOCATION}"
+  local extra_vars=()
+  local storage_account acr_server acr_name
+  storage_account=$(terraform -chdir="${FOUNDATION_DIR}" output -raw storage_account_name 2>/dev/null || echo "")
+  acr_server=$(terraform -chdir="${FOUNDATION_DIR}" output -raw acr_login_server 2>/dev/null || echo "")
+  acr_name=$(terraform -chdir="${FOUNDATION_DIR}" output -raw acr_name 2>/dev/null || echo "")
+  [ -n "${storage_account}" ] && extra_vars+=("-var=storage_account_name=${storage_account}")
+  [ -n "${acr_server}" ] && extra_vars+=("-var=acr_login_server=${acr_server}")
+  [ -n "${acr_name}" ] && extra_vars+=("-var=acr_name=${acr_name}")
+
+  run_with_retry 3 5 terraform -chdir="${TF_DIR}" plan -var="azure_location=${AZURE_LOCATION}" "${extra_vars[@]}"
 }
 
 cmd_apply() {
   check_prereqs
   log_info "Applying Azure Workload Infrastructure for ${BOLD}${APP_TAG}${NC} in ${AZURE_LOCATION}..."
-  run_with_retry 3 10 terraform -chdir="${TF_DIR}" apply -auto-approve -var="azure_location=${AZURE_LOCATION}"
+  local extra_vars=()
+  local storage_account acr_server acr_name
+  storage_account=$(terraform -chdir="${FOUNDATION_DIR}" output -raw storage_account_name 2>/dev/null || echo "")
+  acr_server=$(terraform -chdir="${FOUNDATION_DIR}" output -raw acr_login_server 2>/dev/null || echo "")
+  acr_name=$(terraform -chdir="${FOUNDATION_DIR}" output -raw acr_name 2>/dev/null || echo "")
+  [ -n "${storage_account}" ] && extra_vars+=("-var=storage_account_name=${storage_account}")
+  [ -n "${acr_server}" ] && extra_vars+=("-var=acr_login_server=${acr_server}")
+  [ -n "${acr_name}" ] && extra_vars+=("-var=acr_name=${acr_name}")
+
+  run_with_retry 3 10 terraform -chdir="${TF_DIR}" apply -auto-approve -var="azure_location=${AZURE_LOCATION}" "${extra_vars[@]}"
   log_success "Azure workload Terraform apply completed."
   cmd_status
+}
+
+cmd_build_push() {
+  check_prereqs
+  local target="${1:-all}"
+  local acr_server acr_name
+  acr_server=$(terraform -chdir="${FOUNDATION_DIR}" output -raw acr_login_server 2>/dev/null || echo "")
+  acr_name=$(terraform -chdir="${FOUNDATION_DIR}" output -raw acr_name 2>/dev/null || echo "")
+
+  if [ -z "${acr_server}" ] && [ -n "${ACR_LOGIN_SERVER:-}" ]; then
+    acr_server="${ACR_LOGIN_SERVER}"
+  fi
+
+  if [ -z "${acr_server}" ]; then
+    log_error "ACR login server could not be detected. Run './deploy_azure.sh foundation-apply' first or set ACR_LOGIN_SERVER."
+    exit 1
+  fi
+
+  log_info "Authenticating with Azure Container Registry: ${acr_server}..."
+  if command -v az >/dev/null 2>&1 && [ -n "${acr_name}" ]; then
+    az acr login --name "${acr_name}" || log_warn "az acr login failed; proceeding with existing Docker credentials..."
+  fi
+
+  for entry in "${SERVICES[@]}"; do
+    local svc="${entry%%:*}"
+    local dockerfile="${entry##*:}"
+
+    if [ "${target}" != "all" ] && [ "${target}" != "${svc}" ]; then
+      continue
+    fi
+
+    log_info "Building and pushing frugal container image for ${BOLD}${svc}${NC}..."
+    run_with_retry 3 5 docker buildx build \
+      --platform linux/amd64 \
+      --provenance=false \
+      -f "${REPO_ROOT}/${dockerfile}" \
+      -t "${acr_server}/${svc}:latest" \
+      --push \
+      "${REPO_ROOT}"
+    log_success "Pushed ${acr_server}/${svc}:latest"
+  done
 }
 
 cmd_status() {
@@ -248,6 +307,7 @@ Commands:
   init                     Initialize workload Azure Terraform providers and modules
   plan                     Show proposed changes to workload Azure infrastructure
   apply                    Provision or update workload infrastructure via Terraform
+  build-push [SVC]         Build amd64 container image and push to ACR (default: all)
   status                   Display live Azure Container App HTTPS URLs & outputs
   destroy                  Tear down Azure workload resources safely
   destroy-and-redeploy     Archive blob container with numbered suffix & redeploy cleanly
@@ -267,6 +327,7 @@ case "${1:-help}" in
   init)             cmd_init ;;
   plan)             cmd_plan ;;
   apply)            cmd_apply ;;
+  build-push)       cmd_build_push "${2:-all}" ;;
   status)           cmd_status ;;
   destroy)          cmd_destroy ;;
   redeploy|destroy-and-redeploy) cmd_redeploy ;;

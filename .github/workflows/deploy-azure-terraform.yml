@@ -64,6 +64,18 @@ jobs:
           if command -v az >/dev/null 2>&1; then
             echo "Azure CLI available. Checking Resource Group: ${RG_NAME}..."
             az group show --name "${RG_NAME}" 2>/dev/null || echo "Resource Group will be managed by Terraform foundation."
+
+            if [ -d "../terraform-azure-foundation" ]; then
+              echo "Checking foundational Azure infrastructure..."
+              terraform -chdir="../terraform-azure-foundation" init -backend=false
+              terraform -chdir="../terraform-azure-foundation" apply -auto-approve -var="azure_location=${LOCATION}" || true
+              STORAGE_ACCOUNT=$(terraform -chdir="../terraform-azure-foundation" output -raw storage_account_name 2>/dev/null || echo "")
+              ACR_SERVER=$(terraform -chdir="../terraform-azure-foundation" output -raw acr_login_server 2>/dev/null || echo "")
+              ACR_NAME=$(terraform -chdir="../terraform-azure-foundation" output -raw acr_name 2>/dev/null || echo "")
+              echo "FOUNDATION_STORAGE_ACCOUNT=${STORAGE_ACCOUNT}" >> $GITHUB_ENV
+              echo "FOUNDATION_ACR_SERVER=${ACR_SERVER}" >> $GITHUB_ENV
+              echo "FOUNDATION_ACR_NAME=${ACR_NAME}" >> $GITHUB_ENV
+            fi
           fi
 
       - name: Setup Terraform
@@ -172,10 +184,16 @@ jobs:
         run: |
           MAX_RETRIES=3
           RETRY_DELAY=5
+          EXTRA_VARS=""
+          [ -n "$FOUNDATION_STORAGE_ACCOUNT" ] && EXTRA_VARS="$EXTRA_VARS -var=storage_account_name=$FOUNDATION_STORAGE_ACCOUNT"
+          [ -n "$FOUNDATION_ACR_SERVER" ] && EXTRA_VARS="$EXTRA_VARS -var=acr_login_server=$FOUNDATION_ACR_SERVER"
+          [ -n "$FOUNDATION_ACR_NAME" ] && EXTRA_VARS="$EXTRA_VARS -var=acr_name=$FOUNDATION_ACR_NAME"
+
           for attempt in $(seq 1 $MAX_RETRIES); do
             echo "Attempt $attempt/$MAX_RETRIES: Generating Azure execution plan..."
             if terraform plan -no-color \
               -var="azure_location=${{ secrets.AZURE_LOCATION || 'eastus2' }}" \
+              $EXTRA_VARS \
               -out=tfplan; then
               echo "Azure Terraform plan generated successfully."
               exit 0
@@ -195,6 +213,11 @@ jobs:
         run: |
           MAX_RETRIES=3
           RETRY_DELAY=10
+          EXTRA_VARS=""
+          [ -n "$FOUNDATION_STORAGE_ACCOUNT" ] && EXTRA_VARS="$EXTRA_VARS -var=storage_account_name=$FOUNDATION_STORAGE_ACCOUNT"
+          [ -n "$FOUNDATION_ACR_SERVER" ] && EXTRA_VARS="$EXTRA_VARS -var=acr_login_server=$FOUNDATION_ACR_SERVER"
+          [ -n "$FOUNDATION_ACR_NAME" ] && EXTRA_VARS="$EXTRA_VARS -var=acr_name=$FOUNDATION_ACR_NAME"
+
           for attempt in $(seq 1 $MAX_RETRIES); do
             echo "Attempt $attempt/$MAX_RETRIES: Applying Azure Terraform configuration..."
             if terraform apply -auto-approve tfplan; then
@@ -208,7 +231,7 @@ jobs:
             echo "Terraform apply encountered an error. Re-generating plan and retrying in ${RETRY_DELAY}s..."
             sleep $RETRY_DELAY
             RETRY_DELAY=$((RETRY_DELAY * 2))
-            terraform plan -no-color -var="azure_location=${{ secrets.AZURE_LOCATION || 'eastus2' }}" -out=tfplan || true
+            terraform plan -no-color -var="azure_location=${{ secrets.AZURE_LOCATION || 'eastus2' }}" $EXTRA_VARS -out=tfplan || true
           done
 
       - name: Verify Live Azure Deployment & Telemetry Lake
@@ -217,5 +240,7 @@ jobs:
         run: |
           CANARY_URL=$(terraform output -raw canary_dashboard_url 2>/dev/null || echo "")
           COLLECTOR_URL=$(terraform output -raw telemetry_collector_url 2>/dev/null || echo "")
+          POSTGRES_HOST=$(terraform output -raw postgres_fqdn 2>/dev/null || echo "")
           echo "Azure Canary Dashboard: ${CANARY_URL}"
           echo "Azure Telemetry Receiver: ${COLLECTOR_URL}"
+          echo "Azure PostgreSQL Flexible Server: ${POSTGRES_HOST}"
