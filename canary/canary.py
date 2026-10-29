@@ -11261,6 +11261,13 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
             self._send_cors_headers()
             self.end_headers()
 
+        def do_HEAD(self):
+            self.send_response(200)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def do_GET(self):
             # Capture incoming external host if non-localhost
             host_header = self.headers.get("Host", "")

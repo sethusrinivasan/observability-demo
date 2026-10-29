@@ -268,6 +268,34 @@ cmd_status() {
   echo -e "  AWS Region:          ${CYAN}${AWS_REGION}${NC}"
   echo -e "${BOLD}================================================================${NC}"
   
+  local canary_url
+  canary_url=$(terraform -chdir="${TF_DIR}" output -raw canary_dashboard_url 2>/dev/null || echo "")
+  local collector_url
+  collector_url=$(terraform -chdir="${TF_DIR}" output -raw telemetry_collector_url 2>/dev/null || echo "")
+  local s3_bucket
+  s3_bucket=$(terraform -chdir="${TF_DIR}" output -raw s3_telemetry_lake_bucket 2>/dev/null || echo "")
+
+  if [ -n "${canary_url}" ]; then
+    echo -e "${BOLD}Operational Dashboards & Ingest:${NC}"
+    echo -e "  • Canary Operations Dashboard:  ${GREEN}${canary_url}${NC}"
+    echo -e "  • Telemetry Ingest (OTLP 4318): ${GREEN}${collector_url}${NC}"
+    echo -e "  • S3 Parquet Telemetry Lake:    ${CYAN}s3://${s3_bucket}${NC}"
+    echo ""
+    echo -e "${BOLD}Polyglot Microservices Endpoints (Clickable):${NC}"
+    local apps_json
+    apps_json=$(terraform -chdir="${TF_DIR}" output -json microservice_urls 2>/dev/null || echo "{}")
+    python3 -c "
+import json
+try:
+    apps = json.loads('''${apps_json}''')
+    for k, v in sorted(apps.items()):
+        print(f'  • {k.upper():7} : {v.rstrip(\"/\")}/version')
+except Exception:
+    pass
+" 2>/dev/null || true
+    echo ""
+  fi
+
   terraform -chdir="${TF_DIR}" output || true
   echo ""
 }

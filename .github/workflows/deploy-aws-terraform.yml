@@ -47,7 +47,7 @@ jobs:
         continue-on-error: true
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME || 'arn:aws:iam::596090776030:role/observability-demo-github-oidc-role' }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-2' }}
+          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-2' }}
           audience: sts.amazonaws.com
           role-session-name: GitHubActions-Terraform-Deployment
 
@@ -58,13 +58,13 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-2' }}
+          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-2' }}
 
       - name: Pre-flight Bootstrap & Self-Healing Infrastructure
         id: bootstrap
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text 2>/dev/null || echo "596090776030")
-          REGION="${{ secrets.AWS_REGION || 'us-east-2' }}"
+          REGION="${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-2' }}"
           STATE_BUCKET="${{ secrets.AWS_S3_BUCKET || '' }}"
           if [ -z "$STATE_BUCKET" ]; then
             STATE_BUCKET="observability-demo-telemetry-lake-${ACCOUNT_ID}"
@@ -407,7 +407,7 @@ jobs:
         if: github.ref == 'refs/heads/main' && (github.event.inputs.action == 'Destroy and redeploy' || github.event.inputs.action == 'destroy-and-redeploy' || github.event.inputs.action == 'destroy')
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text 2>/dev/null || echo "596090776030")
-          REGION="${{ secrets.AWS_REGION || 'us-east-2' }}"
+          REGION="${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-2' }}"
           BASE_BUCKET="${{ secrets.AWS_S3_BUCKET || '' }}"
           if [ -z "$BASE_BUCKET" ]; then
             BASE_BUCKET="observability-demo-telemetry-lake-${ACCOUNT_ID}"
@@ -457,7 +457,7 @@ jobs:
         if: github.ref == 'refs/heads/main' && (github.event.inputs.action == 'Destroy and redeploy' || github.event.inputs.action == 'destroy-and-redeploy' || github.event.inputs.action == 'destroy')
         run: |
           ACTION="${{ github.event.inputs.action }}"
-          REGION="${{ secrets.AWS_REGION || 'us-east-2' }}"
+          REGION="${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-2' }}"
           RDS_DB="reality-check-cost-tracker"
 
           echo "=== 1. Guarding RDS PostgreSQL Database & Foundational Resources ==="
@@ -500,7 +500,7 @@ jobs:
           for attempt in $(seq 1 $MAX_RETRIES); do
             echo "Attempt $attempt/$MAX_RETRIES: Generating execution plan..."
             if terraform plan -no-color \
-              -var="aws_region=${{ secrets.AWS_REGION || 'us-east-2' }}" \
+              -var="aws_region=${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-2' }}" \
               -out=tfplan; then
               echo "Terraform plan generated successfully."
               exit 0
@@ -533,7 +533,7 @@ jobs:
             echo "Terraform apply encountered an error. Re-generating plan and retrying in ${RETRY_DELAY}s..."
             sleep $RETRY_DELAY
             RETRY_DELAY=$((RETRY_DELAY * 2))
-            terraform plan -no-color -var="aws_region=${{ secrets.AWS_REGION || 'us-east-2' }}" -out=tfplan || true
+            terraform plan -no-color -var="aws_region=${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-2' }}" -out=tfplan || true
           done
 
       - name: Verify Live AWS Deployment & Telemetry Lake
@@ -551,3 +551,104 @@ jobs:
             curl -s -m 15 "$AWS_CANARY_URL/api/dependencies" || true
           fi
           pytest ../../tests/test_aws_canary_audit.py -v --tb=short
+
+      - name: Report Clickable AWS Deployment URIs & Endpoints
+        id: report_urls
+        if: always() && steps.apply.outcome == 'success'
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text 2>/dev/null || echo "596090776030")
+          REGION="${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-2' }}"
+          CANARY_URL=$(terraform output -raw canary_dashboard_url 2>/dev/null || echo "")
+          COLLECTOR_URL=$(terraform output -raw telemetry_collector_url 2>/dev/null || echo "")
+          S3_BUCKET=$(terraform output -raw s3_telemetry_lake_bucket 2>/dev/null || echo "")
+          APP_TAG=$(terraform output -raw application_name_tag 2>/dev/null || echo "Observability-Demo")
+          TF_APPS_JSON=$(terraform output -json microservice_urls 2>/dev/null || echo "{}")
+
+          python3 - <<EOF
+          import json, os
+
+          region = "${REGION}"
+          account_id = "${ACCOUNT_ID}"
+          canary_url = "${CANARY_URL}"
+          collector_url = "${COLLECTOR_URL}"
+          s3_bucket = "${S3_BUCKET}"
+          app_tag = "${APP_TAG}"
+          raw_apps = '''${TF_APPS_JSON}'''
+
+          try:
+              apps = json.loads(raw_apps)
+          except Exception:
+              apps = {}
+
+          # Generate Markdown Table for \$GITHUB_STEP_SUMMARY
+          summary_lines = [
+              f"# 🚀 AWS Deployment Summary: {app_tag}",
+              f"",
+              f"**AWS Region**: \`{region}\` | **AWS Account**: \`{account_id}\`",
+              f"",
+              f"### 🌐 Primary Workload & Operational Dashboards",
+              f"",
+              f"| Component | Target URL | Direct Link | Health Endpoint |",
+              f"| :--- | :--- | :---: | :---: |",
+              f"| **Canary Operations & DuckDB Dashboard** | \`{canary_url}\` | [🔗 Open Dashboard]({canary_url}) | [🩺 /health]({canary_url.rstrip('/')}/health) |",
+              f"| **Telemetry Collector (OTLP 4318 Ingest)** | \`{collector_url}\` | [🔗 Open Ingest]({collector_url}) | [🩺 /health]({collector_url.rstrip('/')}/health) |",
+              f"",
+              f"### ⚡ Polyglot Microservices (Graviton MicroVMs)",
+              f"",
+              f"| Microservice | Language / Framework | Function URL | Version API | Health / Probes |",
+              f"| :--- | :--- | :--- | :---: | :---: |",
+          ]
+
+          service_metadata = {
+              "c": ("POSIX C99", "pthreads / libpq"),
+              "dotnet": (".NET 8.0", "ASP.NET Core"),
+              "go": ("Go 1.25", "net/http"),
+              "java": ("JDK 21", "Spring Boot"),
+              "node": ("Node.js 22 LTS", "Express"),
+              "php": ("PHP 8.3 CLI", "PDO pgsql"),
+              "python": ("Python 3.11", "Flask"),
+              "rust": ("Rust 1.77", "Axum"),
+              "swift": ("Swift 6.0", "Standard Library"),
+          }
+
+          for svc_key, url in sorted(apps.items()):
+              clean_url = url.rstrip("/")
+              meta = service_metadata.get(svc_key, (svc_key.capitalize(), "MicroVM"))
+              summary_lines.append(
+                  f"| **{svc_key.upper()} App** | {meta[0]} ({meta[1]}) | \`{clean_url}\` | [🔎 /version]({clean_url}/version) | [🩺 /health]({clean_url}/health) |"
+              )
+
+          s3_console_url = f"https://s3.console.aws.amazon.com/s3/buckets/{s3_bucket}?region={region}&tab=objects"
+          cloudwatch_url = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#dashboards:"
+
+          summary_lines.extend([
+              f"",
+              f"### 🗄️ AWS Storage & Telemetry Lake",
+              f"",
+              f"| Resource | Resource Name | AWS Management Console Direct Link |",
+              f"| :--- | :--- | :--- |",
+              f"| **S3 Telemetry Parquet Lake** | \`{s3_bucket}\` | [📂 View S3 Bucket Objects]({s3_console_url}) |",
+              f"| **CloudWatch Dashboards** | Observability Dashboards | [📊 CloudWatch Console]({cloudwatch_url}) |",
+              f"",
+              f"> 💡 **Tip**: All URLs listed above are publicly accessible over HTTPS and secured via IAM execution roles and Lambda Function URLs without API Gateway fees.",
+          ])
+
+          summary_md = "\n".join(summary_lines)
+
+          # Write to GITHUB_STEP_SUMMARY
+          step_summary_file = os.getenv("GITHUB_STEP_SUMMARY")
+          if step_summary_file:
+              with open(step_summary_file, "a", encoding="utf-8") as f:
+                  f.write(summary_md + "\n")
+
+          # Print clean clickable URIs to job console
+          print("=" * 80)
+          print("LIVE AWS DEPLOYMENT URLS (CLICKABLE IN GITHUB ACTIONS SUMMARY)")
+          print("=" * 80)
+          print(f"CANARY DASHBOARD:   {canary_url}")
+          print(f"TELEMETRY RECEIVER: {collector_url}")
+          print(f"S3 BUCKET CONSOLE:  {s3_console_url}")
+          for k, u in sorted(apps.items()):
+              print(f"MICROSERVICE ({k:6}): {u.rstrip('/')}/version")
+          print("=" * 80)
+          EOF

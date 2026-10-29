@@ -3,7 +3,7 @@
 <div align="center">
 
 [![Live Cloudflare Showcase](https://img.shields.io/badge/Live%20Showcase-Cloudflare%20Tunnel-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://friend-architecture-basket-subjective.trycloudflare.com)
-[![Live AWS Deployment](https://img.shields.io/badge/Live%20AWS-Graviton%20MicroVMs-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws/)
+[![Live AWS Deployment](https://img.shields.io/badge/Live%20AWS-Graviton%20MicroVMs-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://236mcyozjcjlmhngkx75qcae7q0kabru.lambda-url.us-east-2.on.aws/)
 [![Live Verification](https://img.shields.io/github/actions/workflow/status/sethusrinivasan/observability-demo/live-verification.yml?branch=main&label=Live%20Tests&style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/sethusrinivasan/observability-demo/actions/workflows/live-verification.yml)
 [![Built with Google Antigravity](https://img.shields.io/badge/Built%20with-Google%20Antigravity-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://deepmind.google/technologies/)
 [![AI Assisted: Gemini](https://img.shields.io/badge/AI%20Assisted-Gemini%20CLI-8E75C4?style=for-the-badge&logo=google-gemini&logoColor=white)](https://deepmind.google/technologies/gemini/)
@@ -72,17 +72,17 @@ The entire polyglot stack can be deployed to **AWS Lambda Firecracker MicroVMs**
 
 | Component | Architecture / Runtime | Public Function URL | Status |
 |:---|:---|:---|:---:|
-| **Canary Web Dashboard** | Lambda Web Adapter / Python 3.11 | [Canary Dashboard](https://kc25dgfws7f4oqbowcxhgpqwii0uyzxa.lambda-url.us-east-2.on.aws/) | `200 OK` (Green) |
-| **Telemetry Collector & Lake** | LWA / Snappy Parquet Compactor | [OTLP Ingest](https://67lv2o2bb26q6thqvfcep2re3i0sjrom.lambda-url.us-east-2.on.aws/) | `200 OK` (Green) |
-| **Python App** | 128 MB Graviton MicroVM / Flask | [Python App URL](https://2lwrbu2cc7bx7ay2ojapxsbqtq0andff.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **Java App** | 1024 MB Graviton MicroVM / Spring Boot | [Java App URL](https://2sqsnt447ofmtmjkdpoo36itlm0tifhq.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **Rust App** | 128 MB Graviton MicroVM / Axum | [Rust App URL](https://rq6puxwjoxx2sp5eeg3g4duy4i0bdjzs.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **Node.js App** | 128 MB Graviton MicroVM / Express | [Node App URL](https://7i7ewi4cvrpdzneou5qamrajsm0nwwkm.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **Go App** | 128 MB Graviton MicroVM / Go 1.25 | [Go App URL](https://vnh6kor267jkevye5uvvhcqfu40sffvo.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **.NET App** | 128 MB Graviton MicroVM / ASP.NET 8 | [.NET App URL](https://xppqo7vskzfjddbotn2mcaqgpe0wywzp.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **C App** | 128 MB Graviton MicroVM / POSIX C99 | [C App URL](https://daglnsziyvvlt572qmkzr2xmjm0unpef.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **PHP App** | 128 MB Graviton MicroVM / PHP 8.3 CLI | [PHP App URL](https://7izlc4ipjgw7uvgppjr7jiyymq0fxizg.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
-| **Swift App** | 128 MB MicroVM / Swift | [Swift App URL](https://mk55snvnmmrerw22ptjwtusnly0rzuma.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Canary Web Dashboard** | Lambda Web Adapter / Python 3.11 | [Canary Dashboard](https://236mcyozjcjlmhngkx75qcae7q0kabru.lambda-url.us-east-2.on.aws/) | `200 OK` (Green) |
+| **Telemetry Collector & Lake** | LWA / Snappy Parquet Compactor | [OTLP Ingest](https://26ey7wseq2ufs3zetr7ip5ljvi0reoht.lambda-url.us-east-2.on.aws/) | `200 OK` (Green) |
+| **Python App** | 128 MB Graviton MicroVM / Flask | [Python App URL](https://mxhrcxceaeluv6gu2cod4quwpm0kfydz.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Java App** | 1024 MB Graviton MicroVM / Spring Boot | [Java App URL](https://c5nmwnntg56s7v6gr2cowlmqqm0bcovb.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Rust App** | 128 MB Graviton MicroVM / Axum | [Rust App URL](https://nulam6s4glkv2wafy6tcrjn2j40fyhim.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Node.js App** | 128 MB Graviton MicroVM / Express | [Node App URL](https://xo3ktoqz6qz3dm5o64hvgm22mq0zkqat.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Go App** | 128 MB Graviton MicroVM / Go 1.25 | [Go App URL](https://h74bl44slegkr7c6h32hyygzui0djbvn.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **.NET App** | 128 MB Graviton MicroVM / ASP.NET 8 | [.NET App URL](https://4o5yjl47yxdg5e5tsj727mchb40evddy.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **C App** | 128 MB Graviton MicroVM / POSIX C99 | [C App URL](https://omtosemwg4qxxjqlnbidwl4mvm0wvqva.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **PHP App** | 128 MB Graviton MicroVM / PHP 8.3 CLI | [PHP App URL](https://gvn63eisikfv2zvzf52bqngwku0zhtkv.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
+| **Swift App** | 128 MB MicroVM / Swift | [Swift App URL](https://6cq3xl2oie6huoo4mxrqxxfgqu0upybj.lambda-url.us-east-2.on.aws/version) | `200 OK` (Green) |
 
 ### Deploying to AWS via Terraform & Automation Scripts
 
@@ -160,7 +160,6 @@ cd deployment/terraform && terraform destroy -var="aws_region=us-east-2" -auto-a
 
 For complete architectural documentation, cost formulas, and runtime sizing tables, see:
 - [`docs/aws_lambda_telemetry_lake_frugal_plan.md`](./docs/aws_lambda_telemetry_lake_frugal_plan.md)
-- [`docs/frugal_lambda_telemetry_one_pager.md`](./docs/frugal_lambda_telemetry_one_pager.md)
 - [`docs/frugal_lambda_telemetry_one_pager.md`](./docs/frugal_lambda_telemetry_one_pager.md)
 
 ---

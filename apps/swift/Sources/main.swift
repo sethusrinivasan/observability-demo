@@ -234,7 +234,7 @@ func parseQueryString(_ query: String) -> [String: String] {
 }
 
 func handleRequest(method: String, fullPath: String, body: String) -> HTTPResponse {
-    if method == "OPTIONS" {
+    if method == "OPTIONS" || method == "HEAD" {
         return HTTPResponse(statusCode: 200, statusText: "OK", contentType: "text/plain", text: "")
     }
 
