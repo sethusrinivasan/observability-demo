@@ -14,6 +14,8 @@ Verifies:
 """
 
 import os
+import json
+import time
 import requests
 import pytest
 
@@ -180,28 +182,55 @@ def test_aws_canary_all_seven_canned_duckdb_queries():
 
 def test_aws_all_seven_microservices_live_endpoints():
     """Verify all 7 Graviton ARM64 polyglot microservices are live and healthy."""
-    microservices = {
-        "python": "https://2lwrbu2cc7bx7ay2ojapxsbqtq0andff.lambda-url.us-east-2.on.aws",
-        "go": "https://vnh6kor267jkevye5uvvhcqfu40sffvo.lambda-url.us-east-2.on.aws",
-        "node": "https://7i7ewi4cvrpdzneou5qamrajsm0nwwkm.lambda-url.us-east-2.on.aws",
-        "c": "https://daglnsziyvvlt572qmkzr2xmjm0unpef.lambda-url.us-east-2.on.aws",
-        "dotnet": "https://xppqo7vskzfjddbotn2mcaqgpe0wywzp.lambda-url.us-east-2.on.aws",
-        "rust": "https://rq6puxwjoxx2sp5eeg3g4duy4i0bdjzs.lambda-url.us-east-2.on.aws",
-        "java": "https://2sqsnt447ofmtmjkdpoo36itlm0tifhq.lambda-url.us-east-2.on.aws",
-        "php": "https://7izlc4ipjgw7uvgppjr7jiyymq0fxizg.lambda-url.us-east-2.on.aws",
-        "swift": "https://mk55snvnmmrerw22ptjwtusnly0rzuma.lambda-url.us-east-2.on.aws",
-    }
+    microservices = {}
+
+    # 1. Dynamically load from MICROSERVICE_URLS_JSON (e.g. from Terraform output)
+    env_urls = os.getenv("MICROSERVICE_URLS_JSON", "")
+    if env_urls:
+        try:
+            parsed = json.loads(env_urls)
+            if isinstance(parsed, dict) and parsed:
+                microservices = {k: v.rstrip("/") for k, v in parsed.items()}
+        except Exception:
+            pass
+
+    # 2. Dynamically query Canary /stats for live registered app endpoints
+    if not microservices:
+        try:
+            stats_resp = requests.get(f"{AWS_CANARY_URL}/stats", timeout=5)
+            if stats_resp.status_code == 200:
+                apps = stats_resp.json().get("apps", {})
+                for lang, app_info in apps.items():
+                    if isinstance(app_info, dict) and app_info.get("url"):
+                        microservices[lang] = app_info["url"].rstrip("/")
+        except Exception:
+            pass
+
+    # 3. Fallback to active deployed URLs
+    if not microservices:
+        microservices = {
+            "python": "https://mxhrcxceaeluv6gu2cod4quwpm0kfydz.lambda-url.us-east-2.on.aws",
+            "go": "https://h74bl44slegkr7c6h32hyygzui0djbvn.lambda-url.us-east-2.on.aws",
+            "node": "https://xo3ktoqz6qz3dm5o64hvgm22mq0zkqat.lambda-url.us-east-2.on.aws",
+            "c": "https://omtosemwg4qxxjqlnbidwl4mvm0wvqva.lambda-url.us-east-2.on.aws",
+            "dotnet": "https://4o5yjl47yxdg5e5tsj727mchb40evddy.lambda-url.us-east-2.on.aws",
+            "rust": "https://nulam6s4glkv2wafy6tcrjn2j40fyhim.lambda-url.us-east-2.on.aws",
+            "java": "https://c5nmwnntg56s7v6gr2cowlmqqm0bcovb.lambda-url.us-east-2.on.aws",
+            "php": "https://gvn63eisikfv2zvzf52bqngwku0zhtkv.lambda-url.us-east-2.on.aws",
+            "swift": "https://6cq3xl2oie6huoo4mxrqxxfgqu0upybj.lambda-url.us-east-2.on.aws",
+        }
 
     for lang, base_url in microservices.items():
+        base_clean = base_url.rstrip("/")
         # Check /version
-        v_resp = requests.get(f"{base_url}/version", timeout=10)
+        v_resp = requests.get(f"{base_clean}/version", timeout=10)
         assert v_resp.status_code == 200, f"{lang} /version failed with {v_resp.status_code}"
         v_data = v_resp.json()
         assert "app_name" in v_data
         assert "version" in v_data
 
         # Check /compute/5
-        c_resp = requests.get(f"{base_url}/compute/5", timeout=10)
+        c_resp = requests.get(f"{base_clean}/compute/5", timeout=10)
         assert c_resp.status_code == 200, f"{lang} /compute/5 failed with {c_resp.status_code}"
         c_data = c_resp.json()
         assert c_data.get("result") == 5, f"{lang} expected fib(5)=5, got {c_data.get('result')}"
@@ -209,15 +238,22 @@ def test_aws_all_seven_microservices_live_endpoints():
 
 def test_aws_canary_synthetic_traffic_stream_health():
     """Verify live synthetic traffic stream on Canary dashboard is healthy and active."""
-    # Warm/trigger a synthetic traffic cycle if needed (in case Lambda container is fresh)
-    try:
-        requests.post(f"{AWS_CANARY_URL}/api/trigger-cycle", timeout=15)
-    except Exception:
-        pass
+    # Warm/trigger synthetic traffic cycles if needed
+    for _ in range(3):
+        try:
+            requests.post(f"{AWS_CANARY_URL}/api/trigger-cycle", timeout=15)
+        except Exception:
+            pass
 
-    resp = requests.get(f"{AWS_CANARY_URL}/stats", timeout=10)
-    assert resp.status_code == 200, f"Stats endpoint failed with {resp.status_code}"
-    stats = resp.json()
+    # Poll /stats for health metrics
+    stats = {}
+    for _ in range(10):
+        resp = requests.get(f"{AWS_CANARY_URL}/stats", timeout=10)
+        assert resp.status_code == 200, f"Stats endpoint failed with {resp.status_code}"
+        stats = resp.json()
+        if stats.get("availability_pct", 0.0) >= 80.0:
+            break
+        time.sleep(1)
 
     assert stats["status"] in ["Running", "Initializing"], f"Expected Canary to be Running or Initializing, got {stats['status']}"
     assert stats["total_requests"] >= 0, f"Expected non-negative requests stream, got {stats['total_requests']}"
