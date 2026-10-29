@@ -55,7 +55,10 @@ resource "aws_iam_role" "github_actions_terraform" {
         Sid    = "GitHubActionsCIUserAuth"
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+          AWS = [
+            "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root",
+            "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/github-actions-terraform-ci"
+          ]
         }
         Action = [
           "sts:AssumeRole",

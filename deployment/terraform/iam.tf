@@ -141,3 +141,45 @@ resource "aws_iam_role_policy_attachment" "microservice_rds_attach" {
   role       = aws_iam_role.microservice_role.name
   policy_arn = aws_iam_policy.rds_iam_auth.arn
 }
+
+# 5. AWS Service Quotas & Resource Metrics Policy for Canary Dashboard
+resource "aws_iam_policy" "canary_service_quotas" {
+  name        = "observability-demo-canary-service-quotas-policy"
+  description = "Allows Canary Lambda to query AWS Service Quotas and resource usage metrics"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "servicequotas:GetServiceQuota",
+          "servicequotas:ListServiceQuotas",
+          "servicequotas:ListDefaultServiceQuotas",
+          "rds:DescribeDBInstances",
+          "rds:DescribeDBClusters",
+          "rds:DescribeDBSnapshots",
+          "ec2:DescribeInstances",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeKeyPairs",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeNatGateways",
+          "lambda:GetAccountSettings",
+          "lambda:ListFunctions",
+          "cloudwatch:DescribeAlarms",
+          "dynamodb:ListTables",
+          "dynamodb:DescribeTable"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "canary_service_quotas_attach" {
+  role       = aws_iam_role.canary_role.name
+  policy_arn = aws_iam_policy.canary_service_quotas.arn
+}

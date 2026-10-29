@@ -89,7 +89,7 @@ aws s3api put-public-access-block \
 
 aws s3api put-bucket-versioning \
   --bucket "${STATE_BUCKET}" \
-  --versioning-configuration Status=Disabled 2>/dev/null || true
+  --versioning-configuration Status=Suspended 2>/dev/null || true
 
 aws s3api put-bucket-encryption \
   --bucket "${STATE_BUCKET}" \

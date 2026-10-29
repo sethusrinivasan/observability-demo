@@ -170,6 +170,7 @@ resource "aws_lambda_function" "canary" {
       CANARY_RATE_UNIT                  = "TPM"
       S3_BUCKET_NAME                    = local.bucket_name
       S3_ENDPOINT_URL                   = "https://s3.${var.aws_region}.amazonaws.com"
+      AWS_REGION                        = var.aws_region
       TELEMETRY_RECEIVER_URL            = trimsuffix(aws_lambda_function_url.collector_url.function_url, "/")
       OTEL_EXPORTER_OTLP_ENDPOINT       = trimsuffix(aws_lambda_function_url.collector_url.function_url, "/")
       OTEL_EXPORTER_OTLP_PROTOCOL       = "http/protobuf"

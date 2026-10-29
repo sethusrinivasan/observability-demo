@@ -237,7 +237,7 @@ jobs:
               echo "::error::The runner IAM identity '${CALLER_ARN}' lacks permission to create S3 buckets."
               echo "::error::To resolve permanently, run 'deployment/bootstrap_aws_admin.sh' with AWS administrator credentials, or run:"
               echo "::error::  aws s3 mb s3://${STATE_BUCKET} --region ${REGION}"
-              echo "::error::  aws s3api put-bucket-versioning --bucket ${STATE_BUCKET} --versioning-configuration Status=Disabled"
+              echo "::error::  aws s3api put-bucket-versioning --bucket ${STATE_BUCKET} --versioning-configuration Status=Suspended"
               echo "::error::  aws s3api put-bucket-encryption --bucket ${STATE_BUCKET} --server-side-encryption-configuration '{\"Rules\": [{\"ApplyServerSideEncryptionByDefault\": {\"SSEAlgorithm\": \"AES256\"}}]}'"
               echo "::error::  aws s3api put-bucket-tagging --bucket ${STATE_BUCKET} --tagging \"TagSet=[{Key=ApplicationName,Value=Observability-Demo},{Key=ManagedBy,Value=Terraform}]\""
               echo "::error::=========================================================================="
@@ -248,7 +248,7 @@ jobs:
             sleep 3
             if aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>/dev/null; then
               echo "Foundational backend bucket '${STATE_BUCKET}' created and verified."
-              aws s3api put-bucket-versioning --bucket "${STATE_BUCKET}" --versioning-configuration Status=Disabled 2>/dev/null || true
+              aws s3api put-bucket-versioning --bucket "${STATE_BUCKET}" --versioning-configuration Status=Suspended 2>/dev/null || true
               aws s3api put-bucket-encryption --bucket "${STATE_BUCKET}" \
                 --server-side-encryption-configuration '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}' 2>/dev/null || true
               aws s3api put-bucket-tagging --bucket "${STATE_BUCKET}" \

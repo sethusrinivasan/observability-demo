@@ -32,8 +32,8 @@ resource "aws_ecr_repository" "services" {
 
 # Frugality Lifecycle: Only keep last 3 tagged images and purge untagged images after 1 day
 resource "aws_ecr_lifecycle_policy" "services" {
-  for_each   = aws_ecr_repository.services
-  repository = each.value.name
+  for_each   = toset(local.services)
+  repository = aws_ecr_repository.services[each.key].name
 
   policy = jsonencode({
     rules = [
