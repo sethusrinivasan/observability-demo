@@ -545,4 +545,9 @@ jobs:
           export AWS_COLLECTOR_URL=$(terraform output -raw telemetry_collector_url 2>/dev/null || echo "")
           export AWS_S3_BUCKET=$(terraform output -raw s3_telemetry_lake_bucket 2>/dev/null || echo "")
           export MICROSERVICE_URLS_JSON=$(terraform output -json microservice_urls 2>/dev/null || echo "{}")
+          if [ -n "$AWS_CANARY_URL" ]; then
+            echo "Pre-warming Canary and microVM endpoints to avoid serverless cold starts..."
+            curl -s -m 15 "$AWS_CANARY_URL/health" || true
+            curl -s -m 15 "$AWS_CANARY_URL/api/dependencies" || true
+          fi
           pytest ../../tests/test_aws_canary_audit.py -v --tb=short

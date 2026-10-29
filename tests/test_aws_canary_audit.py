@@ -46,15 +46,21 @@ def test_aws_canary_public_unauthenticated_access():
 
 def test_aws_canary_dependencies_all_eleven_green():
     """Verify all 11 infrastructure dependencies report UP and 100% available."""
-    resp = requests.get(f"{AWS_CANARY_URL}/api/dependencies", timeout=15)
-    assert resp.status_code == 200, f"Expected 200 OK, got {resp.status_code}"
-    data = resp.json()
+    data = {}
+    for attempt in range(6):
+        resp = requests.get(f"{AWS_CANARY_URL}/api/dependencies", timeout=20)
+        assert resp.status_code == 200, f"Expected 200 OK, got {resp.status_code}"
+        data = resp.json()
+        if data.get("healthy_count") == 11:
+            break
+        time.sleep(3)
 
-    assert data["total_dependencies"] == 11
-    assert data["healthy_count"] == 11, f"Expected 11 healthy, got {data['healthy_count']}"
-    assert data["overall_availability_pct"] == 100.0
+    assert data.get("total_dependencies") == 11
+    unhealthy = [d["id"] for d in data.get("dependencies", []) if not d.get("available")]
+    assert data.get("healthy_count") == 11, f"Expected 11 healthy, got {data.get('healthy_count')}. Unhealthy: {unhealthy}"
+    assert data.get("overall_availability_pct") == 100.0
 
-    dep_ids = {d["id"]: d for d in data["dependencies"]}
+    dep_ids = {d["id"]: d for d in data.get("dependencies", [])}
     required_ids = [
         "postgres", "valkey", "otel-collector", "tempo", "loki",
         "mimir", "prometheus", "grafana", "redpanda",

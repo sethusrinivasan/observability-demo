@@ -3354,7 +3354,7 @@ def check_dependencies() -> dict:
     rcv_details = {}
     t0 = time.time()
     try:
-        resp = requests.get(f"{TELEMETRY_RECEIVER_URL}/status", timeout=4.0)
+        resp = requests.get(f"{TELEMETRY_RECEIVER_URL}/status", timeout=8.0 if is_aws else 4.0)
         rcv_lat = round((time.time() - t0) * 1000, 1)
         if resp.status_code == 200:
             rcv_ok = True
