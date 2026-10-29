@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /app/duckdb_extensions && \
     python -c "import duckdb; con = duckdb.connect(':memory:'); con.execute(\"SET home_directory='/tmp'; SET extension_directory='/app/duckdb_extensions'; INSTALL httpfs;\")"
 
-COPY canary.py sql_guard.py ./
+COPY *.py ./
 
 ENV PORT=8085
 EXPOSE 8085
