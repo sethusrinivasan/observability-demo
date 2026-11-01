@@ -14,7 +14,7 @@ jobs:
     name: Verify Live Showcase
     runs-on: ubuntu-latest
     env:
-      LIVE_URL: ${{ vars.LIVE_SHOWCASE_URL || 'https://friend-architecture-basket-subjective.trycloudflare.com' }}
+      LIVE_URL: ${{ vars.LIVE_SHOWCASE_URL || 'https://come-projection-chain-far.trycloudflare.com' }}
 
     steps:
       - name: Checkout repository
