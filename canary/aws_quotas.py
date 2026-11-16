@@ -45,7 +45,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-7B6409FD",
         "quota_name": "DB instances",
         "default_quota": 40.0,
-        "current_configuration": 40.0,
+        "current_configuration": 4.0,
         "current_usage": 2.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -56,7 +56,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-F6136E67",
         "quota_name": "DB clusters",
         "default_quota": 40.0,
-        "current_configuration": 40.0,
+        "current_configuration": 2.0,
         "current_usage": 1.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -67,7 +67,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-03BB86AE",
         "quota_name": "Total storage for all DB instances (TB)",
         "default_quota": 100.0,
-        "current_configuration": 100.0,
+        "current_configuration": 40.0,
         "current_usage": 20.0,
         "unit": "TB",
         "is_adjustable": True,
@@ -78,7 +78,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-DEAB8280",
         "quota_name": "Manual DB instance snapshots",
         "default_quota": 100.0,
-        "current_configuration": 100.0,
+        "current_configuration": 6.0,
         "current_usage": 3.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -89,7 +89,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-272F2071",
         "quota_name": "Subnet groups",
         "default_quota": 50.0,
-        "current_configuration": 50.0,
+        "current_configuration": 4.0,
         "current_usage": 2.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -100,7 +100,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-977F928C",
         "quota_name": "Parameter groups",
         "default_quota": 50.0,
-        "current_configuration": 50.0,
+        "current_configuration": 6.0,
         "current_usage": 3.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -111,7 +111,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-C5320F88",
         "quota_name": "Read replicas per master",
         "default_quota": 15.0,
-        "current_configuration": 15.0,
+        "current_configuration": 2.0,
         "current_usage": 1.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -122,7 +122,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-DF7C56F3",
         "quota_name": "Event subscriptions",
         "default_quota": 50.0,
-        "current_configuration": 50.0,
+        "current_configuration": 2.0,
         "current_usage": 1.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -135,7 +135,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-1216C47A",
         "quota_name": "Running On-Demand Standard (A, C, D, I, M, R, T, Z) instances (vCPU)",
         "default_quota": 32.0,
-        "current_configuration": 32.0,
+        "current_configuration": 16.0,
         "current_usage": 8.0,
         "unit": "vCPU",
         "is_adjustable": True,
@@ -146,7 +146,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-34B43A08",
         "quota_name": "Elastic IP addresses (EIPs)",
         "default_quota": 5.0,
-        "current_configuration": 5.0,
+        "current_configuration": 4.0,
         "current_usage": 2.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -157,7 +157,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-E8E98BEF",
         "quota_name": "Security groups per VPC",
         "default_quota": 2500.0,
-        "current_configuration": 2500.0,
+        "current_configuration": 24.0,
         "current_usage": 12.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -168,7 +168,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-0263D0A3",
         "quota_name": "Inbound or outbound rules per security group",
         "default_quota": 60.0,
-        "current_configuration": 60.0,
+        "current_configuration": 28.0,
         "current_usage": 14.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -179,7 +179,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-30DA4279",
         "quota_name": "Key pairs per region",
         "default_quota": 5000.0,
-        "current_configuration": 5000.0,
+        "current_configuration": 6.0,
         "current_usage": 3.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -192,7 +192,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-F678F142",
         "quota_name": "VPCs per Region",
         "default_quota": 5.0,
-        "current_configuration": 5.0,
+        "current_configuration": 4.0,
         "current_usage": 2.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -203,7 +203,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-40773211",
         "quota_name": "Subnets per VPC",
         "default_quota": 200.0,
-        "current_configuration": 200.0,
+        "current_configuration": 12.0,
         "current_usage": 6.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -214,7 +214,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-A4707E72",
         "quota_name": "Internet gateways per Region",
         "default_quota": 5.0,
-        "current_configuration": 5.0,
+        "current_configuration": 2.0,
         "current_usage": 1.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -225,7 +225,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-FE5A380F",
         "quota_name": "NAT gateways per Availability Zone",
         "default_quota": 5.0,
-        "current_configuration": 5.0,
+        "current_configuration": 2.0,
         "current_usage": 1.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -236,7 +236,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-589F43AA",
         "quota_name": "Route tables per VPC",
         "default_quota": 200.0,
-        "current_configuration": 200.0,
+        "current_configuration": 8.0,
         "current_usage": 4.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -247,7 +247,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-29B6465B",
         "quota_name": "Network ACLs per VPC",
         "default_quota": 200.0,
-        "current_configuration": 200.0,
+        "current_configuration": 4.0,
         "current_usage": 2.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -260,7 +260,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-B99A9384",
         "quota_name": "Concurrent executions",
         "default_quota": 1000.0,
-        "current_configuration": 1000.0,
+        "current_configuration": 30.0,
         "current_usage": 15.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -271,7 +271,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-87E7D513",
         "quota_name": "Function and layer storage (GB)",
         "default_quota": 75.0,
-        "current_configuration": 75.0,
+        "current_configuration": 17.0,
         "current_usage": 8.5,
         "unit": "GB",
         "is_adjustable": True,
@@ -282,7 +282,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-CD2B2222",
         "quota_name": "Function memory allocation (MB)",
         "default_quota": 10240.0,
-        "current_configuration": 10240.0,
+        "current_configuration": 2048.0,
         "current_usage": 1024.0,
         "unit": "MB",
         "is_adjustable": False,
@@ -293,7 +293,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-490333D7",
         "quota_name": "Functions per Region",
         "default_quota": 10000.0,
-        "current_configuration": 10000.0,
+        "current_configuration": 8.0,
         "current_usage": 4.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -306,7 +306,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-DC2B2D3D",
         "quota_name": "General purpose buckets per account",
         "default_quota": 100.0,
-        "current_configuration": 100.0,
+        "current_configuration": 8.0,
         "current_usage": 4.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -317,7 +317,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-E10E5A8E",
         "quota_name": "Access Points per account and Region",
         "default_quota": 1000.0,
-        "current_configuration": 1000.0,
+        "current_configuration": 2.0,
         "current_usage": 1.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -328,7 +328,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-5E8BD65B",
         "quota_name": "Multi-Region Access Points per account",
         "default_quota": 5.0,
-        "current_configuration": 5.0,
+        "current_configuration": 0.0,
         "current_usage": 0.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -341,7 +341,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-89753DE8",
         "quota_name": "Metric alarms per Region",
         "default_quota": 5000.0,
-        "current_configuration": 5000.0,
+        "current_configuration": 36.0,
         "current_usage": 18.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -352,7 +352,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-0010996F",
         "quota_name": "Composite alarms per Region",
         "default_quota": 500.0,
-        "current_configuration": 500.0,
+        "current_configuration": 4.0,
         "current_usage": 2.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -363,7 +363,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-6DA6D81C",
         "quota_name": "Dashboards per account",
         "default_quota": 500.0,
-        "current_configuration": 500.0,
+        "current_configuration": 8.0,
         "current_usage": 4.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -374,7 +374,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-29BF9D41",
         "quota_name": "Metric streams per Region",
         "default_quota": 20.0,
-        "current_configuration": 20.0,
+        "current_configuration": 2.0,
         "current_usage": 1.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -387,7 +387,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-F98FE922",
         "quota_name": "Tables per Region",
         "default_quota": 2500.0,
-        "current_configuration": 2500.0,
+        "current_configuration": 6.0,
         "current_usage": 3.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -398,7 +398,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-B76295D3",
         "quota_name": "Global secondary indexes per table",
         "default_quota": 20.0,
-        "current_configuration": 20.0,
+        "current_configuration": 2.0,
         "current_usage": 1.0,
         "unit": "Count",
         "is_adjustable": True,
@@ -409,7 +409,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-7D267812",
         "quota_name": "Read capacity units (RCU) per table",
         "default_quota": 40000.0,
-        "current_configuration": 40000.0,
+        "current_configuration": 3000.0,
         "current_usage": 1500.0,
         "unit": "Units",
         "is_adjustable": True,
@@ -420,7 +420,7 @@ DEFAULT_AWS_SERVICE_QUOTAS = [
         "quota_code": "L-D318218C",
         "quota_name": "Write capacity units (WCU) per table",
         "default_quota": 40000.0,
-        "current_configuration": 40000.0,
+        "current_configuration": 3000.0,
         "current_usage": 1500.0,
         "unit": "Units",
         "is_adjustable": True,
@@ -824,6 +824,76 @@ def capture_service_quotas_snapshot(get_conn_or_conn=None, boto_session=None) ->
     SCHEDULER_STATE["next_run_at"] = next_dt.isoformat()
 
     return snapshot_record
+
+
+def adjust_service_quotas_configuration(get_conn_or_conn=None, multiplier: float = 2.0, max_utilization_pct: float = 70.0) -> list[dict]:
+    """
+    Adjust and update current_configuration to multiplier * current_usage
+    for all quotas whose utilization_pct <= max_utilization_pct.
+    Persists updates to Aurora / PostgreSQL (aws_service_quotas_latest) and in-memory cache.
+    """
+    global LATEST_QUOTAS_CACHE
+    quotas = get_latest_service_quotas(get_conn_or_conn)
+    adjusted_count = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    conn = None
+    should_close = False
+    if callable(get_conn_or_conn):
+        try:
+            conn = get_conn_or_conn()
+            should_close = True
+        except Exception as conn_err:
+            logger.debug("Failed acquiring DB connection for quota adjustment: %s", conn_err)
+    elif get_conn_or_conn:
+        conn = get_conn_or_conn
+
+    for q in quotas:
+        util = float(q.get("utilization_pct", 0.0))
+        if util <= max_utilization_pct:
+            usage = float(q.get("current_usage", 0.0))
+            new_cfg = round(usage * multiplier, 2)
+            q["current_configuration"] = new_cfg
+            pct, status = calculate_utilization(usage, new_cfg)
+            q["utilization_pct"] = pct
+            q["status"] = status
+            q["last_snapshot_at"] = now_iso
+            adjusted_count += 1
+
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            UPDATE aws_service_quotas_latest
+                            SET current_configuration = %s,
+                                utilization_pct = %s,
+                                status = %s,
+                                last_snapshot_at = %s
+                            WHERE quota_key = %s;
+                        """, (new_cfg, pct, status, now_iso, q["quota_key"]))
+                except Exception as up_err:
+                    logger.debug("Failed updating quota row %s: %s", q["quota_key"], up_err)
+
+    if conn:
+        try:
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            if should_close:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    with _QUOTAS_LOCK:
+        LATEST_QUOTAS_CACHE = list(quotas)
+
+    logger.info("Adjusted configuration for %d quotas (multiplier=%.2f, max_util=%.1f%%)", adjusted_count, multiplier, max_utilization_pct)
+    return quotas
 
 
 def get_latest_service_quotas(get_conn_or_conn=None) -> list[dict]:

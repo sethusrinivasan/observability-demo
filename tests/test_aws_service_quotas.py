@@ -19,6 +19,7 @@ from canary.aws_quotas import (
     get_aws_quotas_scheduler_status,
     start_aws_quotas_scheduler,
     trigger_aws_quotas_snapshot_now,
+    adjust_service_quotas_configuration,
     SCHEDULER_INTERVAL_SECONDS,
 )
 from canary.canary import render_dashboard_html
@@ -227,6 +228,8 @@ def test_canary_dashboard_html_elements():
 
     # Action buttons
     assert 'id="btn-snapshot-now"' in html
+    assert 'id="btn-adjust-quotas"' in html
+    assert 'adjustAwsQuotasNow(' in html
     assert 'captureAwsQuotaSnapshotNow()' in html
     assert 'fetchAwsServiceQuotas()' in html
 
@@ -278,3 +281,30 @@ def test_live_canary_aws_quotas_endpoints():
     assert "snapshot" in post_data
     assert post_data["snapshot"]["snapshot_id"].startswith("snap_")
     assert post_data["snapshot"]["total_quotas"] >= 25
+
+
+def test_adjust_service_quotas_configuration_logic():
+    """Verify adjust_service_quotas_configuration updates configurations to 2X usage ONLY for utilization <= 70%."""
+    # Capture initial quotas to know pre-adjustment utilization
+    before = get_latest_service_quotas(get_conn_or_conn=None)
+    before_map = {q["quota_key"]: q for q in before}
+
+    adjusted = adjust_service_quotas_configuration(get_conn_or_conn=None, multiplier=2.0, max_utilization_pct=70.0)
+    assert len(adjusted) >= 25
+
+    for q in adjusted:
+        key = q["quota_key"]
+        orig = before_map.get(key, {})
+        orig_util = float(orig.get("utilization_pct", 0.0))
+        usage = q["current_usage"]
+        cfg = q["current_configuration"]
+        pct = q["utilization_pct"]
+
+        if orig_util <= 70.0 and usage > 0:
+            assert cfg == pytest.approx(usage * 2.0, rel=1e-2)
+            assert pct == pytest.approx(50.0, rel=1e-1)
+            assert q["status"] == "NORMAL"
+        elif orig_util > 70.0:
+            # Preserved unchanged because utilization > 70%
+            assert cfg == orig.get("current_configuration")
+

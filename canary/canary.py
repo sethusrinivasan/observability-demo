@@ -108,6 +108,7 @@ try:
         get_aws_quotas_scheduler_status,
         start_aws_quotas_scheduler,
         trigger_aws_quotas_snapshot_now,
+        adjust_service_quotas_configuration,
     )
 except ImportError:
     from aws_quotas import (
@@ -119,6 +120,7 @@ except ImportError:
         get_aws_quotas_scheduler_status,
         start_aws_quotas_scheduler,
         trigger_aws_quotas_snapshot_now,
+        adjust_service_quotas_configuration,
     )
 
 # ---------------------------------------------------------------------------
@@ -6805,6 +6807,7 @@ def render_dashboard_html() -> str:
           </div>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
+          <button id="btn-adjust-quotas" class="btn btn-outline" style="height: 28px; padding: 2px 12px; font-size: 0.75rem; border-color: #34d399; color: #34d399;" onclick="adjustAwsQuotasNow(2.0, 70.0)" title="Adjust and update current configuration as 2X of current usage for entries with utilization &le; 70%">⚡ Adjust Config (2X Usage)</button>
           <button id="btn-snapshot-now" class="btn btn-outline" style="height: 28px; padding: 2px 12px; font-size: 0.75rem; border-color: #38bdf8; color: #38bdf8;" onclick="captureAwsQuotaSnapshotNow()" title="Trigger an immediate on-demand quota snapshot and persist to Aurora PostgreSQL">📸 Capture Quota Snapshot Now</button>
           <button class="btn btn-primary" style="height: 28px; padding: 2px 12px; font-size: 0.75rem;" onclick="fetchAwsServiceQuotas()">🔄 Refresh</button>
         </div>
@@ -7728,6 +7731,36 @@ def render_dashboard_html() -> str:
         if (btn) {{
           btn.disabled = false;
           btn.innerHTML = '📸 Capture Quota Snapshot Now';
+        }}
+      }}
+    }}
+
+    async function adjustAwsQuotasNow(multiplier = 2.0, maxUtil = 70.0) {{
+      const btn = document.getElementById('btn-adjust-quotas');
+      if (btn) {{
+        btn.disabled = true;
+        btn.innerHTML = '⚡ Adjusting quotas...';
+      }}
+      try {{
+        const res = await fetch('/api/aws/quotas/adjust', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ multiplier: multiplier, max_utilization_pct: maxUtil }}),
+        }});
+        const data = await res.json();
+        if (data.status === 'success') {{
+          showToast(`⚡ AWS Service Quotas adjusted to ${{multiplier}}X usage for entries &le;${{maxUtil}}%!`);
+          await fetchAwsServiceQuotas();
+        }} else {{
+          showToast(`Adjustment error: ${{data.error || 'Failed'}}`);
+        }}
+      }} catch (err) {{
+        console.error('Quota adjustment failed:', err);
+        showToast(`Quota adjustment failed: ${{err.message}}`);
+      }} finally {{
+        if (btn) {{
+          btn.disabled = false;
+          btn.innerHTML = '⚡ Adjust Config (2X Usage)';
         }}
       }}
     }}
@@ -12025,6 +12058,34 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                     self._send_bytes(200, payload, "application/json")
                 except Exception as snap_exc:
                     err_payload = json.dumps({"status": "error", "error": str(snap_exc)}).encode("utf-8")
+                    self._send_bytes(500, err_payload, "application/json")
+                return
+
+            elif path in ("/api/aws/quotas/adjust", "/api/aws/quotas/adjust/run"):
+                try:
+                    content_length = int(self.headers.get("Content-Length", 0))
+                    body = {}
+                    if content_length > 0:
+                        raw = self.rfile.read(content_length).decode("utf-8")
+                        try:
+                            body = json.loads(raw)
+                        except Exception:
+                            body = {}
+                    mult = float(body.get("multiplier", 2.0))
+                    max_util = float(body.get("max_utilization_pct", 70.0))
+                    adjusted = adjust_service_quotas_configuration(_pg_connect, multiplier=mult, max_utilization_pct=max_util)
+                    sched = get_aws_quotas_scheduler_status()
+                    payload = json.dumps({
+                        "status": "success",
+                        "multiplier": mult,
+                        "max_utilization_pct": max_util,
+                        "total_quotas": len(adjusted),
+                        "quotas": adjusted,
+                        "scheduler": sched,
+                    }, indent=2, default=str).encode("utf-8")
+                    self._send_bytes(200, payload, "application/json")
+                except Exception as adj_exc:
+                    err_payload = json.dumps({"status": "error", "error": str(adj_exc)}).encode("utf-8")
                     self._send_bytes(500, err_payload, "application/json")
                 return
 

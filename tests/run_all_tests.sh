@@ -17,6 +17,7 @@ Options:
   --smoke       Run multi-language microservice smoke tests against local stack
   --live        Run live showcase end-to-end tests
   --audit       Run AWS Canary and Telemetry Lake live audit
+  --emulator    Run automated test suite against local AWS Emulator (telemetry disabled)
   --all         Run all test suites sequentially
   -h, --help    Show this help message
 
@@ -47,6 +48,9 @@ for arg in "$@"; do
             ;;
         --audit)
             MODE="audit"
+            ;;
+        --emulator)
+            MODE="emulator"
             ;;
         --all)
             MODE="all"
@@ -131,6 +135,10 @@ case "$MODE" in
     audit)
         echo "=== Running AWS Canary & Lake Audit Tests ==="
         run_pytest tests/test_aws_canary_audit.py -v
+        ;;
+    emulator)
+        echo "=== Running AWS Emulator Automated Tests ==="
+        bash tests/test_with_aws_emulator.sh "${EXTRA_PYTEST_ARGS[@]}"
         ;;
     all)
         echo "=== Running All Test Suites ==="
