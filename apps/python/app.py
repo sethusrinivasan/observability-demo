@@ -60,13 +60,14 @@ def jsonify(data, *args, **kwargs):
 
 
 def get_db_credentials():
-    host = DB_HOST
+    host = DB_HOST or ""
     port = DB_PORT
     dbname = DB_NAME
     user = DB_USER
     password = DB_PASSWORD
     sslmode = "prefer"
-    if ("rds.amazonaws.com" in host or not password) and boto3:
+    is_rds = bool(host and (host.endswith(".rds.amazonaws.com") or host.endswith(".amazonaws.com")))
+    if (is_rds or not password) and boto3:
         try:
             rds_client = boto3.client("rds", region_name=AWS_REGION)
             password = rds_client.generate_db_auth_token(

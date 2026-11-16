@@ -49,9 +49,9 @@ def strip_sql_parameters(sql: str) -> str:
     s = re.sub(r"--[^\n]*", " ", s)
     s = re.sub(r"/\*[\s\S]*?\*/", " ", s)
 
-    # 2. String literals: $$...$$, E'...', '...'
+    # 2. String literals: $$...$$, E'...', '...' (atomic disjoint branches to prevent ReDoS)
     s = re.sub(r"\$\$[\s\S]*?\$\$", " ? ", s)
-    s = re.sub(r"E?'(?:''|\\.|[^'])*'", " ? ", s)
+    s = re.sub(r"E?'(?:[^'\\]|\\.|'')*'", " ? ", s)
 
     # 3. Dollar / colon bind variables: $1, :arg
     s = re.sub(r"\$[0-9]+", " ? ", s)

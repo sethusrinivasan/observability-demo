@@ -725,7 +725,8 @@ def _pg_connect(read_only: bool = False, role: str = None):
     elif target_user == "observability_admin":
         pg_pass = POSTGRES_ADMIN_PASSWORD
 
-    if "rds.amazonaws.com" in POSTGRES_HOST and boto3:
+    is_rds = bool(POSTGRES_HOST and (POSTGRES_HOST.endswith(".rds.amazonaws.com") or POSTGRES_HOST.endswith(".amazonaws.com")))
+    if is_rds and boto3:
         # In AWS RDS / Aurora, IAM DB auth is configured for specific IAM database roles (observability_reader, observability_admin).
         # Password-authenticated administrative users should use their password to avoid "invalid authentication method" FATAL errors.
         if target_user in ("observability_reader", "observability_admin") or not pg_pass:
@@ -3025,7 +3026,10 @@ def generate_rds_cost_markdown(data: dict) -> str:
 def check_dependencies() -> dict:
     """Probes all 11 stack dependencies and computes observed health, latency, usage, and error rate."""
     deps = []
-    is_aws = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME") or "rds.amazonaws.com" in POSTGRES_HOST or "amazonaws.com" in S3_ENDPOINT_URL)
+    s3_host = urllib.parse.urlparse(S3_ENDPOINT_URL).hostname or "" if S3_ENDPOINT_URL else ""
+    is_pg_aws = bool(POSTGRES_HOST and (POSTGRES_HOST.endswith(".rds.amazonaws.com") or POSTGRES_HOST.endswith(".amazonaws.com")))
+    is_s3_aws = bool(s3_host and (s3_host == "amazonaws.com" or s3_host.endswith(".amazonaws.com")))
+    is_aws = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME") or is_pg_aws or is_s3_aws)
 
     # 1. PostgreSQL
     pg_ok = False
@@ -3036,7 +3040,7 @@ def check_dependencies() -> dict:
         if psycopg2:
             pg_pass = POSTGRES_PASSWORD
             pg_ssl = "prefer"
-            if not pg_pass and "rds.amazonaws.com" in POSTGRES_HOST and boto3:
+            if not pg_pass and is_pg_aws and boto3:
                 try:
                     rds_client = boto3.client("rds", region_name=AWS_REGION)
                     pg_pass = rds_client.generate_db_auth_token(
@@ -11494,7 +11498,8 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 self.send_response(200)
                 self._send_cors_headers()
                 self.send_header("Content-Type", "text/markdown; charset=utf-8")
-                self.send_header("Content-Disposition", f'attachment; filename="database-cost-breakdown-{breakdown_data.get("time_range", "1h")}.md"')
+                clean_time_range = re.sub(r"[^a-zA-Z0-9_-]", "", str(breakdown_data.get("time_range", "1h")))
+                self.send_header("Content-Disposition", f'attachment; filename="database-cost-breakdown-{clean_time_range}.md"')
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)

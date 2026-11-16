@@ -536,6 +536,14 @@ jobs:
             terraform plan -no-color -var="aws_region=${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-2' }}" -out=tfplan || true
           done
 
+      - name: Enforce Frugal CloudWatch Log Retention
+        if: steps.apply.outcome == 'success'
+        run: |
+          echo "Enforcing 3-day retention across all observability Lambda log groups..."
+          for fn in $(aws lambda list-functions --query "Functions[?starts_with(FunctionName, 'observability-')].FunctionName" --output text 2>/dev/null); do
+            aws logs put-retention-policy --log-group-name "/aws/lambda/$fn" --retention-in-days 3 2>/dev/null || true
+          done
+
       - name: Verify Live AWS Deployment & Telemetry Lake
         id: verify
         if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply' || github.event.inputs.action == 'Destroy and redeploy' || github.event.inputs.action == 'destroy-and-redeploy')

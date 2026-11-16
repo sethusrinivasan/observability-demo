@@ -11,6 +11,7 @@ Guarantees that:
 import os
 import stat
 import subprocess
+import re
 from pathlib import Path
 import pytest
 
@@ -192,7 +193,7 @@ def test_aws_bootstrap_script_and_fast_fail_prechecks():
 
     script_content = bootstrap_script.read_text()
     assert "observability-demo-telemetry-lake" in script_content
-    assert "token.actions.githubusercontent.com" in script_content
+    assert re.search(r"\btoken\.actions\.githubusercontent\.com\b", script_content) is not None
     assert "observability-demo-github-oidc-role" in script_content
 
     workflow_file = REPO_ROOT / ".github" / "workflows" / "deploy-aws-terraform.yml"

@@ -13,8 +13,10 @@ jobs:
   verify:
     name: Verify Live Showcase
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
-      LIVE_URL: ${{ vars.LIVE_SHOWCASE_URL || 'https://come-projection-chain-far.trycloudflare.com' }}
+      LIVE_URL: ${{ vars.LIVE_SHOWCASE_URL || 'https://236mcyozjcjlmhngkx75qcae7q0kabru.lambda-url.us-east-2.on.aws' }}
 
     steps:
       - name: Checkout repository

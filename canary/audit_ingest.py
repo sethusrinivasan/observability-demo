@@ -25,6 +25,7 @@ import json
 import time
 import hashlib
 import logging
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -32,6 +33,14 @@ from typing import Optional, Dict, Any, List
 logger = logging.getLogger("audit_ingest")
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def is_aws_endpoint(endpoint_or_host: str) -> bool:
+    """Safely verify that a target endpoint or host strictly belongs to amazonaws.com."""
+    if not endpoint_or_host:
+        return False
+    h = urlparse(endpoint_or_host).hostname if "://" in endpoint_or_host else endpoint_or_host.split(":")[0]
+    return bool(h and (h == "amazonaws.com" or h.endswith(".amazonaws.com")))
 
 try:
     import duckdb
@@ -100,7 +109,7 @@ def _configure_duckdb_s3(con: "duckdb.DuckDBPyConnection", s3_endpoint: str, s3_
     access_key = os.getenv("AWS_ACCESS_KEY_ID", "test")
     secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "test")
     region = os.getenv("AWS_REGION", "us-east-2")
-    is_aws = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME") or session_token or "amazonaws.com" in s3_endpoint)
+    is_aws = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME") or session_token or is_aws_endpoint(s3_endpoint))
 
     s3_use_ssl_str = "true" if is_aws else "false"
     s3_url_style_str = "vhost" if is_aws else "path"
@@ -151,7 +160,7 @@ def sync_audit_lake_to_postgres(
     s3_bucket = os.getenv("S3_BUCKET_NAME", "observability-demo-telemetry-lake-596090776030")
     s3_endpoint = os.getenv("S3_ENDPOINT_URL", "https://s3.us-east-2.amazonaws.com")
     if not parquet_path:
-        if os.getenv("AWS_LAMBDA_FUNCTION_NAME") or "amazonaws.com" in s3_endpoint:
+        if os.getenv("AWS_LAMBDA_FUNCTION_NAME") or is_aws_endpoint(s3_endpoint):
             parquet_path = f"s3://{s3_bucket}/**/*.parquet"
         else:
             # Check local docker buffer first, then local S3
@@ -288,10 +297,10 @@ def sync_audit_lake_to_postgres(
     dbname = (pg_conn_params or {}).get("dbname") or os.getenv("POSTGRES_DB", "observability")
     user = (pg_conn_params or {}).get("user") or os.getenv("POSTGRES_USER", "postgres")
     password = (pg_conn_params or {}).get("password") or os.getenv("POSTGRES_PASSWORD", "")
-    sslmode = "require" if "rds.amazonaws.com" in host else "prefer"
+    sslmode = "require" if is_aws_endpoint(host) else "prefer"
 
     # If RDS IAM auth is required and no password provided
-    if not password and "rds.amazonaws.com" in host:
+    if not password and is_aws_endpoint(host):
         try:
             import boto3
             rds = boto3.client("rds", region_name=os.getenv("AWS_REGION", "us-east-2"))

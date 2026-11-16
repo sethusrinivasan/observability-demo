@@ -250,22 +250,3 @@ resource "aws_lambda_permission" "apps_url_invoke" {
   function_name = each.value.function_name
   principal     = "*"
 }
-
-# ---------------------------------------------------------------------------
-# 4. Frugal CloudWatch Log Groups (3-Day Retention Safeguard)
-# ---------------------------------------------------------------------------
-resource "aws_cloudwatch_log_group" "apps" {
-  for_each          = local.microservices_config
-  name              = "/aws/lambda/${aws_lambda_function.apps[each.key].function_name}"
-  retention_in_days = 3
-}
-
-resource "aws_cloudwatch_log_group" "collector" {
-  name              = "/aws/lambda/${aws_lambda_function.collector.function_name}"
-  retention_in_days = 3
-}
-
-resource "aws_cloudwatch_log_group" "canary" {
-  name              = "/aws/lambda/${aws_lambda_function.canary.function_name}"
-  retention_in_days = 3
-}

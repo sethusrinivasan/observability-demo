@@ -22,6 +22,8 @@ from botocore.client import Config
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from urllib.parse import urlparse
+
 # Protobuf parsers from opentelemetry-proto
 try:
     from opentelemetry.proto.trace.v1.trace_pb2 import TracesData
@@ -72,9 +74,14 @@ s3_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="S3AsyncUploa
 
 def get_s3_client():
     kwargs = {"region_name": AWS_REGION}
-    is_aws = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("AWS_SESSION_TOKEN") or (S3_ENDPOINT_URL and "amazonaws.com" in S3_ENDPOINT_URL))
+    parsed_s3_host = urlparse(S3_ENDPOINT_URL).hostname or "" if S3_ENDPOINT_URL else ""
+    is_aws = bool(
+        os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+        or os.getenv("AWS_SESSION_TOKEN")
+        or (parsed_s3_host and (parsed_s3_host == "amazonaws.com" or parsed_s3_host.endswith(".amazonaws.com")))
+    )
     if is_aws:
-        if S3_ENDPOINT_URL and "amazonaws.com" not in S3_ENDPOINT_URL and "s3-storage" not in S3_ENDPOINT_URL:
+        if S3_ENDPOINT_URL and not parsed_s3_host.endswith(".amazonaws.com") and parsed_s3_host != "s3-storage":
             kwargs["endpoint_url"] = S3_ENDPOINT_URL
     else:
         kwargs["endpoint_url"] = S3_ENDPOINT_URL
