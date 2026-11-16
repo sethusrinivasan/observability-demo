@@ -536,6 +536,20 @@ SAVED_QUERIES = [
     # Category 3: Application & Audit Queries
     # -----------------------------------------------------------------------
     {
+        "id": "audit_hourly_summary_query",
+        "category": "🔍 Application & Audit Queries",
+        "name": "📈 Hourly Audit Summaries (Lakehouse Ingestion)",
+        "description": "Aggregated hourly traffic, success/error distribution, and p95 latency summarized from S3 Parquet lake into Postgres.",
+        "sql": "SELECT to_char(hour_bucket, 'YYYY-MM-DD HH24:00') AS hour_utc, service_name, endpoint, language, total_calls, success_calls, error_calls, round(avg_duration_sec::numeric, 4) AS avg_sec, round(p95_duration_sec::numeric, 4) AS p95_sec FROM audit_log_hourly_summary ORDER BY hour_bucket DESC, total_calls DESC LIMIT 50;"
+    },
+    {
+        "id": "audit_anomalies_query",
+        "category": "🔍 Application & Audit Queries",
+        "name": "🚨 Audit Anomaly & Error Insights",
+        "description": "4xx/5xx exceptions and high-latency anomalies captured during Parquet lake ingestion.",
+        "sql": "SELECT id, to_char(occurred_at, 'YYYY-MM-DD HH24:MI:SS') AS timestamp_utc, service_name, endpoint, status_code, round(duration_sec::numeric, 4) AS duration_sec, error_details FROM audit_anomalies ORDER BY occurred_at DESC LIMIT 50;"
+    },
+    {
         "id": "recent_3h_query_activity",
         "category": "🔍 Application & Audit Queries",
         "name": "⏱️ Past 3 Hours Query Activity",
@@ -1046,7 +1060,7 @@ def ensure_sql_editor_schema() -> None:
                 GRANT CONNECT ON DATABASE observability TO observability_reader;
                 GRANT USAGE ON SCHEMA public TO observability_reader;
                 GRANT SELECT ON ALL TABLES IN SCHEMA public TO observability_reader;
-                GRANT SELECT, INSERT ON TABLE query_activity_snapshots, dashboard_error_logs, audit_dimensions TO observability_reader;
+                GRANT SELECT, INSERT ON TABLE query_activity_snapshots, dashboard_error_logs, audit_dimensions, audit_log_hourly_summary, audit_anomalies TO observability_reader;
                 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE canary_users, canary_sessions TO observability_reader;
                 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO observability_reader;
                 GRANT pg_read_all_stats TO observability_reader;
@@ -1054,7 +1068,7 @@ def ensure_sql_editor_schema() -> None:
                 GRANT CONNECT ON DATABASE observability TO observability_admin;
                 GRANT USAGE ON SCHEMA public TO observability_admin;
                 GRANT SELECT ON ALL TABLES IN SCHEMA public TO observability_admin;
-                GRANT ALL ON TABLE query_activity_snapshots, dashboard_error_logs, audit_dimensions, canary_users, canary_sessions TO observability_admin;
+                GRANT ALL ON TABLE query_activity_snapshots, dashboard_error_logs, audit_dimensions, audit_log_hourly_summary, audit_anomalies, canary_users, canary_sessions TO observability_admin;
                 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO observability_admin;
                 GRANT pg_read_all_stats TO observability_admin;
                 """
@@ -11717,6 +11731,15 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 self._send_bytes(200, b'{"status":"logged out"}', "application/json", [
                     ("Set-Cookie", self._session_cookie("", clear=True)),
                 ])
+                return
+            if path == "/api/audit/sync-postgres":
+                try:
+                    from canary.audit_ingest import sync_audit_lake_to_postgres
+                    res = sync_audit_lake_to_postgres()
+                    status_code = 200 if res.get("status") in ("success", "skipped") else 500
+                    self._send_bytes(status_code, json.dumps(res).encode("utf-8"), "application/json")
+                except Exception as exc:
+                    self._send_bytes(500, json.dumps({"status": "error", "error": str(exc)}).encode("utf-8"), "application/json")
                 return
             if path in ("/api/trigger-cycle", "/api/canary/run-once"):
                 post_data = raw_body.decode("utf-8") if raw_body else ""

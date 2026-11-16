@@ -49,7 +49,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "telemetry_lake" {
     status = "Enabled"
 
     filter {
-      prefix = "telemetry/"
+      prefix = ""
     }
 
     transition {
@@ -64,6 +64,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "telemetry_lake" {
 
     expiration {
       days = 365
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
     }
   }
 }

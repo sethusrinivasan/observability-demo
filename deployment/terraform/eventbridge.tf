@@ -47,3 +47,30 @@ resource "aws_lambda_permission" "eventbridge_canary" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.canary_pulse[0].arn
 }
+
+# 3. EventBridge Daily Audit Lakehouse Summarizer (06:15 UTC)
+# Scheduled between daily cost collection (06:00 UTC) and CDC replication (06:30 UTC)
+# to keep Aurora warm for all maintenance tasks within a single ~30-minute window.
+resource "aws_cloudwatch_event_rule" "audit_lake_sync" {
+  count               = var.enable_eventbridge_cron ? 1 : 0
+  name                = "observability-audit-lake-daily-sync"
+  description         = "Triggers daily vectorized summarization of S3 Parquet audit lake into Postgres"
+  schedule_expression = "cron(15 6 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "audit_lake_sync_target" {
+  count     = var.enable_eventbridge_cron ? 1 : 0
+  rule      = aws_cloudwatch_event_rule.audit_lake_sync[0].name
+  target_id = "AuditLakeSyncTarget"
+  arn       = aws_lambda_function.canary.arn
+  input     = jsonencode({ path = "/api/audit/sync-postgres", httpMethod = "POST" })
+}
+
+resource "aws_lambda_permission" "eventbridge_audit_sync" {
+  count         = var.enable_eventbridge_cron ? 1 : 0
+  statement_id  = "AllowExecutionFromEventBridgeAuditSync"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.canary.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.audit_lake_sync[0].arn
+}

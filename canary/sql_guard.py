@@ -12,6 +12,8 @@ ALLOWED_TABLES = frozenset({
     "audit_dimensions",
     "v_audit_logs",
     "v_audit_dimension_analytics",
+    "audit_log_hourly_summary",
+    "audit_anomalies",
     "sql_saved_queries",
     "sql_query_audit",
     "query_activity_snapshots",

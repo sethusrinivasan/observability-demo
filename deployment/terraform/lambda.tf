@@ -68,19 +68,22 @@ resource "aws_lambda_function" "apps" {
       AWS_LWA_READINESS_CHECK_PATH      = "/version"
       AWS_LWA_INVOKE_MODE               = "buffered"
       AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS = "0"
-      POSTGRES_HOST                     = var.aurora_db_host
-      POSTGRES_PORT                     = tostring(var.aurora_db_port)
-      POSTGRES_DB                       = var.aurora_db_name
-      POSTGRES_USER                     = var.aurora_db_user
-      POSTGRES_PASSWORD                 = var.aurora_db_password
-      APPLICATION_NAME                  = "observability-${each.key}-app"
-      DATABASE_URL                      = "postgres://${var.aurora_db_user}:${var.aurora_db_password}@${var.aurora_db_host}:${var.aurora_db_port}/${var.aurora_db_name}?application_name=observability-${each.key}-app"
-      SPRING_DATASOURCE_URL             = "jdbc:postgresql://${var.aurora_db_host}:${var.aurora_db_port}/${var.aurora_db_name}?sslmode=prefer&ApplicationName=observability-${each.key}-app"
-      SPRING_DATASOURCE_USERNAME        = var.aurora_db_user
-      SPRING_DATASOURCE_PASSWORD        = var.aurora_db_password
-      MAX_DB_CONNECTIONS                = "2" # Frugal pool cap per MicroVM
-      OTEL_EXPORTER_OTLP_ENDPOINT       = trimsuffix(aws_lambda_function_url.collector_url.function_url, "/")
-      OTEL_EXPORTER_OTLP_PROTOCOL       = "http/protobuf"
+      # Frugal Lakehouse Audit Architecture:
+      # MicroVMs emit telemetry and raw audit events through the OTel Collector & Parquet Lake.
+      # Synchronous direct database writes are disabled to allow Aurora Serverless v2 to auto-pause to 0.0 ACU.
+      POSTGRES_HOST               = ""
+      POSTGRES_PORT               = tostring(var.aurora_db_port)
+      POSTGRES_DB                 = var.aurora_db_name
+      POSTGRES_USER               = ""
+      POSTGRES_PASSWORD           = ""
+      APPLICATION_NAME            = "observability-${each.key}-app"
+      DATABASE_URL                = ""
+      SPRING_DATASOURCE_URL       = ""
+      SPRING_DATASOURCE_USERNAME  = ""
+      SPRING_DATASOURCE_PASSWORD  = ""
+      MAX_DB_CONNECTIONS          = "0" # Frugal pool cap per MicroVM
+      OTEL_EXPORTER_OTLP_ENDPOINT = trimsuffix(aws_lambda_function_url.collector_url.function_url, "/")
+      OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
     }
   }
 
@@ -246,4 +249,23 @@ resource "aws_lambda_permission" "apps_url_invoke" {
   action        = "lambda:InvokeFunction"
   function_name = each.value.function_name
   principal     = "*"
+}
+
+# ---------------------------------------------------------------------------
+# 4. Frugal CloudWatch Log Groups (3-Day Retention Safeguard)
+# ---------------------------------------------------------------------------
+resource "aws_cloudwatch_log_group" "apps" {
+  for_each          = local.microservices_config
+  name              = "/aws/lambda/${aws_lambda_function.apps[each.key].function_name}"
+  retention_in_days = 3
+}
+
+resource "aws_cloudwatch_log_group" "collector" {
+  name              = "/aws/lambda/${aws_lambda_function.collector.function_name}"
+  retention_in_days = 3
+}
+
+resource "aws_cloudwatch_log_group" "canary" {
+  name              = "/aws/lambda/${aws_lambda_function.canary.function_name}"
+  retention_in_days = 3
 }
