@@ -734,12 +734,12 @@ def eval_expression():
             logger.info("Eval result: %s = %s", expr, result)
             span.set_attribute("eval.result", result)
             return jsonify({"expression": expr, "result": result, "context": "Python", "version": "1.0.1"}), 200
-        except ZeroDivisionError as exc:
+        except ZeroDivisionError:
             logger.warning("Eval division by zero: %s", expr)
-            return jsonify({"error": str(exc)}), 400
-        except ValueError as exc:
-            logger.warning("Eval error for '%s': %s", expr, exc)
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": "division by zero"}), 400
+        except ValueError:
+            logger.warning("Eval error for '%s'", expr)
+            return jsonify({"error": "Invalid mathematical expression"}), 400
 
 
 @app.route('/crash', methods=['GET', 'POST'])

@@ -11498,7 +11498,9 @@ def start_dashboard_server(port: int) -> ThreadingHTTPServer:
                 self.send_response(200)
                 self._send_cors_headers()
                 self.send_header("Content-Type", "text/markdown; charset=utf-8")
-                clean_time_range = re.sub(r"[^a-zA-Z0-9_-]", "", str(breakdown_data.get("time_range", "1h")))
+                raw_time_range = str(breakdown_data.get("time_range", "1h"))
+                allowed_ranges = {"15m": "15m", "1h": "1h", "6h": "6h", "24h": "24h", "7d": "7d", "30d": "30d"}
+                clean_time_range = allowed_ranges.get(raw_time_range, "1h")
                 self.send_header("Content-Disposition", f'attachment; filename="database-cost-breakdown-{clean_time_range}.md"')
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()

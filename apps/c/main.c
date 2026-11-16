@@ -48,7 +48,7 @@ static int  g_db_port = 5432;
 static char g_db_name[128] = "observability";
 static char g_db_user[128] = "observability";
 static char g_db_pass[128] = "observability";
-static char g_otlp_endpoint[256] = "http://otel-collector:4318";
+static char g_otlp_endpoint[256] = "https://otel-collector:4318";
 
 static PGconn *g_db_conn = NULL;
 static pthread_mutex_t g_db_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -752,7 +752,7 @@ int main(int argc, char *argv[]) {
     strncpy(g_db_name, get_env_default("POSTGRES_DB", "observability"), sizeof(g_db_name) - 1);
     strncpy(g_db_user, get_env_default("POSTGRES_USER", "observability"), sizeof(g_db_user) - 1);
     strncpy(g_db_pass, get_env_default("POSTGRES_PASSWORD", "observability"), sizeof(g_db_pass) - 1);
-    strncpy(g_otlp_endpoint, get_env_default("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318"), sizeof(g_otlp_endpoint) - 1);
+    strncpy(g_otlp_endpoint, get_env_default("OTEL_EXPORTER_OTLP_ENDPOINT", "https://otel-collector:4318"), sizeof(g_otlp_endpoint) - 1);
 
     printf("=====================================================\n");
     printf("Starting %s v%s (%s)\n", APP_NAME, VERSION, LANGUAGE);

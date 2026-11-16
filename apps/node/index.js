@@ -199,6 +199,14 @@ async function initDb(retries = 10, delayMs = 3000) {
 // Express Web Application
 // ---------------------------------------------------------------------------
 const app = express();
+const rateLimit = require("express-rate-limit");
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10000,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use(limiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
