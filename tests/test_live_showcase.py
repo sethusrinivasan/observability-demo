@@ -4,6 +4,7 @@ Validates the publicly accessible Cloudflare Tunnel deployment of the
 observability playground and its microservices stack.
 """
 import os
+import time
 import requests
 import pytest
 
@@ -86,13 +87,18 @@ class TestLiveShowcase:
 
     def test_live_sql_editor_query_and_guard(self, session):
         """SQL Editor executes valid read queries and guard denies prohibited queries."""
-        # Valid read query
-        resp = session.post(
-            f"{LIVE_URL}/api/sql/query",
-            json={"query": "SELECT id, created_at, endpoint, status_code FROM audit_logs ORDER BY id DESC LIMIT 5;"},
-            timeout=15,
-        )
-        assert resp.status_code == 200
+        # Valid read query (with retry for serverless DB pause / wake-up)
+        resp = None
+        for attempt in range(5):
+            resp = session.post(
+                f"{LIVE_URL}/api/sql/query",
+                json={"query": "SELECT id, created_at, endpoint, status_code FROM audit_logs ORDER BY id DESC LIMIT 5;"},
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                break
+            time.sleep(3)
+        assert resp is not None and resp.status_code == 200
         data = resp.json()
         assert data.get("status") == "success"
 
