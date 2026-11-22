@@ -56,3 +56,7 @@ override.tf.json
 *_override.tf.json
 .terraformrc
 terraform.rc
+
+# TLA+ Formal Verification
+formal_spec/states/
+formal_spec/tools/*.jar

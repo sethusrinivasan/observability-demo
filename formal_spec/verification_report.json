@@ -1,0 +1,133 @@
+{
+  "timestamp": "2026-11-22T20:35:39Z",
+  "overall_verified": false,
+  "microservices": {
+    "invariant": "GroundTruthIdentityInvariant",
+    "verified": false,
+    "services": {
+      "c": {
+        "reported_language": "c",
+        "expected_language": "c",
+        "reported_process": "observability-c-app",
+        "expected_process": "observability-c-app",
+        "reported_comm": "server",
+        "expected_comm": "server",
+        "pid": 5,
+        "verified": true
+      },
+      "dotnet": {
+        "reported_language": "csharp",
+        "expected_language": "csharp",
+        "reported_process": "observability-dotnet-app",
+        "expected_process": "observability-dotnet-app",
+        "reported_comm": "dotnet",
+        "expected_comm": "dotnet",
+        "pid": 5,
+        "verified": true
+      },
+      "go": {
+        "reported_language": "golang",
+        "expected_language": "golang",
+        "reported_process": "observability-go-app",
+        "expected_process": "observability-go-app",
+        "reported_comm": "server",
+        "expected_comm": "server",
+        "pid": 5,
+        "verified": true
+      },
+      "java": {
+        "reported_language": "java",
+        "expected_language": "java",
+        "reported_process": "observability-java-app",
+        "expected_process": "observability-java-app",
+        "reported_comm": "java",
+        "expected_comm": "java",
+        "pid": 5,
+        "verified": true
+      },
+      "node": {
+        "reported_language": "nodejs",
+        "expected_language": "nodejs",
+        "reported_process": "observability-node-app",
+        "expected_process": "observability-node-app",
+        "reported_comm": "node",
+        "expected_comm": "node",
+        "pid": 5,
+        "verified": true
+      },
+      "php": {
+        "reported_language": "php",
+        "expected_language": "php",
+        "reported_process": "observability-php-app",
+        "expected_process": "observability-php-app",
+        "reported_comm": "php",
+        "expected_comm": "php",
+        "pid": 7,
+        "verified": true
+      },
+      "python": {
+        "reported_language": "python",
+        "expected_language": "python",
+        "reported_process": "observability-python-app",
+        "expected_process": "observability-python-app",
+        "reported_comm": "gunicorn",
+        "expected_comm": "gunicorn",
+        "pid": 6,
+        "verified": true
+      },
+      "rust": {
+        "status": "HTTP_ERROR",
+        "code": 502,
+        "verified": false
+      },
+      "swift": {
+        "reported_language": "swift",
+        "expected_language": "swift",
+        "reported_process": "observability-swift-app",
+        "expected_process": "observability-swift-app",
+        "reported_comm": "observability-s",
+        "expected_comm": "observability-s",
+        "pid": 5,
+        "verified": true
+      }
+    }
+  },
+  "dependencies": {
+    "invariant": "DependencyAvailabilityInvariant",
+    "verified": true,
+    "healthy_count": 11,
+    "total_dependencies": 11,
+    "availability_pct": 100.0,
+    "missing_dependencies": [],
+    "down_dependencies": []
+  },
+  "lakehouse": {
+    "invariant": "TelemetryConservationInvariant",
+    "verified": true,
+    "s3_lake_online": true,
+    "duckdb_serverless_olap_online": true,
+    "total_compacted_events_in_lake": 25593
+  },
+  "falsification": {
+    "falsification_suite": "CounterfactualDriftRejection",
+    "verified": true,
+    "cases": [
+      {
+        "case": "Go on PHP endpoint",
+        "falsified_and_blocked": true
+      },
+      {
+        "case": "Spoofed language with Go comm",
+        "falsified_and_blocked": true
+      },
+      {
+        "case": "Python with drifted comm",
+        "falsified_and_blocked": true
+      },
+      {
+        "case": "Java with missing PID",
+        "falsified_and_blocked": true
+      }
+    ]
+  }
+}
