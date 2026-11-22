@@ -48,12 +48,22 @@ from opentelemetry.instrumentation.flask import FlaskInstrumentor
 
 app = Flask(__name__)
 
+def get_linux_comm():
+    try:
+        with open("/proc/self/comm", "r") as f:
+            return f.read().strip()
+    except Exception:
+        return "observability-python-app"
+
 def jsonify(data, *args, **kwargs):
     if isinstance(data, dict):
         data.update({
             "app_name": "observability-python-app",
             "version": "1.0.1",
             "language": "python",
+            "process_name": "observability-python-app",
+            "pid": os.getpid(),
+            "linux_comm": get_linux_comm(),
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
     return original_jsonify(data, *args, **kwargs)
@@ -508,9 +518,23 @@ def selftest():
     }), 200 if result.wasSuccessful() else 500
 
 @app.route('/health')
+@app.route('/actuator/health')
+@app.route('/actuator/health/liveness')
+@app.route('/actuator/health/readiness')
 def health():
     """Liveness & readiness probe"""
     return jsonify({"status": "UP", "language": "python", "app": "observability-python-app"}), 200
+
+@app.route('/actuator/info')
+def actuator_info():
+    """Spring Boot-compatible Actuator info probe"""
+    return jsonify({
+        "app": {
+            "name": "observability-python-app",
+            "version": "1.0.1",
+            "language": "python"
+        }
+    }), 200
 
 @app.route('/compute/<int:n>')
 def compute(n):

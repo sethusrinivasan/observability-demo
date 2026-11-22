@@ -270,6 +270,17 @@ app.Use(async (context, next) =>
     requestDurationHistogram.Record(durationSec, tags);
 });
 
+string GetLinuxComm()
+{
+    try
+    {
+        if (File.Exists("/proc/self/comm"))
+            return File.ReadAllText("/proc/self/comm").Trim();
+    }
+    catch {}
+    return AppName;
+}
+
 // Helper for standardized JSON response
 Dictionary<string, object?> WithContext(Dictionary<string, object?>? extra = null)
 {
@@ -278,6 +289,9 @@ Dictionary<string, object?> WithContext(Dictionary<string, object?>? extra = nul
         ["app_name"] = AppName,
         ["version"] = Version,
         ["language"] = Language,
+        ["process_name"] = AppName,
+        ["pid"] = Environment.ProcessId,
+        ["linux_comm"] = GetLinuxComm(),
         ["timestamp"] = DateTime.UtcNow.ToString("o")
     };
     if (extra != null)

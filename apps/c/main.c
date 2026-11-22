@@ -79,13 +79,35 @@ static void get_iso8601_timestamp(char *buf, size_t size) {
     snprintf(buf, size, "%s.%03ldZ", tmp, ts.tv_nsec / 1000000L);
 }
 
+static void get_linux_comm(char *buf, size_t size) {
+    FILE *f = fopen("/proc/self/comm", "r");
+    if (f) {
+        if (fgets(buf, size, f)) {
+            size_t len = strlen(buf);
+            while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r')) {
+                buf[--len] = '\0';
+            }
+            fclose(f);
+            return;
+        }
+        fclose(f);
+    }
+    strncpy(buf, APP_NAME, size - 1);
+    buf[size - 1] = '\0';
+}
+
 static void attach_context(cJSON *root) {
     if (!root) return;
     char ts[64];
+    char comm[64];
     get_iso8601_timestamp(ts, sizeof(ts));
+    get_linux_comm(comm, sizeof(comm));
     cJSON_AddStringToObject(root, "app_name", APP_NAME);
     cJSON_AddStringToObject(root, "version", VERSION);
     cJSON_AddStringToObject(root, "language", LANGUAGE);
+    cJSON_AddStringToObject(root, "process_name", APP_NAME);
+    cJSON_AddNumberToObject(root, "pid", (double)getpid());
+    cJSON_AddStringToObject(root, "linux_comm", comm);
     cJSON_AddStringToObject(root, "timestamp", ts);
 }
 

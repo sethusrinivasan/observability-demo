@@ -210,11 +210,22 @@ app.use(limiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+function getLinuxComm() {
+  try {
+    return fs.readFileSync("/proc/self/comm", "utf8").trim();
+  } catch {
+    return APP_NAME;
+  }
+}
+
 function withContext(data = {}) {
   return {
     app_name: APP_NAME,
     version: VERSION,
     language: LANGUAGE,
+    process_name: APP_NAME,
+    pid: process.pid,
+    linux_comm: getLinuxComm(),
     timestamp: new Date().toISOString(),
     ...data,
   };

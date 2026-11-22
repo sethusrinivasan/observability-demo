@@ -1,5 +1,5 @@
-# Build stage
-FROM maven:3.9-eclipse-temurin-17 AS build
+# Build stage (runs natively on build host for rapid bytecode compilation)
+FROM --platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-17 AS build
 WORKDIR /app
 COPY pom.xml .
 RUN mvn dependency:go-offline

@@ -80,16 +80,27 @@ function getDb(): ?PDO {
     }
 }
 
+function getLinuxComm(): string {
+    $comm = @file_get_contents('/proc/self/comm');
+    if ($comm !== false) {
+        return trim($comm);
+    }
+    return APP_NAME;
+}
+
 function jsonResponse(int $statusCode, array $data, float $startTime, string $path, string $method): void {
     http_response_code($statusCode);
     header('Content-Type: application/json; charset=utf-8');
     header('Access-Control-Allow-Origin: *');
 
     $payload = array_merge([
-        'app_name'  => APP_NAME,
-        'version'   => VERSION,
-        'language'  => LANGUAGE,
-        'timestamp' => gmdate('Y-m-d\TH:i:s\Z'),
+        'app_name'     => APP_NAME,
+        'version'      => VERSION,
+        'language'     => LANGUAGE,
+        'process_name' => APP_NAME,
+        'pid'          => getmypid(),
+        'linux_comm'   => getLinuxComm(),
+        'timestamp'    => gmdate('Y-m-d\TH:i:s\Z'),
     ], $data);
 
     $duration = microtime(true) - $startTime;

@@ -8781,7 +8781,7 @@ def render_dashboard_html() -> str:
 
         appRows += `<tr>
           <td><span class="badge badge-${{lang}}">${{lang.toUpperCase()}}</span></td>
-          <td><code>${{app.url}}</code></td>
+          <td><a href="${{app.url}}" target="_blank" rel="noopener noreferrer" style="color:var(--accent); text-decoration:none;" title="Open ${{lang.toUpperCase()}} microservice in new window"><code>${{app.url}}</code> <span style="font-size:0.75rem;">↗</span></a></td>
           <td>${{workloadBadge}}</td>
           <td>${{reachBadge}}</td>
           <td style="text-align:right;">${{Number(app.total).toLocaleString()}}</td>

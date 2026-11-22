@@ -1,10 +1,12 @@
-# Build stage
-FROM golang:1.25-alpine AS builder
+# Build stage (runs natively on build host and cross-compiles to target architecture)
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/server .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-arm64} go build -ldflags="-w -s" -o /app/server .
 
 # Runtime stage
 FROM alpine:3.20

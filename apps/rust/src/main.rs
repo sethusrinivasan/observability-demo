@@ -232,14 +232,22 @@ async fn main() -> anyhow::Result<()> {
         .init());
 
     let app_name = std::env::var("APPLICATION_NAME").unwrap_or_else(|_| "observability-rust-app".to_string());
-    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "postgres".to_string());
-        let port = std::env::var("POSTGRES_PORT").unwrap_or_else(|_| "5432".to_string());
-        let db = std::env::var("POSTGRES_DB").unwrap_or_else(|_| "observability".to_string());
-        let user = std::env::var("POSTGRES_USER").unwrap_or_else(|_| "observability".to_string());
-        let pass = std::env::var("POSTGRES_PASSWORD").unwrap_or_else(|_| "observability".to_string());
+    let raw_db_url = std::env::var("DATABASE_URL").unwrap_or_default();
+    let db_url = if !raw_db_url.trim().is_empty() {
+        raw_db_url
+    } else {
+        let host = std::env::var("POSTGRES_HOST").unwrap_or_default();
+        let host = if host.trim().is_empty() { "127.0.0.1".to_string() } else { host };
+        let port = std::env::var("POSTGRES_PORT").unwrap_or_default();
+        let port = if port.trim().is_empty() { "5432".to_string() } else { port };
+        let db = std::env::var("POSTGRES_DB").unwrap_or_default();
+        let db = if db.trim().is_empty() { "observability".to_string() } else { db };
+        let user = std::env::var("POSTGRES_USER").unwrap_or_default();
+        let user = if user.trim().is_empty() { "observability".to_string() } else { user };
+        let pass = std::env::var("POSTGRES_PASSWORD").unwrap_or_default();
+        let pass = if pass.trim().is_empty() { "observability".to_string() } else { pass };
         format!("postgres://{}:{}@{}:{}/{}?application_name={}", user, pass, host, port, db, app_name)
-    });
+    };
     let db = PgPoolOptions::new()
         .max_connections(2)
         .connect_lazy(&db_url)?;
@@ -256,6 +264,10 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/", get(home))
         .route("/health", get(health_handler))
+        .route("/actuator/health", get(health_handler))
+        .route("/actuator/health/liveness", get(health_handler))
+        .route("/actuator/health/readiness", get(health_handler))
+        .route("/actuator/info", get(actuator_info))
         .route("/version", get(version))
         .route("/selftest", get(selftest))
         .route("/compute/:n", get(compute))
@@ -280,11 +292,20 @@ async fn main() -> anyhow::Result<()> {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+fn get_linux_comm() -> String {
+    std::fs::read_to_string("/proc/self/comm")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "observability-rust-app".to_string())
+}
+
 fn attach_context(mut data: serde_json::Value) -> serde_json::Value {
     if let Some(obj) = data.as_object_mut() {
         obj.insert("app_name".to_string(), serde_json::json!("observability-rust-app"));
         obj.insert("version".to_string(), serde_json::json!("1.0.1"));
         obj.insert("language".to_string(), serde_json::json!("rust"));
+        obj.insert("process_name".to_string(), serde_json::json!("observability-rust-app"));
+        obj.insert("pid".to_string(), serde_json::json!(std::process::id()));
+        obj.insert("linux_comm".to_string(), serde_json::json!(get_linux_comm()));
         obj.insert("timestamp".to_string(), serde_json::json!(chrono::Utc::now().to_rfc3339()));
     }
     data
@@ -323,6 +344,16 @@ async fn health_handler() -> impl IntoResponse {
         "language": "rust",
         "app": "observability-rust-app"
     }))).into_response()
+}
+
+async fn actuator_info() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "app": {
+            "name": "observability-rust-app",
+            "version": "1.0.1",
+            "language": "rust"
+        }
+    })).into_response()
 }
 
 async fn version() -> impl IntoResponse {

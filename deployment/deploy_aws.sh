@@ -141,18 +141,24 @@ build_and_push_service() {
 
   local platform="linux/arm64"
   if [ "${svc_name}" = "observability-swift-app" ]; then
-    platform="linux/amd64"
+    log_info "Building linux/amd64 image natively for ${BOLD}${svc_name}${NC} (Tagged: ApplicationName=${APP_TAG})..."
+    docker build \
+      --build-arg APPLICATION_NAME="${APP_TAG}" \
+      -t "${repo_url}:latest" \
+      -f "${REPO_ROOT}/${dockerfile}" \
+      "${context_dir}"
+    docker push "${repo_url}:latest"
+  else
+    log_info "Building ${platform} image for ${BOLD}${svc_name}${NC} (Tagged: ApplicationName=${APP_TAG})..."
+    docker buildx build \
+      --platform "${platform}" \
+      --provenance=false \
+      --build-arg APPLICATION_NAME="${APP_TAG}" \
+      -t "${repo_url}:latest" \
+      -f "${REPO_ROOT}/${dockerfile}" \
+      "${context_dir}" \
+      --push
   fi
-
-  log_info "Building ${platform} image for ${BOLD}${svc_name}${NC} (Tagged: ApplicationName=${APP_TAG})..."
-  docker buildx build \
-    --platform "${platform}" \
-    --provenance=false \
-    --build-arg APPLICATION_NAME="${APP_TAG}" \
-    -t "${repo_url}:latest" \
-    -f "${REPO_ROOT}/${dockerfile}" \
-    "${context_dir}" \
-    --push
 
   log_success "Built & pushed: ${repo_url}:latest"
 }
@@ -243,10 +249,20 @@ cmd_deploy() {
     local fn="${entry##*:}"
     if [ "${target}" = "all" ] || [ "${target}" = "${svc}" ]; then
       log_info "Updating Lambda function: ${fn}..."
-      aws lambda update-function-code \
-        --region "${AWS_REGION}" \
-        --function-name "${fn}" \
-        --image-uri "${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com/${svc}:latest" >/dev/null
+      local digest
+      digest=$(aws ecr describe-images --repository-name "${svc}" --region "${AWS_REGION}" --image-ids imageTag=latest --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+      if [ -n "${digest}" ] && [ "${digest}" != "None" ]; then
+        log_info "Using immutable digest: ${digest}"
+        aws lambda update-function-code \
+          --region "${AWS_REGION}" \
+          --function-name "${fn}" \
+          --image-uri "${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com/${svc}@${digest}" >/dev/null
+      else
+        aws lambda update-function-code \
+          --region "${AWS_REGION}" \
+          --function-name "${fn}" \
+          --image-uri "${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com/${svc}:latest" >/dev/null
+      fi
       log_success "Updated ${fn}"
     fi
   done

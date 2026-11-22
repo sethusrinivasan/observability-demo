@@ -226,6 +226,18 @@ def test_aws_all_seven_microservices_live_endpoints():
             "swift": "https://6cq3xl2oie6huoo4mxrqxxfgqu0upybj.lambda-url.us-east-2.on.aws",
         }
 
+    EXPECTED_APP_METADATA = {
+        "python": {"app_name": "observability-python-app", "languages": ["python"]},
+        "java": {"app_name": "observability-java-app", "languages": ["java"]},
+        "rust": {"app_name": "observability-rust-app", "languages": ["rust"]},
+        "node": {"app_name": "observability-node-app", "languages": ["nodejs", "node", "javascript"]},
+        "go": {"app_name": "observability-go-app", "languages": ["golang", "go"]},
+        "dotnet": {"app_name": "observability-dotnet-app", "languages": ["csharp", "dotnet"]},
+        "c": {"app_name": "observability-c-app", "languages": ["c"]},
+        "php": {"app_name": "observability-php-app", "languages": ["php"]},
+        "swift": {"app_name": "observability-swift-app", "languages": ["swift"]},
+    }
+
     for lang, base_url in microservices.items():
         base_clean = base_url.rstrip("/")
         # Check /version
@@ -234,6 +246,22 @@ def test_aws_all_seven_microservices_live_endpoints():
         v_data = v_resp.json()
         assert "app_name" in v_data
         assert "version" in v_data
+
+        expected = EXPECTED_APP_METADATA.get(lang)
+        if expected:
+            assert v_data.get("app_name") == expected["app_name"], (
+                f"IDENTITY DRIFT in live AWS deployment: {lang} endpoint returned app_name "
+                f"'{v_data.get('app_name')}', expected '{expected['app_name']}'"
+            )
+            assert v_data.get("language") in expected["languages"], (
+                f"IDENTITY DRIFT in live AWS deployment: {lang} endpoint returned language "
+                f"'{v_data.get('language')}', expected '{expected['languages']}'"
+            )
+            if "process_name" in v_data:
+                assert v_data.get("process_name") == expected["app_name"], (
+                    f"PROCESS DRIFT in live AWS deployment: {lang} endpoint returned process_name "
+                    f"'{v_data.get('process_name')}', expected '{expected['app_name']}'"
+                )
 
         # Check /compute/5
         c_resp = requests.get(f"{base_clean}/compute/5", timeout=10)

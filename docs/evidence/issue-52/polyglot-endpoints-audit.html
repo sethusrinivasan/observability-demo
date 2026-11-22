@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #0d1117; color: #c9d1d9; padding: 24px; }
+  h1 { color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 12px; margin-bottom: 16px; font-size: 24px; }
+  .badge-drift { background: #f85149; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+  .badge-fixed { background: #238636; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+  table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+  th, td { border: 1px solid #30363d; padding: 10px 14px; text-align: left; font-size: 13px; }
+  th { background: #161b22; color: #8b949e; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+  tr:nth-child(even) { background: #161b22; }
+  code { font-family: monospace; color: #79c0ff; background: rgba(110,118,129,0.4); padding: 2px 6px; border-radius: 4px; }
+  pre { margin: 0; font-size: 12px; color: #7ee787; }
+</style>
+</head>
+<body>
+<h1>Observability Demo — Polyglot Runtime Live Audit Snapshot</h1>
+<p style="color: #8b949e; margin-bottom: 20px;">Snapshot captured at 2026-11-22 08:59:41 UTC for GitHub Issue #52 Audit</p>
+<table>
+  <thead>
+    <tr>
+      <th>Service</th>
+      <th>Endpoint URL</th>
+      <th>Observed Language</th>
+      <th>Process Name</th>
+      <th>Linux Comm (/proc/self/comm)</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+
+    <tr>
+      <td><strong>C</strong></td>
+      <td><code>https://omtosemwg4qxxjqlnbidwl4mvm0wvqva.lambda-url.us-east-2.on.aws/version</code></td>
+      <td style="color: #7ee787; font-weight: bold;">c</td>
+      <td><code>observability-c-app</code></td>
+      <td><code>server</code></td>
+      <td><span class="badge-fixed">GENUINE RUNTIME</span></td>
+    </tr>
+    
+    <tr>
+      <td><strong>DOTNET</strong></td>
+      <td><code>https://4o5yjl47yxdg5e5tsj727mchb40evddy.lambda-url.us-east-2.on.aws/version</code></td>
+      <td style="color: #f85149; font-weight: bold;">csharp</td>
+      <td><code>observability-dotnet-app</code></td>
+      <td><code>dotnet</code></td>
+      <td><span class="badge-drift">GO-CONTAINER DRIFT</span></td>
+    </tr>
+    
+    <tr>
+      <td><strong>GO</strong></td>
+      <td><code>https://h74bl44slegkr7c6h32hyygzui0djbvn.lambda-url.us-east-2.on.aws/version</code></td>
+      <td style="color: #7ee787; font-weight: bold;">golang</td>
+      <td><code>observability-go-app</code></td>
+      <td><code>server</code></td>
+      <td><span class="badge-fixed">GENUINE RUNTIME</span></td>
+    </tr>
+    
+    <tr>
+      <td><strong>JAVA</strong></td>
+      <td><code>https://c5nmwnntg56s7v6gr2cowlmqqm0bcovb.lambda-url.us-east-2.on.aws/version</code></td>
+      <td style="color: #7ee787; font-weight: bold;">java</td>
+      <td><code>observability-java-app</code></td>
+      <td><code>java</code></td>
+      <td><span class="badge-fixed">GENUINE RUNTIME</span></td>
+    </tr>
+    
+    <tr>
+      <td><strong>NODE</strong></td>
+      <td><code>https://xo3ktoqz6qz3dm5o64hvgm22mq0zkqat.lambda-url.us-east-2.on.aws/version</code></td>
+      <td style="color: #f85149; font-weight: bold;">nodejs</td>
+      <td><code>observability-node-app</code></td>
+      <td><code>node</code></td>
+      <td><span class="badge-drift">GO-CONTAINER DRIFT</span></td>
+    </tr>
+    
+    <tr>
+      <td><strong>PHP</strong></td>
+      <td><code>https://gvn63eisikfv2zvzf52bqngwku0zhtkv.lambda-url.us-east-2.on.aws/version</code></td>
+      <td style="color: #7ee787; font-weight: bold;">php</td>
+      <td><code>observability-php-app</code></td>
+      <td><code>php</code></td>
+      <td><span class="badge-fixed">GENUINE RUNTIME</span></td>
+    </tr>
+    
+    <tr>
+      <td><strong>PYTHON</strong></td>
+      <td><code>https://mxhrcxceaeluv6gu2cod4quwpm0kfydz.lambda-url.us-east-2.on.aws/version</code></td>
+      <td style="color: #7ee787; font-weight: bold;">python</td>
+      <td><code>observability-python-app</code></td>
+      <td><code>gunicorn</code></td>
+      <td><span class="badge-fixed">GENUINE RUNTIME</span></td>
+    </tr>
+    
+    <tr>
+      <td><strong>RUST</strong></td>
+      <td><code>https://nulam6s4glkv2wafy6tcrjn2j40fyhim.lambda-url.us-east-2.on.aws/version</code></td>
+      <td style="color: #7ee787; font-weight: bold;">rust</td>
+      <td><code>observability-rust-app</code></td>
+      <td><code>observability-r</code></td>
+      <td><span class="badge-fixed">GENUINE RUNTIME</span></td>
+    </tr>
+    
+    <tr>
+      <td><strong>SWIFT</strong></td>
+      <td><code>https://6cq3xl2oie6huoo4mxrqxxfgqu0upybj.lambda-url.us-east-2.on.aws/version</code></td>
+      <td style="color: #7ee787; font-weight: bold;">swift</td>
+      <td><code>observability-swift-app</code></td>
+      <td><code>observability-s</code></td>
+      <td><span class="badge-fixed">GENUINE RUNTIME</span></td>
+    </tr>
+    
+  </tbody>
+</table>
+</body>
+</html>

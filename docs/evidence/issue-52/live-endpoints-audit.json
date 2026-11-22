@@ -1,0 +1,122 @@
+{
+  "c": {
+    "url": "https://omtosemwg4qxxjqlnbidwl4mvm0wvqva.lambda-url.us-east-2.on.aws/version",
+    "status": "online",
+    "response": {
+      "app_name": "observability-c-app",
+      "version": "1.0.1",
+      "language": "c",
+      "process_name": "observability-c-app",
+      "pid": 5,
+      "linux_comm": "server",
+      "timestamp": "2026-11-22T08:59:37.275Z"
+    }
+  },
+  "dotnet": {
+    "url": "https://4o5yjl47yxdg5e5tsj727mchb40evddy.lambda-url.us-east-2.on.aws/version",
+    "status": "online",
+    "response": {
+      "app_name": "observability-dotnet-app",
+      "version": "1.0.1",
+      "language": "csharp",
+      "process_name": "observability-dotnet-app",
+      "pid": 5,
+      "linux_comm": "dotnet",
+      "timestamp": "2026-11-22T08:59:37.5986521Z"
+    }
+  },
+  "go": {
+    "url": "https://h74bl44slegkr7c6h32hyygzui0djbvn.lambda-url.us-east-2.on.aws/version",
+    "status": "online",
+    "response": {
+      "app_name": "observability-go-app",
+      "language": "golang",
+      "linux_comm": "server",
+      "pid": 5,
+      "process_name": "observability-go-app",
+      "timestamp": "2026-11-22T08:59:37Z",
+      "version": "1.0.1"
+    }
+  },
+  "java": {
+    "url": "https://c5nmwnntg56s7v6gr2cowlmqqm0bcovb.lambda-url.us-east-2.on.aws/version",
+    "status": "online",
+    "response": {
+      "app_name": "observability-java-app",
+      "linux_comm": "java",
+      "process_name": "observability-java-app",
+      "language": "java",
+      "pid": 5,
+      "version": "1.0.1",
+      "timestamp": "2026-11-22T08:59:38.415382775Z"
+    }
+  },
+  "node": {
+    "url": "https://xo3ktoqz6qz3dm5o64hvgm22mq0zkqat.lambda-url.us-east-2.on.aws/version",
+    "status": "online",
+    "response": {
+      "app_name": "observability-node-app",
+      "version": "1.0.1",
+      "language": "nodejs",
+      "process_name": "observability-node-app",
+      "pid": 5,
+      "linux_comm": "node",
+      "timestamp": "2026-11-22T08:59:39.472Z"
+    }
+  },
+  "php": {
+    "url": "https://gvn63eisikfv2zvzf52bqngwku0zhtkv.lambda-url.us-east-2.on.aws/version",
+    "status": "online",
+    "response": {
+      "app_name": "observability-php-app",
+      "version": "1.0.1",
+      "language": "php",
+      "process_name": "observability-php-app",
+      "pid": 9,
+      "linux_comm": "php",
+      "timestamp": "2026-11-22T08:59:39Z",
+      "framework": "php-cli-server"
+    }
+  },
+  "python": {
+    "url": "https://mxhrcxceaeluv6gu2cod4quwpm0kfydz.lambda-url.us-east-2.on.aws/version",
+    "status": "online",
+    "response": {
+      "app_name": "observability-python-app",
+      "language": "python",
+      "linux_comm": "gunicorn",
+      "pid": 6,
+      "process_name": "observability-python-app",
+      "timestamp": "2026-11-22T08:59:40.476386+00:00",
+      "version": "1.0.1"
+    }
+  },
+  "rust": {
+    "url": "https://nulam6s4glkv2wafy6tcrjn2j40fyhim.lambda-url.us-east-2.on.aws/version",
+    "status": "online",
+    "response": {
+      "app_name": "observability-rust-app",
+      "language": "rust",
+      "linux_comm": "observability-r",
+      "pid": 5,
+      "process_name": "observability-rust-app",
+      "timestamp": "2026-11-22T08:59:40.878631744+00:00",
+      "version": "1.0.1"
+    }
+  },
+  "swift": {
+    "url": "https://6cq3xl2oie6huoo4mxrqxxfgqu0upybj.lambda-url.us-east-2.on.aws/version",
+    "status": "online",
+    "response": {
+      "app_name": "observability-swift-app",
+      "framework": "swift-standard-library",
+      "language": "swift",
+      "linux_comm": "observability-s",
+      "pid": 5,
+      "process_name": "observability-swift-app",
+      "runtime": "swift-6.0",
+      "timestamp": "2026-11-22T08:59:41Z",
+      "version": "1.0.1"
+    }
+  }
+}

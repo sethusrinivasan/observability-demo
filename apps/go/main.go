@@ -224,12 +224,23 @@ func getSystemLoadAvg() float64 {
 	return 0.0
 }
 
+func getLinuxComm() string {
+	data, err := os.ReadFile("/proc/self/comm")
+	if err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	return AppName
+}
+
 func withContextMap(extra map[string]interface{}) map[string]interface{} {
 	resp := map[string]interface{}{
-		"app_name":  AppName,
-		"version":   Version,
-		"language":  Language,
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"app_name":     AppName,
+		"version":      Version,
+		"language":     Language,
+		"process_name": AppName,
+		"pid":          os.Getpid(),
+		"linux_comm":   getLinuxComm(),
+		"timestamp":    time.Now().UTC().Format(time.RFC3339),
 	}
 	for k, v := range extra {
 		resp[k] = v

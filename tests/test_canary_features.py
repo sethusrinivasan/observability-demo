@@ -104,8 +104,11 @@ def test_dashboard_html_elements_and_features():
     assert 'id="ondemand-modal"' in html
     assert 'ondemand-results-body' in html
     assert 'ondemand-summary-bar' in html
-    assert 'triggerOnDemandPulse' in html
-    assert 'closeOnDemandModal' in html
+    # Clickable Microservice URLs in new window
+    assert 'target="_blank"' in html
+    assert 'rel="noopener noreferrer"' in html
+    assert 'title="Open' in html
+
 
 
 def test_on_demand_synthetic_cycle():

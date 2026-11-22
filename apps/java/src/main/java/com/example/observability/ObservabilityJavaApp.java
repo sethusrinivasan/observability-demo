@@ -93,6 +93,34 @@ class OTelConfig {
         return openTelemetry.getTracer("com.example.observability");
     }
 
+    @Bean
+    public javax.sql.DataSource dataSource(
+            @org.springframework.beans.factory.annotation.Value("${SPRING_DATASOURCE_URL:}") String url,
+            @org.springframework.beans.factory.annotation.Value("${POSTGRES_HOST:}") String host,
+            @org.springframework.beans.factory.annotation.Value("${POSTGRES_PORT:5432}") String port,
+            @org.springframework.beans.factory.annotation.Value("${POSTGRES_DB:observability}") String db,
+            @org.springframework.beans.factory.annotation.Value("${SPRING_DATASOURCE_USERNAME:observability}") String user,
+            @org.springframework.beans.factory.annotation.Value("${SPRING_DATASOURCE_PASSWORD:observability}") String pass) {
+        String effectiveUrl = (url != null && !url.trim().isEmpty())
+                ? url
+                : ((host != null && !host.trim().isEmpty())
+                    ? "jdbc:postgresql://" + host + ":" + port + "/" + db + "?ApplicationName=observability-java-app&sslmode=prefer"
+                    : "jdbc:postgresql://127.0.0.1:5432/observability?ApplicationName=observability-java-app&sslmode=prefer");
+        com.zaxxer.hikari.HikariConfig config = new com.zaxxer.hikari.HikariConfig();
+        config.setDriverClassName("org.postgresql.Driver");
+        config.setJdbcUrl(effectiveUrl);
+        config.setUsername((user != null && !user.trim().isEmpty()) ? user : "observability");
+        config.setPassword((pass != null && !pass.trim().isEmpty()) ? pass : "observability");
+        config.setInitializationFailTimeout(-1);
+        config.setConnectionTimeout(3000);
+        config.setMaximumPoolSize(2);
+        config.setMinimumIdle(0);
+        config.setIdleTimeout(30000);
+        config.setMaxLifetime(600000);
+        config.setPoolName("ObservabilityHikariPool");
+        return new com.zaxxer.hikari.HikariDataSource(config);
+    }
+
     private long readCgroupLong(String v2path, String v1path) {
         try {
             if (Files.exists(Paths.get(v2path))) {
@@ -289,13 +317,24 @@ class AppController {
     private static final Logger logger = LoggerFactory.getLogger(AppController.class);
 
     @Autowired private Tracer tracer;
-    @Autowired private JdbcTemplate jdbcTemplate;
+    @Autowired(required = false) private JdbcTemplate jdbcTemplate;
+
+    private static String getLinuxComm() {
+        try {
+            return java.nio.file.Files.readString(java.nio.file.Path.of("/proc/self/comm")).trim();
+        } catch (Exception e) {
+            return "observability-java-app";
+        }
+    }
 
     private Map<String, Object> withContext(Map<String, Object> data) {
         Map<String, Object> res = new HashMap<>(data);
         res.put("app_name", "observability-java-app");
         res.put("version", "1.0.1");
         res.put("language", "java");
+        res.put("process_name", "observability-java-app");
+        res.put("pid", ProcessHandle.current().pid());
+        res.put("linux_comm", getLinuxComm());
         res.put("timestamp", java.time.Instant.now().toString());
         return res;
     }

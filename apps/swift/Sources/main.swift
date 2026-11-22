@@ -233,6 +233,13 @@ func parseQueryString(_ query: String) -> [String: String] {
     return params
 }
 
+func getLinuxComm() -> String {
+    if let comm = try? String(contentsOfFile: "/proc/self/comm", encoding: .utf8) {
+        return comm.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    return appName
+}
+
 func handleRequest(method: String, fullPath: String, body: String) -> HTTPResponse {
     if method == "OPTIONS" || method == "HEAD" {
         return HTTPResponse(statusCode: 200, statusText: "OK", contentType: "text/plain", text: "")
@@ -272,10 +279,15 @@ func handleRequest(method: String, fullPath: String, body: String) -> HTTPRespon
     }
 
     if path == "/version" {
+        let formatter = ISO8601DateFormatter()
         return HTTPResponse(json: [
             "app_name": "observability-swift-app",
             "version": appVersion,
             "language": appLanguage,
+            "process_name": "observability-swift-app",
+            "pid": getpid(),
+            "linux_comm": getLinuxComm(),
+            "timestamp": formatter.string(from: Date()),
             "framework": "swift-standard-library",
             "runtime": "swift-6.0"
         ])
