@@ -1,0 +1,268 @@
+2026-11-25 04:44:02 UTC::@:[2144]:WARNING:  invalid configuration parameter name "rds.proxy_protocol_trusted_cidr", removing it	2026-11-25 04:44:02 UTC::@:[2144]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:02 UTC::@:[2144]:WARNING:  invalid configuration parameter name "rds.queryid_counters_min_eviction_sec", removing it	2026-11-25 04:44:02 UTC::@:[2144]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:02 UTC::@:[2144]:WARNING:  invalid configuration parameter name "rds.proxy_protocol_enabled", removing it	2026-11-25 04:44:02 UTC::@:[2144]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:02 UTC::@:[2144]:WARNING:  invalid configuration parameter name "rds.babelfish_status", removing it	2026-11-25 04:44:02 UTC::@:[2144]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:02 UTC::@:[2144]:WARNING:  invalid configuration parameter name "rds.adaptive_autovacuum", removing it	2026-11-25 04:44:02 UTC::@:[2144]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:02 UTC::@:[2144]:WARNING:  invalid configuration parameter name "rds.csd_test_parameter_3", removing it	2026-11-25 04:44:02 UTC::@:[2144]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:02 UTC::@:[2144]:WARNING:  invalid configuration parameter name "rds.enable_plan_management", removing it	2026-11-25 04:44:02 UTC::@:[2144]:DETAIL:  "rds" is now a reserved prefix.
+Postgres Shared Memory Value: 499122176 bytes	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71882]:LOG:  Zero downtime patching has commenced.	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71882]:LOG:  Upgrade initiated from version: 17.9.3	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71882]:LOG:  ZD quiet point found.	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71882]:LOG:  [ZD METRICS] name: ZD-WAIT-TIME, value: 2363, desc: Time in micro seconds spent in quiet point found stage	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71881]:LOG:  [ZD METRICS] name: ZD-TERMINATED-ACTIVE-CONNECTION-COUNT, value: 0, desc: Number of active connections drooped druing the event	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71881]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-TEMP-TABLE, value: 0, desc: Number of connections dropped due to temporary table	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71881]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-LOCKS, value: 0, desc: Number of connections dropped due to locks	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71881]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-CURSOR-HOLD, value: 0, desc: Number of connections dropped due to cursor with hold	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71881]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-LISTENING-CHANNEL, value: 0, desc: Number of connections dropped due to listening on channels	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71881]:LOG:  [ZD METRICS] name: ZD-CONN-DELAYED-QUERY-EXECUTION-COUNT, value: 0, desc: Number of connections whose queries were delayed during the event	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71881]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-BBF-SP-PREPARE, value: 0, desc: Number of connections dropped due to Babelfish prepared statements	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71881]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-BBF-TEMP-TABLE, value: 0, desc: Number of connections dropped due to Babelfish local temporary tables	2026-11-25 04:44:02 UTC:[local]:rdsadmin@rdsadmin:[71881]:LOG:  [ZD METRICS] name: ZD-SSL-CONN-DROPPED, value: 0, desc: Number of SSL connections dropped due to unsupported TLS version for ZDP	2026-11-25 04:44:02 UTC::@:[72187]:LOG:  [ZD METRICS] name: ZD-SOCKET-TRANSFER-CONN-DROPPED, value: 0, desc: Number of connections that are rejected during ZDP Event due to transfer timeout	2026-11-25 04:44:02 UTC::@:[72187]:LOG:  [ZD METRICS] name: ZD-NEW-CONN-REJ-COUNT, value: 0, desc: Number of new connections requests that are rejected during ZDP Event	2026-11-25 04:44:02 UTC::@:[71699]:LOG:  received fast shutdown request	2026-11-25 04:44:02 UTC::@:[71699]:LOG:  aborting any active transactions	2026-11-25 04:44:02 UTC::@:[71729]:LOG:  resource monitoring process shutting down	2026-11-25 04:44:02 UTC::@:[71727]:LOG:  [ZD METRICS] name: ZD-TERMINATED-ACTIVE-CONNECTION-COUNT, value: 0, desc: Number of active connections drooped druing the event	2026-11-25 04:44:02 UTC::@:[71727]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-TEMP-TABLE, value: 0, desc: Number of connections dropped due to temporary table	2026-11-25 04:44:02 UTC::@:[71727]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-LOCKS, value: 0, desc: Number of connections dropped due to locks	2026-11-25 04:44:02 UTC::@:[71727]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-CURSOR-HOLD, value: 0, desc: Number of connections dropped due to cursor with hold	2026-11-25 04:44:02 UTC::@:[71727]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-LISTENING-CHANNEL, value: 0, desc: Number of connections dropped due to listening on channels	2026-11-25 04:44:02 UTC::@:[71727]:LOG:  [ZD METRICS] name: ZD-CONN-DELAYED-QUERY-EXECUTION-COUNT, value: 0, desc: Number of connections whose queries were delayed during the event	2026-11-25 04:44:02 UTC::@:[71727]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-BBF-SP-PREPARE, value: 0, desc: Number of connections dropped due to Babelfish prepared statements	2026-11-25 04:44:02 UTC::@:[71727]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-BBF-TEMP-TABLE, value: 0, desc: Number of connections dropped due to Babelfish local temporary tables	2026-11-25 04:44:02 UTC::@:[71727]:LOG:  [ZD METRICS] name: ZD-SSL-CONN-DROPPED, value: 0, desc: Number of SSL connections dropped due to unsupported TLS version for ZDP	2026-11-25 04:44:02 UTC::@:[71728]:LOG:  [ZD METRICS] name: ZD-TERMINATED-ACTIVE-CONNECTION-COUNT, value: 0, desc: Number of active connections drooped druing the event	2026-11-25 04:44:02 UTC::@:[71728]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-TEMP-TABLE, value: 0, desc: Number of connections dropped due to temporary table	2026-11-25 04:44:02 UTC::@:[71728]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-LOCKS, value: 0, desc: Number of connections dropped due to locks	2026-11-25 04:44:02 UTC::@:[71728]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-CURSOR-HOLD, value: 0, desc: Number of connections dropped due to cursor with hold	2026-11-25 04:44:02 UTC::@:[71728]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-LISTENING-CHANNEL, value: 0, desc: Number of connections dropped due to listening on channels	2026-11-25 04:44:02 UTC::@:[71728]:LOG:  [ZD METRICS] name: ZD-CONN-DELAYED-QUERY-EXECUTION-COUNT, value: 0, desc: Number of connections whose queries were delayed during the event	2026-11-25 04:44:02 UTC::@:[71728]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-BBF-SP-PREPARE, value: 0, desc: Number of connections dropped due to Babelfish prepared statements	2026-11-25 04:44:02 UTC::@:[71728]:LOG:  [ZD METRICS] name: ZD-CONN-CLOSE-CAUSE-BBF-TEMP-TABLE, value: 0, desc: Number of connections dropped due to Babelfish local temporary tables	2026-11-25 04:44:02 UTC::@:[71728]:LOG:  [ZD METRICS] name: ZD-SSL-CONN-DROPPED, value: 0, desc: Number of SSL connections dropped due to unsupported TLS version for ZDP	2026-11-25 04:44:02 UTC::@:[71699]:LOG:  background worker "logical replication launcher" (PID 71728) exited with exit code 1	2026-11-25 04:44:02 UTC::@:[71723]:LOG:  shutting down	2026-11-25 04:44:02 UTC::@:[71699]:LOG:  database system is shut down	2026-11-25 04:44:02.114 GMT [2144] LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:44:02.114 GMT [2144] LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:44:03 UTC::@:[72187]:WARNING:  invalid configuration parameter name "rds.proxy_protocol_trusted_cidr", removing it	2026-11-25 04:44:03 UTC::@:[72187]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:03 UTC::@:[72187]:WARNING:  invalid configuration parameter name "rds.queryid_counters_min_eviction_sec", removing it	2026-11-25 04:44:03 UTC::@:[72187]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:03 UTC::@:[72187]:WARNING:  invalid configuration parameter name "rds.proxy_protocol_enabled", removing it	2026-11-25 04:44:03 UTC::@:[72187]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:03 UTC::@:[72187]:WARNING:  invalid configuration parameter name "rds.babelfish_status", removing it	2026-11-25 04:44:03 UTC::@:[72187]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:03 UTC::@:[72187]:WARNING:  invalid configuration parameter name "rds.adaptive_autovacuum", removing it	2026-11-25 04:44:03 UTC::@:[72187]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:03 UTC::@:[72187]:WARNING:  invalid configuration parameter name "rds.csd_test_parameter_3", removing it	2026-11-25 04:44:03 UTC::@:[72187]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:03 UTC::@:[72187]:WARNING:  invalid configuration parameter name "rds.enable_plan_management", removing it	2026-11-25 04:44:03 UTC::@:[72187]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:44:03 UTC::@:[72187]:LOG:  Clean shutdown status file removed (engine mode: RW)	2026-11-25 04:44:03 UTC::@:[72187]:LOG:  Skipped resetting shared memory for Checkpointer data	2026-11-25 04:44:03 UTC::@:[72187]:LOG:  redirecting log output to logging collector process	2026-11-25 04:44:03 UTC::@:[72187]:HINT:  Future log output will appear in directory "/rdsdbdata/log/error".	2026-11-25 04:44:03 UTC::@:[72187]:LOG:  starting PostgreSQL 17.9 on aarch64-unknown-linux-gnu, compiled by aarch64-unknown-linux-gnu-gcc (GCC) 10.5.0, 64-bit	2026-11-25 04:44:03 UTC::@:[72187]:LOG:  In seamless event status 12. Ignoring autopause parameters	2026-11-25 04:44:03 UTC::@:[72187]:LOG:  listening on IPv4 address "0.0.0.0", port 5432	2026-11-25 04:44:03 UTC::@:[72187]:LOG:  listening on IPv6 address "::", port 5432	2026-11-25 04:44:03 UTC::@:[72187]:LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"	2026-11-25 04:44:03 UTC::@:[72187]:LOG:  Waiting for runtime initialization complete...	2026-11-25 04:44:03 UTC::@:[72218]:LOG:  Aurora fast start up succeed.	2026-11-25 04:44:03.383 GMT [72187] LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:44:03.385 GMT [72187] LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:44:04 UTC::@:[72237]:LOG:  database system was shut down at 2024-10-29 23:03:48 UTC	2026-11-25 04:44:04 UTC::@:[72187]:LOG:  database system is ready to accept connections	2026-11-25 04:44:04 UTC:172.16.15.0(32212):postgres@postgres:[72252]:LOG:  [ZD METRICS] name: ZD-TOTAL-CONN-DROP-COUNT, value: 2, desc: Total Number of dropped connections during the ZD Event	2026-11-25 04:44:04 UTC:172.16.15.0(32212):postgres@postgres:[72252]:LOG:  [ZD METRICS] name: ZD-TOTAL-CONN-RESTORED, value: 6, desc: Total Number of connections that are successfully transfered during ZDP Event	2026-11-25 04:44:04 UTC:172.16.15.0(32212):postgres@postgres:[72252]:LOG:  [ZD METRICS] name: ZD-TOTAL-TIME, value: 1274367, desc: Time in micro-seconds for entire ZD Event	2026-11-25 04:44:04 UTC:172.16.15.0(32212):postgres@postgres:[72252]:LOG:  Zero downtime patching completed.	2026-11-25 04:44:04 UTC:172.16.15.0(32212):postgres@postgres:[72252]:LOG:  Upgrade completed to version: 17.9.5	2026-11-25 04:44:04 UTC:172.16.15.0(32212):postgres@postgres:[72252]:LOG:  [ZD METRICS] name: DROP-PREPARED-STMT-GUARDRAIL, value: 2, desc: Connections dropped or preserved by the Aurora ZDP restore paths, by cause	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  received SIGHUP, reloading configuration files	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.enable_plan_management"	2026-11-25 04:45:10 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.babelfish_status"	2026-11-25 04:45:10 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.adaptive_autovacuum"	2026-11-25 04:45:10 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.queryid_counters_min_eviction_sec"	2026-11-25 04:45:10 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  parameter "unix_socket_permissions" cannot be changed without restarting the server	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.csd_test_parameter_3"	2026-11-25 04:45:10 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  parameter "shared_buffers" cannot be changed without restarting the server	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.proxy_protocol_trusted_cidr"	2026-11-25 04:45:10 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.proxy_protocol_enabled"	2026-11-25 04:45:10 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  parameter "apg_critical_insights_enabled" changed to "on"	2026-11-25 04:45:10 UTC::@:[72187]:LOG:  configuration file "/rdsdbdata/config/postgresql.conf" contains errors; unaffected changes were applied	2026-11-25 04:45:10 UTC::@:[72240]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:10 UTC::@:[72218]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:10 UTC::@:[72235]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:10 UTC::@:[72212]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:10 UTC::@:[72236]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:10 UTC::@:[72238]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:10 UTC::@:[72239]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:10 UTC::@:[72255]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  received SIGHUP, reloading configuration files	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.enable_plan_management"	2026-11-25 04:45:30 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.babelfish_status"	2026-11-25 04:45:30 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.adaptive_autovacuum"	2026-11-25 04:45:30 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.queryid_counters_min_eviction_sec"	2026-11-25 04:45:30 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  parameter "unix_socket_permissions" cannot be changed without restarting the server	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.csd_test_parameter_3"	2026-11-25 04:45:30 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  parameter "shared_buffers" cannot be changed without restarting the server	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.proxy_protocol_trusted_cidr"	2026-11-25 04:45:30 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  invalid configuration parameter name "rds.proxy_protocol_enabled"	2026-11-25 04:45:30 UTC::@:[72187]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  parameter "rds.resource_manager_critical_memory_pressure" changed to "0.95,2.0,2.0,"	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  parameter "rds.resource_manager_high_memory_pressure" changed to "0.9,2.0,2.0,"	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  parameter "rds.resource_manager_enabled" changed to "true"	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  parameter "rds.apg_space_reclaim_thread_enabled" changed to "on"	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  parameter "rds.enable_buffer_pin_conflict_forking" changed to "on"	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  parameter "rds.aggressive_buffer_eviction_config" changed to "100,1000;130,1250"	2026-11-25 04:45:30 UTC::@:[72187]:LOG:  configuration file "/rdsdbdata/config/postgresql.conf" contains errors; unaffected changes were applied	2026-11-25 04:45:30 UTC::@:[72240]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:30 UTC::@:[72235]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:30 UTC::@:[72236]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:30 UTC::@:[72218]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:30 UTC::@:[72238]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:30 UTC::@:[72212]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:30 UTC::@:[72239]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:45:30 UTC::@:[72255]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 17128 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 3218
+Content-Type: multipart/form-data; boundary=------------------------KCTt1xhEDdiRkI52uPEe3H
+* upload completely sent off: 3218 bytes
+< HTTP/1.1 200 OK
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 40248 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 3218
+Content-Type: multipart/form-data; boundary=------------------------3RIluDASDszc0YNn4A9JoC
+* upload completely sent off: 3218 bytes
+< HTTP/1.1 200 OK
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 32026 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 3218
+Content-Type: multipart/form-data; boundary=------------------------0qcjgAgvhjPgjqeNdGxuwm
+* upload completely sent off: 3218 bytes
+< HTTP/1.1 200 OK
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	2026-11-25 04:48:31 UTC:172.16.15.0(27856):postgres@postgres:[72597]:ERROR:  must be able to SET ROLE "sql_frontier_eval_user"	2026-11-25 04:48:31 UTC:172.16.15.0(27856):postgres@postgres:[72597]:STATEMENT:  CREATE SCHEMA IF NOT EXISTS sql_frontier_eval_sandbox AUTHORIZATION sql_frontier_eval_user;	* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 38700 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 3218
+Content-Type: multipart/form-data; boundary=------------------------ZK18VXq7lPySS8P1FE5wdA
+* upload completely sent off: 3218 bytes
+< HTTP/1.1 200 OK
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact
+* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 38704 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 1948
+Content-Type: multipart/form-data; boundary=------------------------Lv3BGzkokeRJgU0KoFghuA
+* upload completely sent off: 1948 bytes
+< HTTP/1.1 200 OK
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 13656 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 1946
+Content-Type: multipart/form-data; boundary=------------------------DDXZTYYzfaE66M49aJMh1a
+* upload completely sent off: 1946 bytes
+< HTTP/1.1 200 OK
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	2026-11-25 04:49:16 UTC:172.16.15.0(58497):sql_frontier_eval_user@postgres:[72637]:ERROR:  permission denied for database postgres	2026-11-25 04:49:16 UTC:172.16.15.0(58497):sql_frontier_eval_user@postgres:[72637]:STATEMENT:  DROP SCHEMA IF EXISTS sql_frontier_eval_sandbox CASCADE; CREATE SCHEMA sql_frontier_eval_sandbox; SET search_path TO sql_frontier_eval_sandbox, public;	* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 13224 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 1944
+Content-Type: multipart/form-data; boundary=------------------------dP6aAjkOcOQe0QNCN5YDij
+* upload completely sent off: 1944 bytes
+< HTTP/1.1 200 OK
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 27468 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 1942
+Content-Type: multipart/form-data; boundary=------------------------zkLEmPyLQppZoVAyLjtXMq
+* upload completely sent off: 1942 bytes
+< HTTP/1.1 200 OK
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 35848 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 1938
+Content-Type: multipart/form-data; boundary=------------------------OD2B9lBKZVoQJMHGyCgHxm
+* upload completely sent off: 1938 bytes
+< HTTP/1.1 200 OK
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	2026-11-25 04:50:38 UTC:172.16.15.0(1552):sql_frontier_eval_user@postgres:[72707]:ERROR:  type "double" does not exist at character 119	2026-11-25 04:50:38 UTC:172.16.15.0(1552):sql_frontier_eval_user@postgres:[72707]:STATEMENT:  CREATE TABLE quotes (
+	                quote_time TIMESTAMP,
+	                symbol VARCHAR,
+	                bid_price DOUBLE,
+	                ask_price DOUBLE
+	            );
+	            CREATE TABLE trades (
+	                trade_time TIMESTAMP,
+	                symbol VARCHAR,
+	                trade_id INT,
+	                executed_price DOUBLE,
+	                shares INT
+	            );
+	            INSERT INTO quotes VALUES
+	                ('2026-03-01 09:30:00.100', 'NVDA', 850.10, 850.25),
+	                ('2026-03-01 09:30:00.250', 'NVDA', 850.15, 850.30),
+	                ('2026-03-01 09:30:00.400', 'NVDA', 850.20, 850.35);
+	            INSERT INTO trades VALUES
+	                ('2026-03-01 09:30:00.150', 'NVDA', 101, 850.25, 100),
+	                ('2026-03-01 09:30:00.300', 'NVDA', 102, 850.30, 200),
+	                ('2026-03-01 09:30:00.450', 'NVDA', 103, 850.32, 150);	2026-11-25 04:54:57 UTC::@:[22693]:WARNING:  invalid configuration parameter name "rds.proxy_protocol_trusted_cidr", removing it	2026-11-25 04:54:57 UTC::@:[22693]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:54:57 UTC::@:[22693]:WARNING:  invalid configuration parameter name "rds.queryid_counters_min_eviction_sec", removing it	2026-11-25 04:54:57 UTC::@:[22693]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:54:57 UTC::@:[22693]:WARNING:  invalid configuration parameter name "rds.proxy_protocol_enabled", removing it	2026-11-25 04:54:57 UTC::@:[22693]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:54:57 UTC::@:[22693]:WARNING:  invalid configuration parameter name "rds.babelfish_status", removing it	2026-11-25 04:54:57 UTC::@:[22693]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:54:57 UTC::@:[22693]:WARNING:  invalid configuration parameter name "rds.adaptive_autovacuum", removing it	2026-11-25 04:54:57 UTC::@:[22693]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:54:57 UTC::@:[22693]:WARNING:  invalid configuration parameter name "rds.csd_test_parameter_3", removing it	2026-11-25 04:54:57 UTC::@:[22693]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:54:57 UTC::@:[22693]:WARNING:  invalid configuration parameter name "rds.enable_plan_management", removing it	2026-11-25 04:54:57 UTC::@:[22693]:DETAIL:  "rds" is now a reserved prefix.
+Postgres Shared Memory Value: 228589568 bytes	2026-11-25 04:54:57.880 GMT [22693] LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:54:57.880 GMT [22693] LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:02 UTC::@:[724]:LOG:  starting PostgreSQL 17.9 on aarch64-unknown-linux-gnu, compiled by aarch64-unknown-linux-gnu-gcc (GCC) 10.5.0, 64-bit	2026-11-25 04:55:02 UTC::@:[724]:LOG:  listening on IPv4 address "0.0.0.0", port 5432	2026-11-25 04:55:02 UTC::@:[724]:LOG:  listening on IPv6 address "::", port 5432	2026-11-25 04:55:02 UTC::@:[724]:LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"	2026-11-25 04:55:02 UTC::@:[724]:LOG:  Waiting for runtime initialization complete...	2026-11-25 04:55:02 UTC::@:[724]:WARNING:  invalid configuration parameter name "rds.proxy_protocol_trusted_cidr", removing it	2026-11-25 04:55:02 UTC::@:[724]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:55:02 UTC::@:[724]:WARNING:  invalid configuration parameter name "rds.queryid_counters_min_eviction_sec", removing it	2026-11-25 04:55:02 UTC::@:[724]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:55:02 UTC::@:[724]:WARNING:  invalid configuration parameter name "rds.proxy_protocol_enabled", removing it	2026-11-25 04:55:02 UTC::@:[724]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:55:02 UTC::@:[724]:WARNING:  invalid configuration parameter name "rds.babelfish_status", removing it	2026-11-25 04:55:02 UTC::@:[724]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:55:02 UTC::@:[724]:WARNING:  invalid configuration parameter name "rds.adaptive_autovacuum", removing it	2026-11-25 04:55:02 UTC::@:[724]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:55:02 UTC::@:[724]:WARNING:  invalid configuration parameter name "rds.csd_test_parameter_3", removing it	2026-11-25 04:55:02 UTC::@:[724]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:55:02 UTC::@:[724]:WARNING:  invalid configuration parameter name "rds.enable_plan_management", removing it	2026-11-25 04:55:02 UTC::@:[724]:DETAIL:  "rds" is now a reserved prefix.	2026-11-25 04:55:02 UTC::@:[724]:LOG:  Skipped resetting shared memory for Checkpointer data	2026-11-25 04:55:02 UTC::@:[724]:LOG:  could not write file "pg_stat_tmp/pgss_query_texts.stat": No such file or directory	2026-11-25 04:55:02 UTC::@:[724]:LOG:  redirecting log output to logging collector process	2026-11-25 04:55:02 UTC::@:[724]:HINT:  Future log output will appear in directory "/rdsdbdata/log/error".	2026-11-25 04:55:02.684 GMT [724] LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:02.685 GMT [724] LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:04 UTC::@:[750]:LOG:  database system was interrupted; last known up at 2024-10-29 23:03:48 UTC	2026-11-25 04:55:04 UTC:[local]:rdsadmin@rdsadmin:[753]:FATAL:  the database system is starting up	2026-11-25 04:55:04 UTC:[local]:rdsadmin@rdsadmin:[751]:FATAL:  the database system is starting up	2026-11-25 04:55:04 UTC:[local]:rdsadmin@rdsadmin:[752]:FATAL:  the database system is starting up	2026-11-25 04:55:04 UTC:[local]:rdsadmin@rdsadmin:[754]:FATAL:  the database system is starting up	2026-11-25 04:55:04 UTC:[local]:rdsadmin@rdsadmin:[755]:FATAL:  the database system is starting up	2026-11-25 04:55:04 UTC:[local]:rdsadmin@rdsadmin:[756]:FATAL:  the database system is starting up	2026-11-25 04:55:04 UTC:[local]:rdsadmin@rdsadmin:[757]:FATAL:  the database system is starting up	2026-11-25 04:55:04 UTC::@:[724]:LOG:  database system is ready to accept connections	2026-11-25 04:55:04 UTC:[local]:rdsadmin@rdsadmin:[758]:FATAL:  the database system is starting up	2026-11-25 04:55:04 UTC::@:[724]:LOG:  received SIGHUP, reloading configuration files	2026-11-25 04:55:04 UTC::@:[724]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:04 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.enable_plan_management"	2026-11-25 04:55:04 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:04 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.babelfish_status"	2026-11-25 04:55:04 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:04 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.adaptive_autovacuum"	2026-11-25 04:55:04 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:04 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.queryid_counters_min_eviction_sec"	2026-11-25 04:55:04 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:04 UTC::@:[724]:LOG:  parameter "unix_socket_permissions" cannot be changed without restarting the server	2026-11-25 04:55:04 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.csd_test_parameter_3"	2026-11-25 04:55:04 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:04 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.proxy_protocol_trusted_cidr"	2026-11-25 04:55:04 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:04 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.proxy_protocol_enabled"	2026-11-25 04:55:04 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:04 UTC::@:[724]:LOG:  configuration file "/rdsdbdata/config/postgresql.conf" contains errors; unaffected changes were applied	2026-11-25 04:55:04 UTC::@:[725]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:04 UTC::@:[761]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:04 UTC::@:[749]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:04 UTC::@:[748]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:04 UTC::@:[759]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:04 UTC::@:[760]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:04 UTC::@:[731]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:04 UTC::@:[762]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:05 UTC::@:[724]:LOG:  received SIGHUP, reloading configuration files	2026-11-25 04:55:05 UTC::@:[724]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:05 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.enable_plan_management"	2026-11-25 04:55:05 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:05 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.babelfish_status"	2026-11-25 04:55:05 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:05 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.adaptive_autovacuum"	2026-11-25 04:55:05 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:05 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.queryid_counters_min_eviction_sec"	2026-11-25 04:55:05 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:05 UTC::@:[724]:LOG:  parameter "unix_socket_permissions" cannot be changed without restarting the server	2026-11-25 04:55:05 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.csd_test_parameter_3"	2026-11-25 04:55:05 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:05 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.proxy_protocol_trusted_cidr"	2026-11-25 04:55:05 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:05 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.proxy_protocol_enabled"	2026-11-25 04:55:05 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:05 UTC::@:[724]:LOG:  configuration file "/rdsdbdata/config/postgresql.conf" contains errors; unaffected changes were applied	2026-11-25 04:55:05 UTC::@:[761]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:05 UTC::@:[749]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:05 UTC::@:[748]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:05 UTC::@:[759]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:05 UTC::@:[760]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:05 UTC::@:[731]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:05 UTC::@:[762]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:05 UTC::@:[725]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:10 UTC::@:[724]:LOG:  received SIGHUP, reloading configuration files	2026-11-25 04:55:10 UTC::@:[724]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:10 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.enable_plan_management"	2026-11-25 04:55:10 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:10 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.babelfish_status"	2026-11-25 04:55:10 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:10 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.adaptive_autovacuum"	2026-11-25 04:55:10 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:10 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.queryid_counters_min_eviction_sec"	2026-11-25 04:55:10 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:10 UTC::@:[724]:LOG:  parameter "unix_socket_permissions" cannot be changed without restarting the server	2026-11-25 04:55:10 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.csd_test_parameter_3"	2026-11-25 04:55:10 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:10 UTC::@:[724]:LOG:  parameter "shared_buffers" cannot be changed without restarting the server	2026-11-25 04:55:10 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.proxy_protocol_trusted_cidr"	2026-11-25 04:55:10 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:10 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.proxy_protocol_enabled"	2026-11-25 04:55:10 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:10 UTC::@:[724]:LOG:  parameter "apg_critical_insights_enabled" changed to "on"	2026-11-25 04:55:10 UTC::@:[724]:LOG:  configuration file "/rdsdbdata/config/postgresql.conf" contains errors; unaffected changes were applied	2026-11-25 04:55:10 UTC::@:[731]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:10 UTC::@:[725]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:10 UTC::@:[761]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:10 UTC::@:[749]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:10 UTC::@:[748]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:10 UTC::@:[760]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:10 UTC::@:[762]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:10 UTC::@:[759]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:30 UTC::@:[724]:LOG:  received SIGHUP, reloading configuration files	2026-11-25 04:55:30 UTC::@:[724]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:30 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.enable_plan_management"	2026-11-25 04:55:30 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:30 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.babelfish_status"	2026-11-25 04:55:30 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:30 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.adaptive_autovacuum"	2026-11-25 04:55:30 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:30 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.queryid_counters_min_eviction_sec"	2026-11-25 04:55:30 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:30 UTC::@:[724]:LOG:  parameter "unix_socket_permissions" cannot be changed without restarting the server	2026-11-25 04:55:30 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.csd_test_parameter_3"	2026-11-25 04:55:30 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:30 UTC::@:[724]:LOG:  parameter "shared_buffers" cannot be changed without restarting the server	2026-11-25 04:55:30 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.proxy_protocol_trusted_cidr"	2026-11-25 04:55:30 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:30 UTC::@:[724]:LOG:  invalid configuration parameter name "rds.proxy_protocol_enabled"	2026-11-25 04:55:30 UTC::@:[724]:DETAIL:  "rds" is a reserved prefix.	2026-11-25 04:55:30 UTC::@:[724]:LOG:  parameter "rds.aggressive_buffer_eviction_config" changed to "100,1000;130,1250"	2026-11-25 04:55:30 UTC::@:[724]:LOG:  parameter "rds.enable_buffer_pin_conflict_forking" changed to "on"	2026-11-25 04:55:30 UTC::@:[724]:LOG:  parameter "rds.resource_manager_enabled" changed to "true"	2026-11-25 04:55:30 UTC::@:[724]:LOG:  parameter "rds.resource_manager_critical_memory_pressure" changed to "0.95,2.0,2.0,"	2026-11-25 04:55:30 UTC::@:[724]:LOG:  parameter "rds.apg_space_reclaim_thread_enabled" changed to "on"	2026-11-25 04:55:30 UTC::@:[724]:LOG:  parameter "rds.resource_manager_high_memory_pressure" changed to "0.9,2.0,2.0,"	2026-11-25 04:55:30 UTC::@:[724]:LOG:  configuration file "/rdsdbdata/config/postgresql.conf" contains errors; unaffected changes were applied	2026-11-25 04:55:30 UTC::@:[725]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:30 UTC::@:[759]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:30 UTC::@:[762]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:30 UTC::@:[761]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:30 UTC::@:[731]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:30 UTC::@:[749]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:30 UTC::@:[748]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"	2026-11-25 04:55:30 UTC::@:[760]:LOG:  skipping missing configuration file "/rdsdbdata/config/recovery.conf"
+* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 15898 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 3206
+Content-Type: multipart/form-data; boundary=------------------------SNkfCPMSvrTSqbw8MyBzAA
+* upload completely sent off: 3206 bytes
+< HTTP/1.1 403 Forbidden
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	2026-11-25 04:55:46 UTC:172.16.15.0(41007):postgres@postgres:[841]:LOG:  pam_authenticate failed: Permission denied	2026-11-25 04:55:46 UTC:172.16.15.0(41007):postgres@postgres:[841]:FATAL:  PAM authentication failed for user "postgres"	2026-11-25 04:55:46 UTC:172.16.15.0(41007):postgres@postgres:[841]:DETAIL:  Connection matched file "/rdsdbdata/config/pg_hba.conf" line 13: "hostssl    all             +rds_iam             all            pam"
+* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 15912 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 1938
+Content-Type: multipart/form-data; boundary=------------------------QI8WAzwV24uoMrFJLldSfP
+* upload completely sent off: 1938 bytes
+< HTTP/1.1 403 Forbidden
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	2026-11-25 04:55:54 UTC:172.16.15.0(29319):sql_frontier_eval_user@postgres:[843]:LOG:  pam_authenticate failed: Permission denied	2026-11-25 04:55:54 UTC:172.16.15.0(29319):sql_frontier_eval_user@postgres:[843]:FATAL:  PAM authentication failed for user "sql_frontier_eval_user"	2026-11-25 04:55:54 UTC:172.16.15.0(29319):sql_frontier_eval_user@postgres:[843]:DETAIL:  Connection matched file "/rdsdbdata/config/pg_hba.conf" line 13: "hostssl    all             +rds_iam             all            pam"	* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 30250 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 1916
+Content-Type: multipart/form-data; boundary=------------------------m92gQDMyxwnhKhlfuIKWbo
+* upload completely sent off: 1916 bytes
+< HTTP/1.1 403 Forbidden
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	2026-11-25 04:57:00 UTC:172.16.15.0(44023):sql_frontier_eval_user@postgres:[863]:LOG:  pam_authenticate failed: Permission denied	2026-11-25 04:57:00 UTC:172.16.15.0(44023):sql_frontier_eval_user@postgres:[863]:FATAL:  PAM authentication failed for user "sql_frontier_eval_user"	2026-11-25 04:57:00 UTC:172.16.15.0(44023):sql_frontier_eval_user@postgres:[863]:DETAIL:  Connection matched file "/rdsdbdata/config/pg_hba.conf" line 13: "hostssl    all             +rds_iam             all            pam"	* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 21604 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 1928
+Content-Type: multipart/form-data; boundary=------------------------soiB7FCwAdcQxWgV0vISFC
+* upload completely sent off: 1928 bytes
+< HTTP/1.1 403 Forbidden
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	2026-11-25 04:57:48 UTC:172.16.15.0(25561):sql_frontier_eval_user@postgres:[916]:LOG:  pam_authenticate failed: Permission denied	2026-11-25 04:57:48 UTC:172.16.15.0(25561):sql_frontier_eval_user@postgres:[916]:FATAL:  PAM authentication failed for user "sql_frontier_eval_user"	2026-11-25 04:57:48 UTC:172.16.15.0(25561):sql_frontier_eval_user@postgres:[916]:DETAIL:  Connection matched file "/rdsdbdata/config/pg_hba.conf" line 13: "hostssl    all             +rds_iam             all            pam"
+* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 45856 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 3218
+Content-Type: multipart/form-data; boundary=------------------------gx0ofRCvmpaCYnacgqSFke
+* upload completely sent off: 3218 bytes
+< HTTP/1.1 403 Forbidden
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact	2026-11-25 04:58:04 UTC:172.16.15.0(1441):cost_collector@postgres:[921]:LOG:  pam_authenticate failed: Permission denied	2026-11-25 04:58:04 UTC:172.16.15.0(1441):cost_collector@postgres:[921]:FATAL:  PAM authentication failed for user "cost_collector"	2026-11-25 04:58:04 UTC:172.16.15.0(1441):cost_collector@postgres:[921]:DETAIL:  Connection matched file "/rdsdbdata/config/pg_hba.conf" line 13: "hostssl    all             +rds_iam             all            pam"
+* Host rdsauthproxy:1108 was resolved.
+* IPv6: (none)
+* IPv4: 172.16.15.2
+*   Trying 172.16.15.2:1108...
+* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 57802 
+* using HTTP/1.x
+> POST /authenticateRequest HTTP/1.1
+Host: rdsauthproxy:1108
+Accept: */*
+Content-Length: 1929
+Content-Type: multipart/form-data; boundary=------------------------PamtHAhDYHpVShFw42T4fA
+* upload completely sent off: 1929 bytes
+< HTTP/1.1 403 Forbidden
+< Content-Type: text/html;charset=utf-8
+< Content-Length: 0
+< 
+* Connection #0 to host rdsauthproxy:1108 left intact
