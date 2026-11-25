@@ -161,6 +161,10 @@ const pool = new Pool({
 });
 
 async function initDb(retries = 10, delayMs = 3000) {
+  if (process.env.MAX_DB_CONNECTIONS === "0" || (!process.env.POSTGRES_HOST && !process.env.DATABASE_URL)) {
+    console.log("[DB] Database connection disabled (MAX_DB_CONNECTIONS=0 or empty host); operating in frugal mode");
+    return;
+  }
   for (let i = 1; i <= retries; i++) {
     try {
       const client = await pool.connect();

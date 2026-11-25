@@ -102,8 +102,14 @@ builder.Services.AddOpenTelemetry()
 // ---------------------------------------------------------------------------
 string GetConnectionString()
 {
+    var maxConnStr = Environment.GetEnvironmentVariable("MAX_DB_CONNECTIONS");
+    if (int.TryParse(maxConnStr, out var maxConn) && maxConn == 0)
+    {
+        return null;
+    }
+
     var databaseUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
-    if (!string.IsNullOrEmpty(databaseUrl))
+    if (!string.IsNullOrWhiteSpace(databaseUrl))
     {
         try
         {
@@ -136,7 +142,12 @@ string GetConnectionString()
         }
     }
 
-    var host = Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? "postgres";
+    var host = Environment.GetEnvironmentVariable("POSTGRES_HOST");
+    if (string.IsNullOrWhiteSpace(host))
+    {
+        return null;
+    }
+
     var portStr = Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? "5432";
     int.TryParse(portStr, out var p);
     if (p <= 0) p = 5432;
@@ -163,43 +174,50 @@ string GetConnectionString()
 var connString = GetConnectionString();
 NpgsqlDataSource? dataSource = null;
 
-try
+if (!string.IsNullOrEmpty(connString))
 {
-    var dataSourceBuilder = new NpgsqlDataSourceBuilder(connString);
-    dataSourceBuilder.EnableDynamicJson();
-    dataSource = dataSourceBuilder.Build();
-
-    _ = Task.Run(async () =>
+    try
     {
-        for (int attempt = 1; attempt <= 15; attempt++)
+        var dataSourceBuilder = new NpgsqlDataSourceBuilder(connString);
+        dataSourceBuilder.EnableDynamicJson();
+        dataSource = dataSourceBuilder.Build();
+
+        _ = Task.Run(async () =>
         {
-            try
+            for (int attempt = 1; attempt <= 15; attempt++)
             {
-                await using var conn = await dataSource.OpenConnectionAsync();
-                await using var cmd = conn.CreateCommand();
-                cmd.CommandText = @"
-                    CREATE TABLE IF NOT EXISTS audit_logs (
-                        id SERIAL PRIMARY KEY,
-                        timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                        endpoint VARCHAR(255) NOT NULL,
-                        status_code INTEGER NOT NULL,
-                        details JSONB
-                    );";
-                await cmd.ExecuteNonQueryAsync();
-                Console.WriteLine("[PostgreSQL] Connected and audit_logs table ready");
-                break;
+                try
+                {
+                    await using var conn = await dataSource.OpenConnectionAsync();
+                    await using var cmd = conn.CreateCommand();
+                    cmd.CommandText = @"
+                        CREATE TABLE IF NOT EXISTS audit_logs (
+                            id SERIAL PRIMARY KEY,
+                            timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                            endpoint VARCHAR(255) NOT NULL,
+                            status_code INTEGER NOT NULL,
+                            details JSONB
+                        );";
+                    await cmd.ExecuteNonQueryAsync();
+                    Console.WriteLine("[PostgreSQL] Connected and audit_logs table ready");
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[PostgreSQL] Attempt {attempt}/15 failed ({ex.Message}), retrying in 2s...");
+                    await Task.Delay(2000);
+                }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[PostgreSQL] Attempt {attempt}/15 failed ({ex.Message}), retrying in 2s...");
-                await Task.Delay(2000);
-            }
-        }
-    });
+        });
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[PostgreSQL] Connection setup error: {ex.Message}");
+    }
 }
-catch (Exception ex)
+else
 {
-    Console.WriteLine($"[PostgreSQL] Connection setup error: {ex.Message}");
+    Console.WriteLine("[PostgreSQL] Database disabled or unconfigured (MAX_DB_CONNECTIONS=0 or empty host); running in frugal mode");
 }
 
 var app = builder.Build();

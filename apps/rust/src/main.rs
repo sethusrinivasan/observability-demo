@@ -20,7 +20,7 @@ use tracing_subscriber::prelude::*;
 
 #[derive(Clone)]
 struct AppState {
-    db: Pool<Postgres>,
+    db: Option<Pool<Postgres>>,
     request_counter: Counter<u64>,
     request_success_counter: Counter<u64>,
     request_error_counter: Counter<u64>,
@@ -232,28 +232,44 @@ async fn main() -> anyhow::Result<()> {
         .init());
 
     let app_name = std::env::var("APPLICATION_NAME").unwrap_or_else(|_| "observability-rust-app".to_string());
+    let max_conns_str = std::env::var("MAX_DB_CONNECTIONS").unwrap_or_default();
+    let max_conns: u32 = max_conns_str.trim().parse().unwrap_or(2);
+
     let raw_db_url = std::env::var("DATABASE_URL").unwrap_or_default();
-    let db_url = if !raw_db_url.trim().is_empty() {
-        raw_db_url
+    let raw_host = std::env::var("POSTGRES_HOST").unwrap_or_default();
+
+    let db_pool = if max_conns == 0 || (raw_db_url.trim().is_empty() && raw_host.trim().is_empty()) {
+        tracing::info!("Database connection disabled (MAX_DB_CONNECTIONS=0 or empty host/URL)");
+        None
     } else {
-        let host = std::env::var("POSTGRES_HOST").unwrap_or_default();
-        let host = if host.trim().is_empty() { "127.0.0.1".to_string() } else { host };
-        let port = std::env::var("POSTGRES_PORT").unwrap_or_default();
-        let port = if port.trim().is_empty() { "5432".to_string() } else { port };
-        let db = std::env::var("POSTGRES_DB").unwrap_or_default();
-        let db = if db.trim().is_empty() { "observability".to_string() } else { db };
-        let user = std::env::var("POSTGRES_USER").unwrap_or_default();
-        let user = if user.trim().is_empty() { "observability".to_string() } else { user };
-        let pass = std::env::var("POSTGRES_PASSWORD").unwrap_or_default();
-        let pass = if pass.trim().is_empty() { "observability".to_string() } else { pass };
-        format!("postgres://{}:{}@{}:{}/{}?application_name={}", user, pass, host, port, db, app_name)
+        let db_url = if !raw_db_url.trim().is_empty() {
+            raw_db_url
+        } else {
+            let host = raw_host.trim();
+            let host = if host.is_empty() { "127.0.0.1" } else { host };
+            let port = std::env::var("POSTGRES_PORT").unwrap_or_default();
+            let port = if port.trim().is_empty() { "5432".to_string() } else { port };
+            let db = std::env::var("POSTGRES_DB").unwrap_or_default();
+            let db = if db.trim().is_empty() { "observability".to_string() } else { db };
+            let user = std::env::var("POSTGRES_USER").unwrap_or_default();
+            let user = if user.trim().is_empty() { "observability".to_string() } else { user };
+            let pass = std::env::var("POSTGRES_PASSWORD").unwrap_or_default();
+            let pass = if pass.trim().is_empty() { "observability".to_string() } else { pass };
+            format!("postgres://{}:{}@{}:{}/{}?application_name={}", user, pass, host, port, db, app_name)
+        };
+        match PgPoolOptions::new()
+            .max_connections(max_conns)
+            .connect_lazy(&db_url) {
+                Ok(pool) => Some(pool),
+                Err(e) => {
+                    tracing::warn!("Failed initializing Postgres pool: {}. Running in degraded DB mode", e);
+                    None
+                }
+            }
     };
-    let db = PgPoolOptions::new()
-        .max_connections(2)
-        .connect_lazy(&db_url)?;
 
     let state = AppState {
-        db,
+        db: db_pool,
         request_counter,
         request_success_counter,
         request_error_counter,
@@ -386,24 +402,33 @@ async fn selftest() -> impl IntoResponse {
 
 async fn audit_log(State(state): State<AppState>) -> impl IntoResponse {
     let t = Instant::now();
-    let res = sqlx::query("INSERT INTO audit_logs (endpoint, status_code, details) VALUES ($1, $2, $3)")
-        .bind("/auditlog")
-        .bind(201)
-        .bind(serde_json::json!({"language": "rust"}))
-        .execute(&state.db)
-        .await;
+    let res = if let Some(ref db) = state.db {
+        sqlx::query("INSERT INTO audit_logs (endpoint, status_code, details) VALUES ($1, $2, $3)")
+            .bind("/auditlog")
+            .bind(201)
+            .bind(serde_json::json!({"language": "rust"}))
+            .execute(db)
+            .await
+            .is_ok()
+    } else {
+        false
+    };
 
-    let status = if res.is_ok() { "success" } else { "degraded" };
+    let status = if res { "success" } else { "degraded" };
     record_metrics(&state, "/auditlog", "auditlog", status, "other", t.elapsed().as_secs_f64());
     (StatusCode::CREATED, Json(attach_context(serde_json::json!({"status": "ok"})))).into_response()
 }
 
 async fn audit_log_stats(State(state): State<AppState>) -> impl IntoResponse {
     let t = Instant::now();
-    let row: Result<(i64,), _> = sqlx::query_as("SELECT COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'audit_logs'), (SELECT reltuples::bigint FROM pg_class WHERE relname = 'audit_logs'), 0)::bigint AS total_rows")
-        .fetch_one(&state.db)
-        .await;
-    let total_rows = row.map(|r| r.0).unwrap_or(1);
+    let total_rows = if let Some(ref db) = state.db {
+        let row: Result<(i64,), _> = sqlx::query_as("SELECT COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'audit_logs'), (SELECT reltuples::bigint FROM pg_class WHERE relname = 'audit_logs'), 0)::bigint AS total_rows")
+            .fetch_one(db)
+            .await;
+        row.map(|r| r.0).unwrap_or(1)
+    } else {
+        1
+    };
     record_metrics(&state, "/auditlog/stats", "auditlog_stats", "success", "other", t.elapsed().as_secs_f64());
     Json(attach_context(serde_json::json!({
         "total_rows": total_rows,

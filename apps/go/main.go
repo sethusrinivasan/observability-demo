@@ -54,6 +54,18 @@ func getEnv(key, defaultVal string) string {
 }
 
 func initDb() (*sql.DB, error) {
+	if os.Getenv("MAX_DB_CONNECTIONS") == "0" {
+		log.Println("[PostgreSQL] DB connection disabled via MAX_DB_CONNECTIONS=0")
+		return nil, nil
+	}
+
+	rawHost := os.Getenv("POSTGRES_HOST")
+	databaseUrl := os.Getenv("DATABASE_URL")
+	if strings.TrimSpace(rawHost) == "" && strings.TrimSpace(databaseUrl) == "" {
+		log.Println("[PostgreSQL] DB host and URL not configured; skipping connection in frugal mode")
+		return nil, nil
+	}
+
 	pgHost := getEnv("POSTGRES_HOST", "postgres")
 	pgPort := getEnv("POSTGRES_PORT", "5432")
 	pgDB := getEnv("POSTGRES_DB", "observability")
@@ -596,7 +608,7 @@ func main() {
 	database, err := initDb()
 	if err != nil {
 		log.Printf("[PostgreSQL] Error: %v", err)
-	} else {
+	} else if database != nil {
 		db = database
 		defer db.Close()
 	}

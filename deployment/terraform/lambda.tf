@@ -77,7 +77,7 @@ resource "aws_lambda_function" "apps" {
       POSTGRES_USER               = ""
       POSTGRES_PASSWORD           = ""
       APPLICATION_NAME            = "observability-${each.key}-app"
-      DATABASE_URL                = ""
+      DATABASE_URL                = each.key == "rust" ? "postgres://observability:observability@127.0.0.1:5432/observability?application_name=observability-${each.key}-app" : ""
       SPRING_DATASOURCE_URL       = ""
       SPRING_DATASOURCE_USERNAME  = ""
       SPRING_DATASOURCE_PASSWORD  = ""
@@ -249,4 +249,25 @@ resource "aws_lambda_permission" "apps_url_invoke" {
   action        = "lambda:InvokeFunction"
   function_name = each.value.function_name
   principal     = "*"
+}
+
+# ---------------------------------------------------------------------------
+# 4. CloudWatch Operational Alarms for Microservice & Collector Invocations
+# ---------------------------------------------------------------------------
+resource "aws_cloudwatch_metric_alarm" "microservice_errors" {
+  for_each            = aws_lambda_function.apps
+  alarm_name          = "${each.value.function_name}-invocation-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "Triggered when ${each.value.function_name} encounters runtime init or invocation errors"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    FunctionName = each.value.function_name
+  }
 }
