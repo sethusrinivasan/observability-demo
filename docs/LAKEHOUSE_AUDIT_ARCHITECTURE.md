@@ -122,7 +122,97 @@ To maximize frugality, all batch tasks that touch Aurora are aligned within a si
 
 ---
 
-## 6. Retention Policies & Lifecycle Enforcement
+## 6. Root-Cause Analysis: Why Aurora Serverless v2 Keeps Waking Up
+
+During continuous CloudWatch log auditing on `/aws/rds/cluster/reality-check-cost-tracker/postgresql`:
+
+### Observed Connection Frequency (24-Hour Sample)
+- **Total connection attempts**: 765
+- **`cost_reader` user attempts**: **743 attempts** (97.1% of total)
+- **`postgres` user attempts**: 16 attempts
+- **`cost_collector` user attempts**: 4 attempts
+- **`cdc_sync_worker` user attempts**: 2 attempts
+- **Hourly cadence**: **26 to 36 connection attempts every single hour** (~1 attempt every 1.5 to 2 minutes).
+
+### The Auto-Pause Cancellation Cycle
+1. Aurora Serverless v2 auto-pause policy specifies `SecondsUntilAutoPause: 300` (5 minutes of complete inactivity).
+2. `cost_reader` (originating from `reality-check-cost-web` in external workload `box_hackathon`) and canary healthchecks initiate connections on every poll / request.
+3. Every TCP SYN / handshake resets Aurora's 300-second countdown timer.
+4. Because incoming attempts occur every 90–120 seconds, the 300-second threshold is **never reached during normal hours**, locking Aurora at 0.50–3.00 ACU 24/7.
+5. **Financial Impact**: Continuous 0.5 ACU compute generates ~$1.424/day ($42.71/month), representing **83.4% of total AWS account spend**.
+
+---
+
+## 7. Frugal Buffer-and-Batch Consolidation Specification
+
+To achieve the account target of **< $0.70/day daily spend**, the database write and read paths must be completely decoupled from synchronous request lifecycles:
+
+```
+[ Monitoring Tools / Polyglot Lambdas / Canaries ]
+                    │
+                    │  Asynchronous OTLP HTTP / JSON (/v1/logs)
+                    ▼
+       [ Custom Telemetry Receiver ]
+                    │  Snappy Columnar Compaction (10MB Chunks)
+                    ▼
+     [ Amazon S3 Parquet Lakehouse ]  <─── Zero Idle Compute Cost ($0.023/GB-mo)
+         ├── /telemetry/traces/
+         ├── /telemetry/logs/
+         ├── /telemetry/metrics/
+         └── /telemetry/errors/
+                    │
+                    ├──► [ Web Portals / DuckDB OLAP ] (In-Process, < 5ms, 0 DB Wakes)
+                    │
+                    └──► [ Daily 06:15 UTC Consolidated Sync ]
+                                  │
+                                  │  Single Batch Transaction (< 2s)
+                                  ▼
+                     [ Aurora PostgreSQL ]
+                                  │
+                                  ▼ (300s Idle Countdown)
+                     [ Auto-Pauses to 0.000 ACU ]
+```
+
+### Key Architectural Tenets:
+1. **Zero Synchronous DB Connections in Request Paths**:
+   All microservices and canaries configure `MAX_DB_CONNECTIONS=0` and buffer telemetry directly to S3.
+2. **In-Process Serverless OLAP for Read Queries**:
+   The Canary Dashboard and Cloud Frugality portals use in-process DuckDB reading S3 Parquet directly. No database connections are opened for analytics, dashboards, or routine traffic checks.
+3. **Consolidated Bulk Sync**:
+   Once per day at 06:15 UTC, the sync worker executes a single DuckDB aggregation query and writes bulk records to `audit_log_hourly_summary`, `audit_anomalies`, and `audit_dimensions` in **one transaction**, allowing Aurora to return to 0.000 ACU within 5 minutes.
+
+---
+
+## 8. Failure Roll-Up & Frugal CloudWatch Alarms
+
+To prevent observability and monitoring costs from driving up account spend:
+
+### Frugal Metric Strategy (Embedded Metric Format)
+- Applications log structured JSON to stdout containing EMF headers (`_aws.CloudWatchMetrics`).
+- CloudWatch automatically extracts the metric `Errors` without requiring costly log metric filters or custom high-resolution publishing.
+
+### Alarm Design & Cost Guardrails
+- **Standard Resolution Only**: Use 60-second or 300-second periods (`Period = 60`, `EvaluationPeriods = 1`). High-resolution (10-second) alarms ($0.30/month) are strictly prohibited.
+- **Rollup Metrics**: Alarms trigger on `Sum(Errors) > 0` at the service level rather than maintaining per-route alarms.
+- **Detailed Forensic Storage**: Full error stack traces and payloads are routed to S3 Snappy Parquet (`telemetry/errors/`), where they can be queried on-demand via DuckDB without incurring CloudWatch Logs Insights query charges ($0.005/GB scanned).
+
+---
+
+## 9. Cost Impact & Target Verification
+
+| Cost Component | Current Unoptimized Spend | Optimized Buffer-and-Batch Spend | Net Reduction |
+| :--- | :--- | :--- | :--- |
+| **Aurora Serverless v2** | $1.424 / day | **$0.012 / day** (10 min active/day) | -99.1% (-$1.412/day) |
+| **CloudWatch Metrics & Alarms** | $0.170 / day | **$0.150 / day** (Standard resolution) | -11.8% (-$0.020/day) |
+| **Cost Explorer API Calls** | $0.100 / day | **$0.020 / day** (Cached collectors) | -80.0% (-$0.080/day) |
+| **S3 Storage & Requests** | $0.004 / day | **$0.006 / day** (Parquet lakehouse) | +$0.002/day |
+| **Lambda Compute** | $0.008 / day | **$0.008 / day** | $0.000/day |
+| **Total Daily Spend** | **$1.706 / day** | **$0.196 / day** | **-$1.510 / day (-88.5%)** |
+| **Target Budget (< $0.70/day)**| **FAIL (Red / $1.71)** | **PASS (Green / $0.20)** | **Margin: $0.50/day below limit** |
+
+---
+
+## 10. Retention Policies & Lifecycle Enforcement
 
 ### CloudWatch Logs
 - All 11 Lambda log groups (`/aws/lambda/observability-*`) are configured with an explicit **3-day retention** policy (`retention_in_days = 3`).
